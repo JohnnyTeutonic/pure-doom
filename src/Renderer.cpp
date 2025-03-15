@@ -1100,8 +1100,35 @@ void Renderer::renderSpan(const Span& span) {
     float v = span.startV + (startX - span.startX) * vStep;
     float z = span.startZ + (startX - span.startX) * zStep;
     
-    // Apply more stable perspective correction
-    float baseFactor = (span.isFloor) ? 1.05f : 0.95f; // Slight bias to fix z-fighting
+    // Apply more sophisticated depth adjustment to prevent z-fighting
+    // Calculate depth bias based on the distance and whether this is a floor or ceiling
+    float distanceBasedBias = std::min(0.15f, std::abs(z) * 0.01f);
+    
+    // Apply different biases for floor and ceiling to ensure proper depth order
+    float depthBias;
+    if (span.isFloor) {
+        // For floors, bias slightly behind based on distance
+        depthBias = distanceBasedBias;
+    } else {
+        // For ceilings, bias slightly in front based on distance
+        depthBias = -distanceBasedBias;
+    }
+    
+    // Add a screen-position based component to ensure consistent depth ordering
+    // This helps with surfaces at the same world position but different screen positions
+    float screenPosFactor = static_cast<float>(span.y) / m_height;
+    float screenBias = 0.0f;
+    
+    // Only apply screen bias for nearby surfaces (avoid impacting distant rendering)
+    if (std::abs(z) < 10.0f) {
+        if (span.isFloor) {
+            // For floors, lower on screen = further away
+            screenBias = screenPosFactor * 0.05f;
+        } else {
+            // For ceilings, higher on screen = further away
+            screenBias = (1.0f - screenPosFactor) * 0.05f;
+        }
+    }
     
     // Calculate lighting factor (0-1)
     float lightFactor = std::min(1.0f, std::max(0.0f, span.lightLevel / 255.0f));
@@ -1123,11 +1150,11 @@ void Renderer::renderSpan(const Span& span) {
         Color finalColor = Color::blend(Color(0, 0, 0), texColor, lightFactor);
         
         // Apply distance fog
-        float fogFactor = 1.0f - std::min(1.0f, z / 30.0f);
+        float fogFactor = 1.0f - std::min(1.0f, std::abs(z) / 30.0f);
         finalColor = Color::blend(Color(0, 0, 0), finalColor, fogFactor);
         
-        // Apply a consistent depth bias based on plane type
-        float adjustedZ = z * baseFactor;
+        // Apply combined depth bias
+        float adjustedZ = z + depthBias + screenBias;
         
         // Draw the pixel with depth information
         drawPixelWithDepth(x, span.y, adjustedZ, finalColor);
@@ -1461,17 +1488,39 @@ bool Renderer::isPixelVisible(int x, int y, float depth) const {
     // Get current z-buffer depth
     float currentDepth = getDepth(x, y);
     
-    // Use a consistent depth comparison with a single bias value.
-    // This prevents z-fighting without creating visual artifacts.
-    // The bias is small enough to prevent visual issues but large enough to resolve z-fighting.
-    const float DEPTH_BIAS = 0.001f;
+    // Improved depth comparison with adaptive bias to prevent z-fighting
     
-    // For very close surfaces, we need a definitive rule that is NOT position-dependent
-    if (std::abs(depth - currentDepth) < 0.02f) {
-        // If depths are very close (potential z-fighting)
-        // Always prefer the closer surface (smaller depth value) with a small bias
-        // This maintains visual consistency across the entire surface
-        return depth < (currentDepth - DEPTH_BIAS);
+    // Use different bias values based on depth range for better precision
+    // Closer objects need smaller bias values for detail preservation
+    // Distant objects can use larger bias to avoid z-fighting
+    float DEPTH_BIAS;
+    
+    if (std::abs(depth) < 1.0f) {
+        // Very close objects - use minimal bias
+        DEPTH_BIAS = 0.0001f;
+    } else if (std::abs(depth) < 5.0f) {
+        // Medium distance objects
+        DEPTH_BIAS = 0.001f;
+    } else if (std::abs(depth) < 20.0f) {
+        // Far objects
+        DEPTH_BIAS = 0.01f;
+    } else {
+        // Very distant objects
+        DEPTH_BIAS = 0.05f;
+    }
+    
+    // For very close surfaces (potential z-fighting)
+    if (std::abs(depth - currentDepth) < 0.05f) {
+        // Add screen-space coherence factor - stabilize across adjacent pixels
+        // This avoids flickering when depth values are very close
+        if (x % 2 == 0 && y % 2 == 0) {
+            // Use a stable tie-breaking rule to ensure consistent results
+            // Choose based on depth and a spatial pattern for stability
+            return depth < currentDepth;
+        } else {
+            // Compare with bias for other pixels
+            return depth < (currentDepth - DEPTH_BIAS);
+        }
     }
     
     // For normal cases with clearly different depths
