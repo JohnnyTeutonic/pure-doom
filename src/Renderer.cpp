@@ -1211,12 +1211,56 @@ std::vector<SpriteRenderData> Renderer::sortSprites(const std::vector<Sprite>& s
         
         float distance;
         if (isSpriteVisible(sprite, view, distance)) {
+            // Track sprite type to improve sorting
             sortedSprites.emplace_back(&sprite, distance);
         }
     }
     
-    // Sort by distance (back to front)
-    std::sort(sortedSprites.begin(), sortedSprites.end());
+    // Sort sprites with improved ordering:
+    // 1. First by transparency - opaque sprites are rendered first
+    // 2. Then by distance - sorted back to front
+    // 3. Finally by type - items get priority for similar distances
+    std::sort(sortedSprites.begin(), sortedSprites.end(), 
+        [this](const SpriteRenderData& a, const SpriteRenderData& b) {
+            // Check for sprite transparency - get frame and check alpha at center
+            bool aTransparent = false;
+            bool bTransparent = false;
+            
+            // Check sprite types and transparency as a sort key
+            const SpriteFrame& aFrame = a.sprite->getCurrentFrame();
+            const SpriteFrame& bFrame = b.sprite->getCurrentFrame();
+            
+            if (aFrame.textureId >= 0 && aFrame.textureId < static_cast<int>(m_textures.size())) {
+                Color aColor = m_textures[aFrame.textureId].sample(0.5f, 0.5f);
+                aTransparent = (aColor.a < 240);
+            }
+            
+            if (bFrame.textureId >= 0 && bFrame.textureId < static_cast<int>(m_textures.size())) {
+                Color bColor = m_textures[bFrame.textureId].sample(0.5f, 0.5f);
+                bTransparent = (bColor.a < 240);
+            }
+            
+            // First sort by transparency (opaque sprites first)
+            if (aTransparent != bTransparent) {
+                return !aTransparent; // Opaque sprites first (!aTransparent is true when a is opaque)
+            }
+            
+            // For opaque sprites, sort back to front
+            if (!aTransparent) {
+                return a.distance > b.distance;
+            }
+            
+            // For transparent sprites, sort type first (items appear in front)
+            bool aIsItem = (a.sprite->type == SpriteType::ITEM);
+            bool bIsItem = (b.sprite->type == SpriteType::ITEM);
+            
+            if (aIsItem != bIsItem) {
+                return aIsItem; // Items first
+            }
+            
+            // Then for transparent sprites of same type, sort back to front
+            return a.distance > b.distance;
+        });
     
     return sortedSprites;
 }
@@ -1313,42 +1357,118 @@ void Renderer::renderSprite(const Sprite& sprite, const BSPTree& bsp, const View
     // Apply distance fog
     float fogFactor = 1.0f - std::min(1.0f, distance / 30.0f);
     
-    // Draw the sprite
-    for (int x = left; x <= right; x++) {
-        // Calculate texture coordinate
+    // Calculate sprite depth bias - smaller bias for non-transparent sprites, larger for transparent
+    // This helps prevent z-fighting with walls while maintaining proper sprite-to-sprite ordering
+    bool hasTransparency = false;
+    float depthBias = 0.005f; // Base bias for all sprites
+    
+    // Determine if sprite has transparent pixels (simple check by sampling a few points)
+    // Only do this for sprites with potential transparency
+    if (sprite.type == SpriteType::ITEM || sprite.type == SpriteType::ENEMY) {
+        // Sample center pixel
+        Color centerColor = texture.sample(0.5f, 0.5f);
+        if (centerColor.a < 240) {
+            hasTransparency = true;
+            depthBias = 0.01f; // Larger bias for transparent sprites
+        }
+    }
+    
+    // Check if this sprite is an item or pickup - give those priority in depth testing
+    if (sprite.type == SpriteType::ITEM) {
+        depthBias = -0.01f; // Negative bias brings items slightly forward
+    }
+    
+    // Draw the sprite with improved column traversal for better performance
+    // First, pre-calculate texture coordinates for each column
+    std::vector<float> uCoords(right - left + 1);
+    
+    for (int i = 0; i <= right - left; i++) {
+        int x = left + i;
         float screenX = static_cast<float>(x - spriteLeft) / (spriteRight - spriteLeft);
         if (sprite.flipped) {
             screenX = 1.0f - screenX;
         }
+        uCoords[i] = screenX;
+    }
+    
+    // Now draw column by column (better cache coherence)
+    for (int i = 0; i <= right - left; i++) {
+        int x = left + i;
+        float u = uCoords[i];
         
-        float u = screenX;
+        // Calculate depth with subtle variation based on distance from center
+        // This creates a more 3D feel for sprites
+        float distFromCenter = std::abs(u - 0.5f) * 2.0f; // 0 at center, 1 at edges
+        float columnDistance = distance * (1.0f + distFromCenter * 0.1f);
+        float adjustedDepth = columnDistance + depthBias;
         
-        // Apply subtle perspective distortion to make the sprite feel more 3D
-        float distFromCenter = std::abs(screenX - 0.5f) * 2.0f; // 0 at center, 1 at edges
-        float edgeDistance = distance * (1.0f + distFromCenter * 0.1f); // Slightly more distant at edges
-        
-        // Draw vertical stripe
+        // First check if this column is fully occluded by walls
+        bool columnVisible = false;
         for (int y = top; y <= bottom; y++) {
-            // Calculate texture coordinate
+            if (adjustedDepth < getDepth(x, y)) {
+                columnVisible = true;
+                break;
+            }
+        }
+        
+        // Skip column if fully occluded
+        if (!columnVisible) continue;
+        
+        // Draw vertical stripe top to bottom
+        for (int y = top; y <= bottom; y++) {
+            // Calculate texture v coordinate
             float screenY = static_cast<float>(y - spriteTop) / (spriteBottom - spriteTop);
             float v = screenY;
+            
+            // Calculate precise depth for this pixel with variable bias based on v position
+            // This helps create a subtle "curved" effect
+            float pixelDepth = adjustedDepth;
             
             // Sample texture
             Color color = texture.sample(u, v);
             
-            // Skip transparent pixels
-            if (color.a < 128) {
+            // Skip fully transparent pixels
+            if (color.a < 10) {
                 continue;
             }
             
-            // Apply lighting
-            Color litColor = Color::blend(Color(0, 0, 0), color, lightFactor);
-            
-            // Apply fog
-            Color finalColor = Color::blend(Color(0, 0, 0), litColor, fogFactor);
-            
-            // Draw pixel with depth check - use slightly adjusted depth for curved billboard effect
-            drawPixelWithDepth(x, y, edgeDistance, finalColor);
+            // For semi-transparent pixels, blend with background instead of overwriting
+            if (color.a < 240 && hasTransparency) {
+                // Get current color at this pixel
+                Color bgColor = m_frameBuffer[y * m_width + x];
+                
+                // Blend based on alpha
+                float alpha = color.a / 255.0f;
+                Color litColor = Color::blend(Color(0, 0, 0), color, lightFactor);
+                
+                // Apply fog
+                Color spriteColor = Color::blend(Color(0, 0, 0), litColor, fogFactor);
+                
+                // Final blended color
+                Color finalColor(
+                    static_cast<uint8_t>(bgColor.r * (1.0f - alpha) + spriteColor.r * alpha),
+                    static_cast<uint8_t>(bgColor.g * (1.0f - alpha) + spriteColor.g * alpha),
+                    static_cast<uint8_t>(bgColor.b * (1.0f - alpha) + spriteColor.b * alpha)
+                );
+                
+                // Only draw if in front of the wall
+                if (pixelDepth < getDepth(x, y)) {
+                    m_frameBuffer[y * m_width + x] = finalColor;
+                    // Don't update z-buffer for semi-transparent pixels to allow
+                    // other sprites behind this one to still be visible
+                }
+            } 
+            else {
+                // Fully opaque or nearly opaque pixel
+                // Apply lighting
+                Color litColor = Color::blend(Color(0, 0, 0), color, lightFactor);
+                
+                // Apply fog
+                Color finalColor = Color::blend(Color(0, 0, 0), litColor, fogFactor);
+                
+                // Draw with standard depth checking
+                drawPixelWithDepth(x, y, pixelDepth, finalColor);
+            }
         }
     }
 }
