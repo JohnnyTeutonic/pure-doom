@@ -5,14 +5,22 @@ project(PureDoom VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Find SDL2 package
+find_package(SDL2 REQUIRED)
+include_directories(${SDL2_INCLUDE_DIRS})
+
 # Add executable
 add_executable(PureDoom
     src/main.cpp
     src/BSPTree.cpp
+    src/Renderer.cpp
 )
 
 # Include directories
 target_include_directories(PureDoom PRIVATE src)
+
+# Link SDL2
+target_link_libraries(PureDoom ${SDL2_LIBRARIES})
 
 # Set compiler warnings
 if(MSVC)
@@ -28,4 +36,4 @@ set_target_properties(PureDoom
 )
 
 # Print status message
-message(STATUS "Configuring PureDoom with BSP Tree implementation") 
+message(STATUS "Configuring PureDoom with BSP Tree and Renderer implementation") 

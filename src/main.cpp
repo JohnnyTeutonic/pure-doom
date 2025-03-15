@@ -1,8 +1,10 @@
 #include "BSPTree.h"
+#include "Renderer.h"
 #include <iostream>
 #include <vector>
 #include <chrono>
 #include <thread>
+#include <SDL.h>
 
 using namespace PureDoom;
 
@@ -255,9 +257,173 @@ void testMovingSectors(BSPTree& bsp) {
     std::cout << "Movement simulation complete.\n";
 }
 
+// New function for rendering with SDL2
+void renderWithSDL(BSPTree& bsp) {
+    // Initialize SDL
+    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        std::cerr << "SDL initialization failed: " << SDL_GetError() << std::endl;
+        return;
+    }
+    
+    // Screen dimensions
+    const int SCREEN_WIDTH = 640;
+    const int SCREEN_HEIGHT = 480;
+    
+    // Create SDL window
+    SDL_Window* window = SDL_CreateWindow("PureDoom Renderer", 
+                                          SDL_WINDOWPOS_UNDEFINED, 
+                                          SDL_WINDOWPOS_UNDEFINED, 
+                                          SCREEN_WIDTH, 
+                                          SCREEN_HEIGHT, 
+                                          SDL_WINDOW_SHOWN);
+    if (!window) {
+        std::cerr << "Window creation failed: " << SDL_GetError() << std::endl;
+        SDL_Quit();
+        return;
+    }
+    
+    // Create SDL renderer
+    SDL_Renderer* sdlRenderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    if (!sdlRenderer) {
+        std::cerr << "Renderer creation failed: " << SDL_GetError() << std::endl;
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return;
+    }
+    
+    // Create SDL texture to display the frame buffer
+    SDL_Texture* texture = SDL_CreateTexture(sdlRenderer, 
+                                            SDL_PIXELFORMAT_RGBA8888, 
+                                            SDL_TEXTUREACCESS_STREAMING, 
+                                            SCREEN_WIDTH, 
+                                            SCREEN_HEIGHT);
+    if (!texture) {
+        std::cerr << "Texture creation failed: " << SDL_GetError() << std::endl;
+        SDL_DestroyRenderer(sdlRenderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return;
+    }
+    
+    // Create our DOOM-style renderer
+    Renderer renderer(SCREEN_WIDTH, SCREEN_HEIGHT);
+    renderer.initialize();
+    
+    // Initial player position and movement variables
+    ViewPosition view;
+    view.position = Vec2(5.0f, 5.0f); // Start in the center of the first room
+    view.angle = 0.0f;  // Looking east
+    view.fov = 90.0f;   // 90 degree field of view
+    view.height = 0.8f; // Player's eye height
+    
+    float moveSpeed = 0.05f;
+    float rotateSpeed = 0.02f;
+    
+    // Main loop
+    bool quit = false;
+    SDL_Event e;
+    
+    // For controlling frame rate
+    const int FPS = 60;
+    const int FRAME_TIME = 1000 / FPS;
+    Uint32 frameStart;
+    int frameTime;
+    
+    // For calculating deltaTime
+    auto lastTime = std::chrono::high_resolution_clock::now();
+    
+    std::cout << "\n--- Starting Rendering Loop ---\n";
+    std::cout << "Use WASD to move, QE to rotate.\n";
+    std::cout << "Press SPACE to trigger the door, ESC to quit.\n";
+    
+    while (!quit) {
+        frameStart = SDL_GetTicks();
+        
+        // Calculate delta time for smooth movement
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
+        lastTime = currentTime;
+        
+        // Handle events
+        while (SDL_PollEvent(&e) != 0) {
+            if (e.type == SDL_QUIT) {
+                quit = true;
+            } else if (e.type == SDL_KEYDOWN) {
+                switch (e.key.keysym.sym) {
+                    case SDLK_ESCAPE:
+                        quit = true;
+                        break;
+                    case SDLK_SPACE:
+                        // Trigger the door
+                        bsp.triggerSector("trigger_door");
+                        std::cout << "Door triggered!" << std::endl;
+                        break;
+                }
+            }
+        }
+        
+        // Handle keyboard state for movement
+        const Uint8* keystates = SDL_GetKeyboardState(NULL);
+        
+        // Calculate forward and right vectors based on view angle
+        Vec2 forward(std::cos(view.angle), std::sin(view.angle));
+        Vec2 right(std::cos(view.angle + PI/2), std::sin(view.angle + PI/2));
+        
+        // Move forward/backward
+        if (keystates[SDL_SCANCODE_W]) {
+            view.position = view.position + forward * moveSpeed;
+        }
+        if (keystates[SDL_SCANCODE_S]) {
+            view.position = view.position - forward * moveSpeed;
+        }
+        
+        // Strafe left/right
+        if (keystates[SDL_SCANCODE_D]) {
+            view.position = view.position + right * moveSpeed;
+        }
+        if (keystates[SDL_SCANCODE_A]) {
+            view.position = view.position - right * moveSpeed;
+        }
+        
+        // Rotate view
+        if (keystates[SDL_SCANCODE_Q]) {
+            view.angle -= rotateSpeed;
+        }
+        if (keystates[SDL_SCANCODE_E]) {
+            view.angle += rotateSpeed;
+        }
+        
+        // Update moving sectors
+        bsp.update(deltaTime);
+        
+        // Render the frame
+        renderer.renderFrame(bsp, view);
+        
+        // Update the SDL texture with our frame buffer
+        SDL_UpdateTexture(texture, NULL, renderer.getFrameBuffer(), SCREEN_WIDTH * 4);
+        
+        // Clear the SDL renderer and render the texture
+        SDL_RenderClear(sdlRenderer);
+        SDL_RenderCopy(sdlRenderer, texture, NULL, NULL);
+        SDL_RenderPresent(sdlRenderer);
+        
+        // Cap the frame rate
+        frameTime = SDL_GetTicks() - frameStart;
+        if (frameTime < FRAME_TIME) {
+            SDL_Delay(FRAME_TIME - frameTime);
+        }
+    }
+    
+    // Clean up SDL resources
+    SDL_DestroyTexture(texture);
+    SDL_DestroyRenderer(sdlRenderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+}
+
 int main() {
-    std::cout << "PureDoom - Enhanced BSP Tree Implementation\n";
-    std::cout << "===========================================\n\n";
+    std::cout << "PureDoom - Enhanced BSP Tree Implementation with Renderer\n";
+    std::cout << "=======================================================\n\n";
     
     // Create enhanced test map
     std::vector<Sector> testMap = createEnhancedTestMap();
@@ -303,24 +469,12 @@ int main() {
         // Validate the BSP tree
         if (bsp.validate()) {
             std::cout << "BSP tree validation successful.\n";
+            
+            // Start the SDL renderer
+            renderWithSDL(bsp);
         } else {
             std::cout << "Warning: BSP tree validation failed.\n";
         }
-        
-        // Test rendering from a viewpoint
-        std::cout << "\n--- Rendering Test ---\n";
-        Vec2 viewPos(5.0f, 5.0f);
-        float viewAngle = 0.0f;  // Looking east
-        float fov = 90.0f;       // 90 degree field of view
-        
-        bsp.render(viewPos, viewAngle, fov);
-        
-        // Run enhanced tests
-        testEnhancedCollision(bsp);
-        testSectorVisibility(bsp);
-        testMovingSectors(bsp);
-        
-        std::cout << "\nEnhanced BSP tree tests completed successfully.\n";
     }
     catch(const std::exception& e) {
         std::cerr << "Exception caught: " << e.what() << std::endl;
