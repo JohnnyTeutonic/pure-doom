@@ -6,11 +6,18 @@
 #include <stdexcept>
 #include <limits>
 #include <chrono>
+#include <thread>
+
+// Include CUDA renderer
+#include "RendererCuda.h"
 
 namespace PureDoom {
 
-// Color utilities
-Color Color::fromHSV(float h, float s, float v) {
+// Color utilities - only use these implementations when not compiling with CUDA
+#if !defined(__CUDACC__) && !defined(ENABLE_CUDA)
+namespace CPUImpl {
+// Helper functions without Color:: qualification
+static Color fromHSV_impl(float h, float s, float v) {
     if (s <= 0.0f) return Color(static_cast<uint8_t>(v * 255), 
                                static_cast<uint8_t>(v * 255), 
                                static_cast<uint8_t>(v * 255));
@@ -37,7 +44,7 @@ Color Color::fromHSV(float h, float s, float v) {
                 static_cast<uint8_t>(b * 255));
 }
 
-Color Color::blend(const Color& c1, const Color& c2, float t) {
+static Color blend_impl(const Color& c1, const Color& c2, float t) {
     t = std::max(0.0f, std::min(1.0f, t));
     float invT = 1.0f - t;
     
@@ -48,6 +55,17 @@ Color Color::blend(const Color& c1, const Color& c2, float t) {
         static_cast<uint8_t>(c1.a * invT + c2.a * t)
     );
 }
+} // namespace CPUImpl
+
+// Forward the static method calls to the implementation
+Color Color::fromHSV(float h, float s, float v) {
+    return CPUImpl::fromHSV_impl(h, s, v);
+}
+
+Color Color::blend(const Color& c1, const Color& c2, float t) {
+    return CPUImpl::blend_impl(c1, c2, t);
+}
+#endif
 
 // Texture implementation
 Texture::Texture(int width, int height) : m_width(width), m_height(height) {
@@ -124,14 +142,77 @@ void Texture::generateCheckerboard() {
 
 // Renderer implementation
 Renderer::Renderer(int width, int height) : m_width(width), m_height(height) {
-    m_frameBuffer.resize(width * height);
-    m_zBuffer.resize(width * height, std::numeric_limits<float>::max());
-    m_wallExtents.resize(width);
+    m_frameBuffer.resize(width * height, Color(0, 0, 0));
+    m_zBuffer.resize(width * height, std::numeric_limits<float>::infinity());
+    m_wallExtents.resize(width, WallExtent());
+    
+    // Initialize GPU acceleration flag
+    m_gpuAccelerationEnabled = true;
+    
+    // Set up minimap defaults
+    m_minimapEnabled = true;
+    m_minimapSize = std::min(width, height) / 4;  // 1/4 of the smaller dimension
+    m_minimapX = width - m_minimapSize - 10;     // Right corner
+    m_minimapY = 10;                           // Top corner
+    m_minimapScale = 0.1f;                     // Scale factor for world to minimap coordinates
+    
+    // Load textures
+    loadTextures();
+    
+    // Load sprite textures
+    loadSpriteTextures();
 }
 
 Renderer::~Renderer() {
     // Clean up TextureLoader
     TextureLoader::shutdown();
+    
+    // Free any resources
+    m_textures.clear();
+    m_sprites.clear();
+}
+
+// Move constructor
+Renderer::Renderer(Renderer&& other) noexcept
+    : m_width(other.m_width), 
+      m_height(other.m_height),
+      m_frameBuffer(std::move(other.m_frameBuffer)),
+      m_zBuffer(std::move(other.m_zBuffer)),
+      m_textures(std::move(other.m_textures)),
+      m_sprites(std::move(other.m_sprites)),
+      m_skybox(std::move(other.m_skybox)),
+      m_gpuAccelerationEnabled(other.m_gpuAccelerationEnabled),
+      m_cudaRenderer(std::move(other.m_cudaRenderer)),
+      m_wallExtents(std::move(other.m_wallExtents)),
+      m_visplanes(std::move(other.m_visplanes)),
+      m_minimapEnabled(other.m_minimapEnabled),
+      m_minimapSize(other.m_minimapSize),
+      m_minimapX(other.m_minimapX),
+      m_minimapY(other.m_minimapY),
+      m_minimapScale(other.m_minimapScale) {
+}
+
+// Move assignment operator
+Renderer& Renderer::operator=(Renderer&& other) noexcept {
+    if (this != &other) {
+        m_width = other.m_width;
+        m_height = other.m_height;
+        m_frameBuffer = std::move(other.m_frameBuffer);
+        m_zBuffer = std::move(other.m_zBuffer);
+        m_textures = std::move(other.m_textures);
+        m_sprites = std::move(other.m_sprites);
+        m_skybox = std::move(other.m_skybox);
+        m_gpuAccelerationEnabled = other.m_gpuAccelerationEnabled;
+        m_cudaRenderer = std::move(other.m_cudaRenderer);
+        m_wallExtents = std::move(other.m_wallExtents);
+        m_visplanes = std::move(other.m_visplanes);
+        m_minimapEnabled = other.m_minimapEnabled;
+        m_minimapSize = other.m_minimapSize;
+        m_minimapX = other.m_minimapX;
+        m_minimapY = other.m_minimapY;
+        m_minimapScale = other.m_minimapScale;
+    }
+    return *this;
 }
 
 void Renderer::initialize() {
@@ -140,9 +221,38 @@ void Renderer::initialize() {
         std::cerr << "Failed to initialize texture loader" << std::endl;
     }
     
-    loadTextures();
-    loadSpriteTextures();
+    // Load textures and sprites if not already loaded
+    if (m_textures.empty()) {
+        loadTextures();
+    }
+    if (m_sprites.empty()) {
+        loadSpriteTextures();
+    }
+    
     clearBuffers();
+    
+    // Initialize CUDA renderer if GPU acceleration is enabled
+    #if defined(ENABLE_CUDA)
+    if (m_gpuAccelerationEnabled) {
+        try {
+            m_cudaRenderer = std::make_unique<RendererCuda>(m_width, m_height);
+            if (!m_cudaRenderer->initialize()) {
+                std::cout << "CUDA initialization failed. Using CPU rendering only." << std::endl;
+                m_cudaRenderer.reset();
+                m_gpuAccelerationEnabled = false;
+            } else {
+                std::cout << "CUDA acceleration enabled for rendering." << std::endl;
+            }
+        }
+        catch (const std::exception& e) {
+            std::cerr << "CUDA renderer initialization failed: " << e.what() << std::endl;
+            m_cudaRenderer.reset();
+            m_gpuAccelerationEnabled = false;
+        }
+    }
+    #else
+    m_gpuAccelerationEnabled = false;
+    #endif
 }
 
 void Renderer::loadTextures() {
@@ -331,12 +441,8 @@ void Renderer::clearBuffers() {
     // Clear the frame buffer to black
     std::fill(m_frameBuffer.begin(), m_frameBuffer.end(), Color(0, 0, 0));
     
-    // Reset the z-buffer
-    std::fill(m_zBuffer.begin(), m_zBuffer.end(), std::numeric_limits<float>::max());
-}
-
-void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const std::vector<Sprite>& sprites) {
-    clearBuffers();
+    // Set Z-buffer to far distance
+    std::fill(m_zBuffer.begin(), m_zBuffer.end(), 1.0f);
     
     // Reset wall extents for this frame
     for (auto& extent : m_wallExtents) {
@@ -346,25 +452,45 @@ void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const s
     
     // Clear visplanes
     m_visplanes.clear();
+}
+
+void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const std::vector<Sprite>& sprites) {
+    // Clear buffers
+    clearBuffers();
     
-    // Calculate delta time for this frame (using a fixed value for now)
-    // In a real implementation, you would pass this as a parameter
-    static auto lastTime = std::chrono::high_resolution_clock::now();
-    auto currentTime = std::chrono::high_resolution_clock::now();
-    float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
-    lastTime = currentTime;
+    // Update skybox state
+    static float deltaTime = 1.0f / 60.0f;
+    m_skybox.update(deltaTime);
     
-    // Render the skybox first (background)
-    renderSkybox(view, deltaTime);
+    // Check if GPU acceleration is available and enabled
+    bool useGPU = isGpuAccelerationEnabled();
     
-    // Render the BSP tree (walls)
-    renderBSP(bsp, view);
+    if (useGPU) {
+        // Copy buffers to GPU
+        m_cudaRenderer->prepareForRendering(m_frameBuffer, m_zBuffer);
+        
+        // Render skybox on GPU
+        m_cudaRenderer->renderSkyboxCuda(view, deltaTime, m_skybox);
+        
+        // Copy results back from GPU
+        m_cudaRenderer->retrieveRenderingResults(m_frameBuffer, m_zBuffer);
+        
+        // CPU rendering for the rest of the scene
+        renderBSP(bsp, view);
+        renderFloorAndCeilingSpans(bsp, view);
+        renderSprites(bsp, view, sprites);
+    } else {
+        // Full CPU rendering pipeline
+        renderSkybox(view, deltaTime);
+        renderBSP(bsp, view);
+        renderFloorAndCeilingSpans(bsp, view);
+        renderSprites(bsp, view, sprites);
+    }
     
-    // Render floors and ceilings using span-based approach
-    renderFloorAndCeilingSpans(bsp, view);
-    
-    // Render sprites
-    renderSprites(bsp, view, sprites);
+    // Render the minimap if enabled
+    if (m_minimapEnabled) {
+        renderMinimap(bsp, view);
+    }
 }
 
 void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
@@ -1259,6 +1385,9 @@ void Renderer::drawPixelWithDepth(int x, int y, float depth, const Color& color)
 
 // New skybox rendering function
 void Renderer::renderSkybox(const ViewPosition& view, float deltaTime) {
+    // Skip if GPU acceleration is enabled - it's handled in renderFrame
+    if (isGpuAccelerationEnabled()) return;
+    
     // Update the skybox state (sun position, colors based on time of day)
     m_skybox.update(deltaTime);
     
@@ -1292,9 +1421,9 @@ void Renderer::renderSkybox(const ViewPosition& view, float deltaTime) {
         // Set depth to maximum for the sky (use step for efficiency)
         for (int x = 0; x < m_width; x += 4) {  // Process in blocks of 4 for efficiency
             for (int i = 0; i < 4 && x + i < m_width; i++) {
-                setDepth(x + i, y, std::numeric_limits<float>::max());
+                setDepth(x + i, y, 1.0f);
                 if (performanceMode && y + 1 < horizonY) {
-                    setDepth(x + i, y + 1, std::numeric_limits<float>::max());
+                    setDepth(x + i, y + 1, 1.0f);
                 }
             }
         }
@@ -1337,6 +1466,9 @@ void Renderer::renderSkybox(const ViewPosition& view, float deltaTime) {
 
 // Draw the sun as a glowing circle
 void Renderer::drawSun(float screenX, float screenY, float sizeDegrees, const Color& color, float intensity) {
+    // Skip if GPU acceleration is enabled - it's handled in renderSkyboxCuda
+    if (isGpuAccelerationEnabled()) return;
+    
     // Convert sun size from degrees to pixels
     // Assuming FOV is mapped to screen width
     float sizePixels = (sizeDegrees / 90.0f) * m_width * 0.5f;
@@ -1396,6 +1528,124 @@ void Renderer::drawSun(float screenX, float screenY, float sizeDegrees, const Co
             }
         }
     }
+}
+
+// Implementation of minimap rendering
+Vec2 Renderer::worldToMinimap(const Vec2& worldPos) const {
+    // Convert from world coordinates to minimap coordinates
+    float minimapCenterX = m_minimapX + m_minimapSize / 2.0f;
+    float minimapCenterY = m_minimapY + m_minimapSize / 2.0f;
+    
+    // Scale and translate the world position to minimap position
+    float minimapX = minimapCenterX + worldPos.x * m_minimapScale;
+    float minimapY = minimapCenterY + worldPos.y * m_minimapScale;
+    
+    return Vec2(minimapX, minimapY);
+}
+
+void Renderer::drawMinimapWall(int x1, int y1, int x2, int y2, const Color& color) {
+    // Bresenham's line algorithm for drawing walls on the minimap
+    int dx = std::abs(x2 - x1);
+    int dy = std::abs(y2 - y1);
+    int sx = (x1 < x2) ? 1 : -1;
+    int sy = (y1 < y2) ? 1 : -1;
+    int err = dx - dy;
+    
+    while (true) {
+        // Draw the point if it's inside the minimap area
+        if (x1 >= m_minimapX && x1 < m_minimapX + m_minimapSize &&
+            y1 >= m_minimapY && y1 < m_minimapY + m_minimapSize) {
+            drawPixel(x1, y1, color);
+        }
+        
+        if (x1 == x2 && y1 == y2) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) {
+            err -= dy;
+            x1 += sx;
+        }
+        if (e2 < dx) {
+            err += dx;
+            y1 += sy;
+        }
+    }
+}
+
+void Renderer::drawMinimapPlayer(int x, int y, float angle, const Color& color) {
+    // Draw player position as a circle
+    int radius = 3;
+    for (int dy = -radius; dy <= radius; dy++) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            if (dx*dx + dy*dy <= radius*radius) {
+                int drawX = x + dx;
+                int drawY = y + dy;
+                if (drawX >= m_minimapX && drawX < m_minimapX + m_minimapSize &&
+                    drawY >= m_minimapY && drawY < m_minimapY + m_minimapSize) {
+                    drawPixel(drawX, drawY, color);
+                }
+            }
+        }
+    }
+    
+    // Draw player direction as a line
+    int dirX = x + static_cast<int>(std::cos(angle) * radius * 2);
+    int dirY = y + static_cast<int>(std::sin(angle) * radius * 2);
+    drawMinimapWall(x, y, dirX, dirY, Color(255, 255, 255)); // White direction line
+}
+
+void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
+    // Draw minimap background
+    for (int y = m_minimapY; y < m_minimapY + m_minimapSize; y++) {
+        for (int x = m_minimapX; x < m_minimapX + m_minimapSize; x++) {
+            drawPixel(x, y, Color(0, 0, 0, 180)); // Semi-transparent black background
+        }
+    }
+    
+    // Draw minimap border
+    for (int x = m_minimapX; x < m_minimapX + m_minimapSize; x++) {
+        drawPixel(x, m_minimapY, Color(255, 255, 255));
+        drawPixel(x, m_minimapY + m_minimapSize - 1, Color(255, 255, 255));
+    }
+    for (int y = m_minimapY; y < m_minimapY + m_minimapSize; y++) {
+        drawPixel(m_minimapX, y, Color(255, 255, 255));
+        drawPixel(m_minimapX + m_minimapSize - 1, y, Color(255, 255, 255));
+    }
+    
+    // Draw all walls from all sectors
+    const std::vector<Sector>& sectors = bsp.getSectors();
+    for (size_t i = 0; i < sectors.size(); i++) {
+        const Sector& sector = sectors[i];
+        
+        for (const Wall& wall : sector.walls) {
+            // Convert world coordinates to minimap coordinates
+            Vec2 start = worldToMinimap(wall.segment.start.position);
+            Vec2 end = worldToMinimap(wall.segment.end.position);
+            
+            // Choose color based on wall type (solid walls vs portals)
+            Color wallColor;
+            if (wall.sectorBack == -1) {
+                wallColor = Color(255, 0, 0); // Red for solid walls
+            } else {
+                wallColor = Color(0, 255, 0); // Green for portals/doorways
+            }
+            
+            // Draw the wall on the minimap
+            drawMinimapWall(
+                static_cast<int>(start.x), static_cast<int>(start.y),
+                static_cast<int>(end.x), static_cast<int>(end.y),
+                wallColor
+            );
+        }
+    }
+    
+    // Draw player position and direction
+    Vec2 playerPos = worldToMinimap(view.position);
+    drawMinimapPlayer(
+        static_cast<int>(playerPos.x),
+        static_cast<int>(playerPos.y),
+        view.angle,
+        Color(0, 0, 255) // Blue for player
+    );
 }
 
 } // namespace PureDoom 

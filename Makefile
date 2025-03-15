@@ -117,6 +117,32 @@ depend:
 .PHONY : depend
 
 #=============================================================================
+# Target rules for targets named cuda_objects
+
+# Build rule for target.
+cuda_objects: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 cuda_objects
+.PHONY : cuda_objects
+
+# fast build rule for target.
+cuda_objects/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cuda_objects.dir/build.make CMakeFiles/cuda_objects.dir/build
+.PHONY : cuda_objects/fast
+
+#=============================================================================
+# Target rules for targets named cpp_objects
+
+# Build rule for target.
+cpp_objects: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 cpp_objects
+.PHONY : cpp_objects
+
+# fast build rule for target.
+cpp_objects/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/build
+.PHONY : cpp_objects/fast
+
+#=============================================================================
 # Target rules for targets named PureDoom
 
 # Build rule for target.
@@ -134,7 +160,7 @@ src/BSPTree.o: src/BSPTree.cpp.o
 
 # target to build an object file
 src/BSPTree.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/BSPTree.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/BSPTree.cpp.o
 .PHONY : src/BSPTree.cpp.o
 
 src/BSPTree.i: src/BSPTree.cpp.i
@@ -142,7 +168,7 @@ src/BSPTree.i: src/BSPTree.cpp.i
 
 # target to preprocess a source file
 src/BSPTree.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/BSPTree.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/BSPTree.cpp.i
 .PHONY : src/BSPTree.cpp.i
 
 src/BSPTree.s: src/BSPTree.cpp.s
@@ -150,15 +176,39 @@ src/BSPTree.s: src/BSPTree.cpp.s
 
 # target to generate assembly for a file
 src/BSPTree.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/BSPTree.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/BSPTree.cpp.s
 .PHONY : src/BSPTree.cpp.s
+
+src/CudaUtils.o: src/CudaUtils.cu.o
+.PHONY : src/CudaUtils.o
+
+# target to build an object file
+src/CudaUtils.cu.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cuda_objects.dir/build.make CMakeFiles/cuda_objects.dir/src/CudaUtils.cu.o
+.PHONY : src/CudaUtils.cu.o
+
+src/CudaUtils.i: src/CudaUtils.cu.i
+.PHONY : src/CudaUtils.i
+
+# target to preprocess a source file
+src/CudaUtils.cu.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cuda_objects.dir/build.make CMakeFiles/cuda_objects.dir/src/CudaUtils.cu.i
+.PHONY : src/CudaUtils.cu.i
+
+src/CudaUtils.s: src/CudaUtils.cu.s
+.PHONY : src/CudaUtils.s
+
+# target to generate assembly for a file
+src/CudaUtils.cu.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cuda_objects.dir/build.make CMakeFiles/cuda_objects.dir/src/CudaUtils.cu.s
+.PHONY : src/CudaUtils.cu.s
 
 src/Renderer.o: src/Renderer.cpp.o
 .PHONY : src/Renderer.o
 
 # target to build an object file
 src/Renderer.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/Renderer.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/Renderer.cpp.o
 .PHONY : src/Renderer.cpp.o
 
 src/Renderer.i: src/Renderer.cpp.i
@@ -166,7 +216,7 @@ src/Renderer.i: src/Renderer.cpp.i
 
 # target to preprocess a source file
 src/Renderer.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/Renderer.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/Renderer.cpp.i
 .PHONY : src/Renderer.cpp.i
 
 src/Renderer.s: src/Renderer.cpp.s
@@ -174,15 +224,39 @@ src/Renderer.s: src/Renderer.cpp.s
 
 # target to generate assembly for a file
 src/Renderer.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/Renderer.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/Renderer.cpp.s
 .PHONY : src/Renderer.cpp.s
+
+src/RendererCuda.o: src/RendererCuda.cu.o
+.PHONY : src/RendererCuda.o
+
+# target to build an object file
+src/RendererCuda.cu.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cuda_objects.dir/build.make CMakeFiles/cuda_objects.dir/src/RendererCuda.cu.o
+.PHONY : src/RendererCuda.cu.o
+
+src/RendererCuda.i: src/RendererCuda.cu.i
+.PHONY : src/RendererCuda.i
+
+# target to preprocess a source file
+src/RendererCuda.cu.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cuda_objects.dir/build.make CMakeFiles/cuda_objects.dir/src/RendererCuda.cu.i
+.PHONY : src/RendererCuda.cu.i
+
+src/RendererCuda.s: src/RendererCuda.cu.s
+.PHONY : src/RendererCuda.s
+
+# target to generate assembly for a file
+src/RendererCuda.cu.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cuda_objects.dir/build.make CMakeFiles/cuda_objects.dir/src/RendererCuda.cu.s
+.PHONY : src/RendererCuda.cu.s
 
 src/Sprite.o: src/Sprite.cpp.o
 .PHONY : src/Sprite.o
 
 # target to build an object file
 src/Sprite.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/Sprite.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/Sprite.cpp.o
 .PHONY : src/Sprite.cpp.o
 
 src/Sprite.i: src/Sprite.cpp.i
@@ -190,7 +264,7 @@ src/Sprite.i: src/Sprite.cpp.i
 
 # target to preprocess a source file
 src/Sprite.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/Sprite.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/Sprite.cpp.i
 .PHONY : src/Sprite.cpp.i
 
 src/Sprite.s: src/Sprite.cpp.s
@@ -198,7 +272,7 @@ src/Sprite.s: src/Sprite.cpp.s
 
 # target to generate assembly for a file
 src/Sprite.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/Sprite.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/Sprite.cpp.s
 .PHONY : src/Sprite.cpp.s
 
 src/TextureLoader.o: src/TextureLoader.cpp.o
@@ -206,7 +280,7 @@ src/TextureLoader.o: src/TextureLoader.cpp.o
 
 # target to build an object file
 src/TextureLoader.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/TextureLoader.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/TextureLoader.cpp.o
 .PHONY : src/TextureLoader.cpp.o
 
 src/TextureLoader.i: src/TextureLoader.cpp.i
@@ -214,7 +288,7 @@ src/TextureLoader.i: src/TextureLoader.cpp.i
 
 # target to preprocess a source file
 src/TextureLoader.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/TextureLoader.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/TextureLoader.cpp.i
 .PHONY : src/TextureLoader.cpp.i
 
 src/TextureLoader.s: src/TextureLoader.cpp.s
@@ -222,7 +296,7 @@ src/TextureLoader.s: src/TextureLoader.cpp.s
 
 # target to generate assembly for a file
 src/TextureLoader.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/TextureLoader.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/TextureLoader.cpp.s
 .PHONY : src/TextureLoader.cpp.s
 
 src/main.o: src/main.cpp.o
@@ -230,7 +304,7 @@ src/main.o: src/main.cpp.o
 
 # target to build an object file
 src/main.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/main.cpp.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/main.cpp.o
 .PHONY : src/main.cpp.o
 
 src/main.i: src/main.cpp.i
@@ -238,7 +312,7 @@ src/main.i: src/main.cpp.i
 
 # target to preprocess a source file
 src/main.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/main.cpp.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/main.cpp.i
 .PHONY : src/main.cpp.i
 
 src/main.s: src/main.cpp.s
@@ -246,7 +320,7 @@ src/main.s: src/main.cpp.s
 
 # target to generate assembly for a file
 src/main.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/main.cpp.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cpp_objects.dir/build.make CMakeFiles/cpp_objects.dir/src/main.cpp.s
 .PHONY : src/main.cpp.s
 
 # Help Target
@@ -258,12 +332,20 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... PureDoom"
+	@echo "... cpp_objects"
+	@echo "... cuda_objects"
 	@echo "... src/BSPTree.o"
 	@echo "... src/BSPTree.i"
 	@echo "... src/BSPTree.s"
+	@echo "... src/CudaUtils.o"
+	@echo "... src/CudaUtils.i"
+	@echo "... src/CudaUtils.s"
 	@echo "... src/Renderer.o"
 	@echo "... src/Renderer.i"
 	@echo "... src/Renderer.s"
+	@echo "... src/RendererCuda.o"
+	@echo "... src/RendererCuda.i"
+	@echo "... src/RendererCuda.s"
 	@echo "... src/Sprite.o"
 	@echo "... src/Sprite.i"
 	@echo "... src/Sprite.s"

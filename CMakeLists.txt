@@ -1,9 +1,33 @@
 cmake_minimum_required(VERSION 3.10)
-project(PureDoom VERSION 0.1.0 LANGUAGES CXX)
+project(PureDoom VERSION 0.1.0 LANGUAGES CXX CUDA)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# CUDA configuration
+set(CMAKE_CUDA_STANDARD 14)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# Use a more reliable approach to separate CUDA and C++ compilation:
+# Add a compiler definition to enable CUDA in our code
+add_compile_definitions(ENABLE_CUDA)
+
+# Important: Enable separable compilation for CUDA code
+set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
+
+# Set CUDA architectures (adjust according to your target GPUs)
+if(${CMAKE_VERSION} VERSION_LESS "3.18.0")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_50,code=sm_50")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_60,code=sm_60")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_70,code=sm_70")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_75,code=sm_75")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_80,code=sm_80")
+    # Add PTX code generation for runtime compilation support
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -gencode arch=compute_80,code=compute_80")
+else()
+    set(CMAKE_CUDA_ARCHITECTURES 50 60 70 75 80)
+endif()
 
 # Find SDL2 package
 find_package(SDL2 REQUIRED)
@@ -41,8 +65,45 @@ endif()
 
 include_directories(${SDL2_IMAGE_INCLUDE_DIRS})
 
-# Add executable
-add_executable(PureDoom
+# Find CUDA libraries (required for GPU acceleration)
+find_package(CUDA REQUIRED)
+include_directories(${CUDA_INCLUDE_DIRS})
+
+# CUDA specific settings
+if(CMAKE_CUDA_COMPILER)
+    # Set CUDA flags
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -std=c++14")
+    
+    # Enable device code linking with proper flags to fix the linking error
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --device-link")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --relocatable-device-code=true")
+    
+    # Add flag to allow host code in device code
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --extended-lambda")
+    
+    # Add verbose PTX generation for debugging
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --ptxas-options=-v")
+    
+    # Add debug info in debug mode
+    set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -G")
+    
+    # Print CUDA info
+    message(STATUS "CUDA compiler: ${CMAKE_CUDA_COMPILER}")
+    message(STATUS "CUDA flags: ${CMAKE_CUDA_FLAGS}")
+    if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.18.0")
+        message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+    endif()
+else()
+    message(WARNING "CUDA compiler not found. GPU acceleration will be disabled.")
+endif()
+
+# Create separate targets for CUDA and C++ to avoid conflicts
+set(CUDA_SOURCES
+    src/CudaUtils.cu
+    src/RendererCuda.cu
+)
+
+set(CPP_SOURCES
     src/main.cpp
     src/BSPTree.cpp
     src/Renderer.cpp
@@ -50,13 +111,33 @@ add_executable(PureDoom
     src/TextureLoader.cpp
 )
 
+# Add object library for CUDA files
+add_library(cuda_objects OBJECT ${CUDA_SOURCES})
+set_target_properties(cuda_objects PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    POSITION_INDEPENDENT_CODE ON
+)
+target_include_directories(cuda_objects PRIVATE src ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+
+# Add object library for C++ files
+add_library(cpp_objects OBJECT ${CPP_SOURCES})
+set_target_properties(cpp_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(cpp_objects PRIVATE src)
+
+# Add executable
+add_executable(PureDoom $<TARGET_OBJECTS:cuda_objects> $<TARGET_OBJECTS:cpp_objects>)
+
 # Include directories
-target_include_directories(PureDoom PRIVATE src)
+target_include_directories(PureDoom PRIVATE src ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 
 # Link libraries
 target_link_libraries(PureDoom 
     ${SDL2_LIBRARIES}
     ${SDL2_IMAGE_LIBRARIES}
+    ${CUDA_LIBRARIES}
+    ${CUDA_CUDA_LIBRARY}
+    ${CUDA_CUDART_LIBRARY}
+    ${CUDA_curand_LIBRARY}
 )
 
 # Set compiler warnings
@@ -75,6 +156,14 @@ set_target_properties(PureDoom
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
+# Optional: Define a fallback macro if CUDA is not available
+if(NOT CMAKE_CUDA_COMPILER)
+    target_compile_definitions(PureDoom PRIVATE NO_CUDA_AVAILABLE)
+endif()
+
 # Print status message
-message(STATUS "Configuring PureDoom with BSP Tree, Renderer, Sprite support, and texture loading")
-message(STATUS "SDL2_IMAGE libraries: ${SDL2_IMAGE_LIBRARIES}") 
+message(STATUS "Configuring PureDoom with BSP Tree, Renderer, Sprite support, texture loading, and CUDA acceleration")
+message(STATUS "SDL2_IMAGE libraries: ${SDL2_IMAGE_LIBRARIES}")
+if(CMAKE_CUDA_COMPILER)
+    message(STATUS "CUDA libraries: ${CUDA_LIBRARIES}")
+endif() 

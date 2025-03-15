@@ -9,12 +9,23 @@
 #include <cstdint>
 #include <string>
 
+// Include CUDA runtime headers only when compiling with CUDA
+#if defined(__CUDACC__) || defined(ENABLE_CUDA)
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+#define CUDA_CALLABLE __host__ __device__
+#else
+#define CUDA_CALLABLE
+// Define empty CUDA attributes for non-CUDA compilation
+#define __host__
+#define __device__
+#endif
+
 // Constant values
 constexpr float PI = 3.14159265358979323846f;
 constexpr float DEG_TO_RAD = PI / 180.0f;
 constexpr float RAD_TO_DEG = 180.0f / PI;
 constexpr float DISTANCE_MULTIPLIER = 120.0f; // Used for projecting wall heights
-
 
 namespace PureDoom {
 
@@ -25,16 +36,25 @@ struct RenderInfo;
 struct WallSlice;
 struct Span;
 class Texture;
+class RendererCuda; // Forward declaration for CUDA renderer
 
 // Color representation (RGBA)
 struct Color {
     uint8_t r, g, b, a;
     
-    Color() : r(0), g(0), b(0), a(255) {}
-    Color(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) : r(r), g(g), b(b), a(a) {}
+    CUDA_CALLABLE Color() : r(0), g(0), b(0), a(255) {}
+    CUDA_CALLABLE Color(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) : r(r), g(g), b(b), a(a) {}
     
+    // Make static methods CUDA-compatible with appropriate implementation for each context
+    #if defined(__CUDACC__) || defined(ENABLE_CUDA)
+    // For CUDA compilation, make these methods available on both host and device
+    __host__ __device__ static Color fromHSV(float h, float s, float v);
+    __host__ __device__ static Color blend(const Color& c1, const Color& c2, float t);
+    #else
+    // For regular C++ compilation
     static Color fromHSV(float h, float s, float v);
     static Color blend(const Color& c1, const Color& c2, float t);
+    #endif
 };
 
 // View position and orientation
@@ -171,7 +191,11 @@ struct Skybox {
             sunAngle = timeOfDay * 2.0f * PI;
             
             // Sun height follows a sine curve (highest at noon, lowest at midnight)
+            #if defined(__CUDACC__)
+            sunHeight = sin((timeOfDay - 0.25f) * 2.0f * PI) * 0.8f;
+            #else
             sunHeight = std::sin((timeOfDay - 0.25f) * 2.0f * PI) * 0.8f;
+            #endif
             
             // Adjust colors based on time of day
             if (timeOfDay < 0.25f || timeOfDay > 0.75f) {
@@ -217,6 +241,14 @@ public:
     Renderer(int width, int height);
     ~Renderer();
     
+    // Add move constructor and move assignment operator
+    Renderer(Renderer&& other) noexcept;
+    Renderer& operator=(Renderer&& other) noexcept;
+    
+    // Delete copy constructor and copy assignment operator (unique_ptr cannot be copied)
+    Renderer(const Renderer&) = delete;
+    Renderer& operator=(const Renderer&) = delete;
+    
     // Set up the renderer
     void initialize();
     
@@ -239,6 +271,18 @@ public:
     // Get the skybox
     Skybox& getSkybox() { return m_skybox; }
     
+    // Enable/disable GPU acceleration
+    void setGpuAccelerationEnabled(bool enabled) { m_gpuAccelerationEnabled = enabled; }
+    bool isGpuAccelerationEnabled() const { return m_gpuAccelerationEnabled && m_cudaRenderer != nullptr; }
+    
+    // Minimap functionality
+    void setMinimapEnabled(bool enabled) { m_minimapEnabled = enabled; }
+    bool isMinimapEnabled() const { return m_minimapEnabled; }
+    void setMinimapSize(int size) { m_minimapSize = size; }
+    int getMinimapSize() const { return m_minimapSize; }
+    void setMinimapPosition(int x, int y) { m_minimapX = x; m_minimapY = y; }
+    void setMinimapScale(float scale) { m_minimapScale = scale; }
+    
 private:
     int m_width;
     int m_height;
@@ -247,6 +291,17 @@ private:
     std::vector<Texture> m_textures;         // Loaded textures
     std::vector<Sprite> m_sprites;           // Sprites to render
     Skybox m_skybox;                         // Skybox for background
+    
+    // Minimap properties
+    bool m_minimapEnabled;                  // Whether to show the minimap
+    int m_minimapSize;                      // Size of the minimap in pixels
+    int m_minimapX;                         // X position of the minimap
+    int m_minimapY;                         // Y position of the minimap
+    float m_minimapScale;                   // Scale factor for minimap (world units to pixels)
+    
+    // CUDA acceleration
+    bool m_gpuAccelerationEnabled;          // Flag for GPU acceleration
+    std::unique_ptr<RendererCuda> m_cudaRenderer; // CUDA renderer
     
     // Wall Y coordinates for each column
     struct WallExtent {
@@ -279,6 +334,12 @@ private:
     
     // Simple floor and ceiling fill (for comparison)
     void renderFloorAndCeilingSimple(const BSPTree& bsp, const ViewPosition& view);
+    
+    // Render minimap
+    void renderMinimap(const BSPTree& bsp, const ViewPosition& view);
+    void drawMinimapWall(int x1, int y1, int x2, int y2, const Color& color);
+    void drawMinimapPlayer(int x, int y, float angle, const Color& color);
+    Vec2 worldToMinimap(const Vec2& worldPos) const;
     
     // Helper methods for rendering
     void drawVerticalLine(int x, int y1, int y2, const Color& color);

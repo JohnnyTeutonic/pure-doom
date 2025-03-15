@@ -373,6 +373,9 @@ void renderWithSDL(BSPTree& bsp) {
     Renderer renderer(renderWidth, renderHeight);
     renderer.initialize();
     
+    // Add GPU acceleration toggle
+    bool gpuAccelerationEnabled = renderer.isGpuAccelerationEnabled();
+    
     // Performance variables
     bool showFPS = true;
     int frameCount = 0;
@@ -389,6 +392,7 @@ void renderWithSDL(BSPTree& bsp) {
     bool keyPressedN = false; // Slow down time
     bool keyPressedK = false; // Increase sun size
     bool keyPressedL = false; // Decrease sun size
+    bool keyPressedG = false; // Toggle GPU acceleration
     
     // Create test sprites
     std::vector<Sprite> sprites = createTestSprites();
@@ -416,11 +420,13 @@ void renderWithSDL(BSPTree& bsp) {
     std::cout << "Window size: " << WINDOW_WIDTH << "x" << WINDOW_HEIGHT << "\n";
     std::cout << "Render resolution: " << renderWidth << "x" << renderHeight << " (scaling factor: " << scalingFactor << ")\n";
     std::cout << "Performance mode: " << (performanceMode ? "ON" : "OFF") << "\n";
+    std::cout << "GPU acceleration: " << (gpuAccelerationEnabled ? "ENABLED" : "DISABLED") << "\n";
     std::cout << "Max view distance: " << maxViewDistance << " units\n";
     std::cout << "Press P to toggle performance mode\n";
     std::cout << "Press O to toggle FPS display\n";
     std::cout << "Press [ to decrease rendering resolution\n";
-    std::cout << "Press ] to increase rendering resolution\n\n";
+    std::cout << "Press ] to increase rendering resolution\n";
+    std::cout << "Press G to toggle GPU acceleration\n\n";
     
     std::cout << "\n--- Starting Rendering Loop ---\n";
     std::cout << "Use WASD to move, QE to rotate, or move the mouse to look around.\n";
@@ -540,6 +546,11 @@ void renderWithSDL(BSPTree& bsp) {
                         // Trigger the door (changed from SPACE to T to avoid conflict with jump)
                         bsp.triggerSector("trigger_door");
                         std::cout << "Door triggered!" << std::endl;
+                        break;
+                    case SDLK_n:
+                        // Toggle minimap
+                        renderer.setMinimapEnabled(!renderer.isMinimapEnabled());
+                        std::cout << "Minimap " << (renderer.isMinimapEnabled() ? "enabled" : "disabled") << std::endl;
                         break;
                 }
             } else if (e.type == SDL_MOUSEMOTION && mouseControlEnabled) {
@@ -670,6 +681,16 @@ void renderWithSDL(BSPTree& bsp) {
             keyPressedL = false;
         }
         
+        // Toggle GPU acceleration (G key)
+        if (keystates[SDL_SCANCODE_G] && !keyPressedG) {
+            keyPressedG = true;
+            gpuAccelerationEnabled = !gpuAccelerationEnabled;
+            renderer.setGpuAccelerationEnabled(gpuAccelerationEnabled);
+            std::cout << "GPU acceleration: " << (gpuAccelerationEnabled ? "ENABLED" : "DISABLED") << std::endl;
+        } else if (!keystates[SDL_SCANCODE_G]) {
+            keyPressedG = false;
+        }
+        
         // Recreate renderer if needed (resolution change)
         if (recreateRenderer) {
             // Destroy old texture
@@ -682,9 +703,13 @@ void renderWithSDL(BSPTree& bsp) {
                                              renderWidth, 
                                              renderHeight);
             
-            // Create new renderer
-            renderer = Renderer(renderWidth, renderHeight);
+            // Create new renderer (properly handling unique_ptr ownership)
+            // Using std::move to transfer ownership since Renderer contains a unique_ptr
+            renderer = std::move(Renderer(renderWidth, renderHeight));
             renderer.initialize();
+            
+            // Restore GPU acceleration setting
+            renderer.setGpuAccelerationEnabled(gpuAccelerationEnabled);
             
             // Reset flag
             recreateRenderer = false;
@@ -817,7 +842,8 @@ int main() {
     std::cout << "- Texture mapping with perspective correction\n";
     std::cout << "- Visplane optimization for efficient rendering\n";
     std::cout << "- Billboarded sprite rendering for entities\n";
-    std::cout << "- Distance-based fog and lighting effects\n\n";
+    std::cout << "- Distance-based fog and lighting effects\n";
+    std::cout << "- CUDA GPU acceleration for performance-intensive operations\n\n";
     
     // Create enhanced test map
     std::vector<Sector> testMap = createEnhancedTestMap();
