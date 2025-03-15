@@ -1,4 +1,5 @@
 #include "Renderer.h"
+#include "TextureLoader.h"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -81,13 +82,23 @@ Color Texture::sample(float u, float v) const {
 }
 
 void Texture::loadFromFile(const std::string& filename) {
-    // In a real implementation, you'd load an image file
-    // For this example, we'll just generate a pattern
-    m_width = 64;
-    m_height = 64;
-    m_pixels.resize(m_width * m_height);
-    generateCheckerboard();
-    std::cout << "Generated pattern texture instead of loading file: " << filename << std::endl;
+    // Try to load the texture using TextureLoader
+    std::shared_ptr<Texture> loadedTex = TextureLoader::loadTexture(filename);
+    
+    if (loadedTex) {
+        // Copy the loaded texture data
+        m_width = loadedTex->m_width;
+        m_height = loadedTex->m_height;
+        m_pixels = loadedTex->m_pixels;
+        std::cout << "Loaded texture: " << filename << " (" << m_width << "x" << m_height << ")" << std::endl;
+    } else {
+        // Fallback to a procedural pattern if loading fails
+        m_width = 64;
+        m_height = 64;
+        m_pixels.resize(m_width * m_height);
+        generateCheckerboard();
+        std::cout << "Failed to load texture file: " << filename << ", generated fallback pattern instead" << std::endl;
+    }
 }
 
 void Texture::generateCheckerboard() {
@@ -117,123 +128,196 @@ Renderer::Renderer(int width, int height) : m_width(width), m_height(height) {
     m_wallExtents.resize(width);
 }
 
-Renderer::~Renderer() = default;
+Renderer::~Renderer() {
+    // Clean up TextureLoader
+    TextureLoader::shutdown();
+}
 
 void Renderer::initialize() {
+    // Initialize texture loader
+    if (!TextureLoader::initialize()) {
+        std::cerr << "Failed to initialize texture loader" << std::endl;
+    }
+    
     loadTextures();
     loadSpriteTextures();
     clearBuffers();
 }
 
 void Renderer::loadTextures() {
-    // Create some basic textures for testing
-    m_textures.push_back(Texture(64, 64)); // Default checkerboard
+    // First ensure we have a default texture
+    Texture defaultTexture(64, 64); // Default checkerboard
+    m_textures.push_back(defaultTexture);
     
-    // In a real implementation, you'd load various wall textures
-    // For now, we'll create some basic patterns
+    // Now use the TextureLoader to create some procedural textures
+    
+    // Wall textures
     for (int i = 0; i < 10; i++) {
-        Texture tex(64, 64);
-        m_textures.push_back(tex);
+        std::shared_ptr<Texture> tex;
+        
+        if (i % 3 == 0) {
+            tex = TextureLoader::createProceduralTexture(64, 64, "brick");
+        } else if (i % 3 == 1) {
+            tex = TextureLoader::createProceduralTexture(64, 64, "checkerboard");
+        } else {
+            tex = TextureLoader::createProceduralTexture(64, 64, "gradient");
+        }
+        
+        if (tex) {
+            m_textures.push_back(*tex);
+        }
+    }
+    
+    // Try to load some textures from files
+    std::vector<std::string> textureFiles = {
+        "textures/wall1.png", 
+        "textures/wall2.png", 
+        "textures/floor1.png", 
+        "textures/ceiling1.png"
+    };
+    
+    for (const auto& file : textureFiles) {
+        std::shared_ptr<Texture> tex = TextureLoader::loadTexture(file);
+        if (tex) {
+            m_textures.push_back(*tex);
+            std::cout << "Loaded texture: " << file << std::endl;
+        } else {
+            // If file loading failed, add a procedural texture instead
+            tex = TextureLoader::createProceduralTexture(64, 64, "checkerboard");
+            if (tex) {
+                m_textures.push_back(*tex);
+            }
+        }
     }
     
     std::cout << "Loaded " << m_textures.size() << " textures" << std::endl;
 }
 
 void Renderer::loadSpriteTextures() {
-    // In a real implementation, you'd load sprite textures here
-    // For now, we'll create some basic patterns for testing
-
     // List current textures
     std::cout << "Before loading sprite textures, we have " << m_textures.size() << " textures" << std::endl;
 
-    // Create a simple sprite texture with a filled circle
-    Texture spriteTexture(64, 64);
-    int width = spriteTexture.width();
-    int height = spriteTexture.height();
+    // Try to load sprite textures from files first
+    std::vector<std::string> spriteTextureFiles = {
+        "textures/sprite_blue.png",
+        "textures/sprite_green.png",
+        "textures/sprite_red.png"
+    };
     
-    // Add a colored circle sprite texture
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            float centerX = width / 2.0f;
-            float centerY = height / 2.0f;
-            float dx = x - centerX;
-            float dy = y - centerY;
-            float distance = std::sqrt(dx * dx + dy * dy);
+    int blueTextureIndex = -1;
+    int greenTextureIndex = -1;
+    int redTextureIndex = -1;
+    
+    // Try to load from files
+    for (size_t i = 0; i < spriteTextureFiles.size(); i++) {
+        std::shared_ptr<Texture> tex = TextureLoader::loadTexture(spriteTextureFiles[i]);
+        if (tex) {
+            m_textures.push_back(*tex);
             
-            if (distance < width / 2.0f) {
-                // Inside circle
-                float t = distance / (width / 2.0f);
-                Color color = Color::fromHSV(240.0f, 0.7f, 1.0f - t * 0.5f);
-                spriteTexture.m_pixels[y * width + x] = color;
-            } else {
-                // Outside circle (transparent)
-                spriteTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
-            }
+            // Store texture indices
+            if (i == 0) blueTextureIndex = m_textures.size() - 1;
+            else if (i == 1) greenTextureIndex = m_textures.size() - 1;
+            else if (i == 2) redTextureIndex = m_textures.size() - 1;
+            
+            std::cout << "Loaded sprite texture: " << spriteTextureFiles[i] << std::endl;
         }
     }
     
-    m_textures.push_back(spriteTexture);
-    int blueTextureIndex = m_textures.size() - 1;
-    
-    // Add a simple item sprite (gem)
-    Texture itemTexture(64, 64);
-    width = itemTexture.width();
-    height = itemTexture.height();
-    
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            float centerX = width / 2.0f;
-            float centerY = height / 2.0f;
-            float dx = x - centerX;
-            float dy = y - centerY;
-            
-            // Diamond shape
-            float distance = std::abs(dx) + std::abs(dy);
-            
-            if (distance < width / 2.0f) {
-                // Inside diamond
-                float t = distance / (width / 2.0f);
-                Color color = Color::fromHSV(120.0f, 0.8f, 1.0f - t * 0.3f);
-                itemTexture.m_pixels[y * width + x] = color;
-            } else {
-                // Outside diamond (transparent)
-                itemTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
+    // If any textures failed to load, create procedural textures
+    if (blueTextureIndex == -1) {
+        // Create a simple sprite texture with a filled circle
+        Texture spriteTexture(64, 64);
+        int width = spriteTexture.width();
+        int height = spriteTexture.height();
+        
+        // Add a colored circle sprite texture
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                float centerX = width / 2.0f;
+                float centerY = height / 2.0f;
+                float dx = x - centerX;
+                float dy = y - centerY;
+                float distance = std::sqrt(dx * dx + dy * dy);
+                
+                if (distance < width / 2.0f) {
+                    // Inside circle
+                    float t = distance / (width / 2.0f);
+                    Color color = Color::fromHSV(240.0f, 0.7f, 1.0f - t * 0.5f);
+                    spriteTexture.m_pixels[y * width + x] = color;
+                } else {
+                    // Outside circle (transparent)
+                    spriteTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
+                }
             }
         }
+        
+        m_textures.push_back(spriteTexture);
+        blueTextureIndex = m_textures.size() - 1;
     }
     
-    m_textures.push_back(itemTexture);
-    int greenTextureIndex = m_textures.size() - 1;
-    
-    // Create a simple enemy sprite (red diamond)
-    Texture enemyTexture(64, 64);
-    width = enemyTexture.width();
-    height = enemyTexture.height();
-    
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            float centerX = width / 2.0f;
-            float centerY = height / 2.0f;
-            float dx = x - centerX;
-            float dy = y - centerY;
-            
-            // Diamond shape
-            float distance = std::abs(dx) + std::abs(dy);
-            
-            if (distance < width / 2.0f) {
-                // Inside diamond
-                float t = distance / (width / 2.0f);
-                Color color = Color::fromHSV(0.0f, 0.9f, 1.0f - t * 0.3f);
-                enemyTexture.m_pixels[y * width + x] = color;
-            } else {
-                // Outside diamond (transparent)
-                enemyTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
+    if (greenTextureIndex == -1) {
+        // Add a simple item sprite (gem)
+        Texture itemTexture(64, 64);
+        int width = itemTexture.width();
+        int height = itemTexture.height();
+        
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                float centerX = width / 2.0f;
+                float centerY = height / 2.0f;
+                float dx = x - centerX;
+                float dy = y - centerY;
+                
+                // Diamond shape
+                float distance = std::abs(dx) + std::abs(dy);
+                
+                if (distance < width / 2.0f) {
+                    // Inside diamond
+                    float t = distance / (width / 2.0f);
+                    Color color = Color::fromHSV(120.0f, 0.8f, 1.0f - t * 0.3f);
+                    itemTexture.m_pixels[y * width + x] = color;
+                } else {
+                    // Outside diamond (transparent)
+                    itemTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
+                }
             }
         }
+        
+        m_textures.push_back(itemTexture);
+        greenTextureIndex = m_textures.size() - 1;
     }
     
-    m_textures.push_back(enemyTexture);
-    int redTextureIndex = m_textures.size() - 1;
+    if (redTextureIndex == -1) {
+        // Create a simple enemy sprite (red diamond)
+        Texture enemyTexture(64, 64);
+        int width = enemyTexture.width();
+        int height = enemyTexture.height();
+        
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                float centerX = width / 2.0f;
+                float centerY = height / 2.0f;
+                float dx = x - centerX;
+                float dy = y - centerY;
+                
+                // Diamond shape
+                float distance = std::abs(dx) + std::abs(dy);
+                
+                if (distance < width / 2.0f) {
+                    // Inside diamond
+                    float t = distance / (width / 2.0f);
+                    Color color = Color::fromHSV(0.0f, 0.9f, 1.0f - t * 0.3f);
+                    enemyTexture.m_pixels[y * width + x] = color;
+                } else {
+                    // Outside diamond (transparent)
+                    enemyTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
+                }
+            }
+        }
+        
+        m_textures.push_back(enemyTexture);
+        redTextureIndex = m_textures.size() - 1;
+    }
     
     std::cout << "Loaded " << m_textures.size() << " textures (including sprite textures)" << std::endl;
     std::cout << "Blue sprite texture index: " << blueTextureIndex << std::endl;

@@ -201,6 +201,30 @@ src/Sprite.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/Sprite.cpp.s
 .PHONY : src/Sprite.cpp.s
 
+src/TextureLoader.o: src/TextureLoader.cpp.o
+.PHONY : src/TextureLoader.o
+
+# target to build an object file
+src/TextureLoader.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/TextureLoader.cpp.o
+.PHONY : src/TextureLoader.cpp.o
+
+src/TextureLoader.i: src/TextureLoader.cpp.i
+.PHONY : src/TextureLoader.i
+
+# target to preprocess a source file
+src/TextureLoader.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/TextureLoader.cpp.i
+.PHONY : src/TextureLoader.cpp.i
+
+src/TextureLoader.s: src/TextureLoader.cpp.s
+.PHONY : src/TextureLoader.s
+
+# target to generate assembly for a file
+src/TextureLoader.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/PureDoom.dir/build.make CMakeFiles/PureDoom.dir/src/TextureLoader.cpp.s
+.PHONY : src/TextureLoader.cpp.s
+
 src/main.o: src/main.cpp.o
 .PHONY : src/main.o
 
@@ -243,6 +267,9 @@ help:
 	@echo "... src/Sprite.o"
 	@echo "... src/Sprite.i"
 	@echo "... src/Sprite.s"
+	@echo "... src/TextureLoader.o"
+	@echo "... src/TextureLoader.i"
+	@echo "... src/TextureLoader.s"
 	@echo "... src/main.o"
 	@echo "... src/main.i"
 	@echo "... src/main.s"
