@@ -14,7 +14,7 @@ BSPTree::~BSPTree() = default;
 
 // Build the BSP tree from a list of sectors
 void BSPTree::build(const std::vector<Sector>& sectors) {
-    std::cout << "Building BSP tree with " << sectors.size() << " sectors..." << std::endl;
+    //std::cout << "Building BSP tree with " << sectors.size() << " sectors..." << std::endl;
     m_sectors = sectors;
     
     // Clear and populate the tag-to-sectors map
@@ -30,7 +30,7 @@ void BSPTree::build(const std::vector<Sector>& sectors) {
     std::vector<Wall> allWalls;
     for (size_t i = 0; i < sectors.size(); ++i) {
         const Sector& sector = sectors[i];
-        std::cout << "Processing sector " << i << " with " << sector.walls.size() << " walls..." << std::endl;
+        //std::cout << "Processing sector " << i << " with " << sector.walls.size() << " walls..." << std::endl;
         
         for (const Wall& wall : sector.walls) {
             Wall wallCopy = wall;
@@ -41,12 +41,12 @@ void BSPTree::build(const std::vector<Sector>& sectors) {
         }
     }
     
-    std::cout << "Collected " << allWalls.size() << " walls for BSP construction." << std::endl;
+    //std::cout << "Collected " << allWalls.size() << " walls for BSP construction." << std::endl;
     
     // Build the tree recursively
     try {
         m_root = buildTree(std::move(allWalls));
-        std::cout << "BSP Tree built successfully with " << sectors.size() << " sectors.\n";
+        //std::cout << "BSP Tree built successfully with " << sectors.size() << " sectors.\n";
     }
     catch (const std::exception& e) {
         std::cerr << "Exception during BSP construction: " << e.what() << std::endl;
@@ -60,24 +60,32 @@ void BSPTree::build(const std::vector<Sector>& sectors) {
 
 // Recursive function to build the BSP tree
 std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
+    static int buildDepth = 0;
+    buildDepth++;
+    
+    std::cout << "DEBUG: buildTree depth=" << buildDepth << ", walls=" << walls.size() << std::endl;
+    
     // If no walls are left, return nullptr (empty space)
     if (walls.empty()) {
-        std::cout << "No walls left, returning nullptr." << std::endl;
+        std::cout << "DEBUG: No walls left at depth " << buildDepth << ", returning nullptr" << std::endl;
+        buildDepth--;
         return nullptr;
     }
     
     // If only one wall is left, create a leaf node
     if (walls.size() == 1) {
-        std::cout << "Single wall, creating leaf node with sector ID: " << walls[0].sectorFront << std::endl;
+        std::cout << "DEBUG: Single wall at depth " << buildDepth << ", creating leaf node with sector ID: " 
+                 << walls[0].sectorFront << std::endl;
         auto node = std::make_unique<BSPNode>();
         node->isLeaf = true;
         node->sectorId = walls[0].sectorFront;
         node->walls.push_back(walls[0]); // Copy the wall instead of moving the entire vector
+        buildDepth--;
         return node;
     }
     
     // Find the best splitter among the walls
-    std::cout << "Finding best splitter among " << walls.size() << " walls..." << std::endl;
+    std::cout << "DEBUG: Finding best splitter among " << walls.size() << " walls at depth " << buildDepth << std::endl;
     Line splitter = findBestSplitter(walls);
     
     // Create the node with this splitter
@@ -87,23 +95,23 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
     std::vector<Wall> frontWalls;
     std::vector<Wall> backWalls;
     
-    std::cout << "Classifying walls..." << std::endl;
+    //std::cout << "Classifying walls..." << std::endl;
     for (const Wall& wall : walls) {
         SplitType splitType = classifyWall(wall, splitter);
         
         switch (splitType) {
             case SplitType::FRONT:
-                std::cout << "Wall classified as FRONT" << std::endl;
+                //std::cout << "Wall classified as FRONT" << std::endl;
                 frontWalls.push_back(wall);
                 break;
                 
             case SplitType::BACK:
-                std::cout << "Wall classified as BACK" << std::endl;
+                //std::cout << "Wall classified as BACK" << std::endl;
                 backWalls.push_back(wall);
                 break;
                 
             case SplitType::SPANNING: {
-                std::cout << "Wall classified as SPANNING, splitting..." << std::endl;
+                //std::cout << "Wall classified as SPANNING, splitting..." << std::endl;
                 // Wall spans the splitter - split it into two
                 Wall frontPart, backPart;
                 splitWall(wall, splitter, frontPart, backPart);
@@ -113,19 +121,19 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
             }
             
             case SplitType::COLINEAR:
-                std::cout << "Wall classified as COLINEAR" << std::endl;
+                //std::cout << "Wall classified as COLINEAR" << std::endl;
                 // Add to front side by convention
                 frontWalls.push_back(wall);
                 break;
         }
     }
     
-    std::cout << "Walls distributed: " << frontWalls.size() << " front, " << backWalls.size() << " back" << std::endl;
+    //std::cout << "Walls distributed: " << frontWalls.size() << " front, " << backWalls.size() << " back" << std::endl;
     
     // Check if we're making progress in splitting the walls
     if ((frontWalls.size() == walls.size() && backWalls.empty()) || 
         (backWalls.size() == walls.size() && frontWalls.empty())) {
-        std::cout << "Warning: No progress in splitting walls. Using different approach." << std::endl;
+        std::cout << "DEBUG: No progress in splitting walls at depth " << buildDepth << ". Creating leaf node." << std::endl;
         
         // If we're not making progress, just make a leaf node with all walls
         auto leafNode = std::make_unique<BSPNode>();
@@ -138,7 +146,7 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
                 commonSector = wall.sectorFront;
             } else if (commonSector != wall.sectorFront) {
                 // If walls belong to different sectors, use the first one
-                std::cout << "Warning: Walls belong to different sectors in leaf node." << std::endl;
+                std::cout << "DEBUG: Walls belong to different sectors in leaf node at depth " << buildDepth << std::endl;
                 break;
             }
         }
@@ -146,20 +154,30 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
         leafNode->sectorId = (commonSector != -1) ? commonSector : walls[0].sectorFront;
         leafNode->walls = walls; // Copy all walls
         
+        std::cout << "DEBUG: Created special leaf node with " << walls.size() << " walls at depth " << buildDepth << std::endl;
+        buildDepth--;
         return leafNode;
     }
     
     // Recursively build the front and back subtrees
-    std::cout << "Building front subtree..." << std::endl;
+    std::cout << "DEBUG: Building front subtree with " << frontWalls.size() << " walls at depth " << buildDepth << std::endl;
     if (!frontWalls.empty()) {
         node->front = buildTree(std::move(frontWalls));
+        std::cout << "DEBUG: Front subtree built successfully at depth " << buildDepth << std::endl;
+    } else {
+        std::cout << "DEBUG: No front walls, skipping front subtree at depth " << buildDepth << std::endl;
     }
     
-    std::cout << "Building back subtree..." << std::endl;
+    std::cout << "DEBUG: Building back subtree with " << backWalls.size() << " walls at depth " << buildDepth << std::endl;
     if (!backWalls.empty()) {
         node->back = buildTree(std::move(backWalls));
+        std::cout << "DEBUG: Back subtree built successfully at depth " << buildDepth << std::endl;
+    } else {
+        std::cout << "DEBUG: No back walls, skipping back subtree at depth " << buildDepth << std::endl;
     }
     
+    std::cout << "DEBUG: Completed building node at depth " << buildDepth << std::endl;
+    buildDepth--;
     return node;
 }
 
@@ -974,23 +992,36 @@ void BSPTree::update(float deltaTime) {
         // Rebuild the BSP tree with the updated sectors
         std::cout << "Moving sectors updated. Rebuilding BSP tree..." << std::endl;
         
+        std::cout << "DEBUG: Starting BSP rebuild - collecting walls from " << m_sectors.size() << " sectors" << std::endl;
+        
         // Collect all walls from all sectors
         std::vector<Wall> allWalls;
-        for (size_t i = 0; i < m_sectors.size(); ++i) {
-            const Sector& sector = m_sectors[i];
-            
-            for (const Wall& wall : sector.walls) {
-                Wall wallCopy = wall;
-                if (wallCopy.sectorFront == -1) {
-                    wallCopy.sectorFront = static_cast<int>(i);
+        try {
+            for (size_t i = 0; i < m_sectors.size(); ++i) {
+                const Sector& sector = m_sectors[i];
+                std::cout << "DEBUG: Processing sector " << i << " with " << sector.walls.size() << " walls" << std::endl;
+                
+                for (const Wall& wall : sector.walls) {
+                    Wall wallCopy = wall;
+                    if (wallCopy.sectorFront == -1) {
+                        wallCopy.sectorFront = static_cast<int>(i);
+                    }
+                    allWalls.push_back(wallCopy);
                 }
-                allWalls.push_back(wallCopy);
             }
+            
+            std::cout << "DEBUG: Collected " << allWalls.size() << " walls for BSP rebuild" << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "ERROR: Exception during wall collection: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "ERROR: Unknown exception during wall collection!" << std::endl;
         }
         
         // Rebuild the tree
         try {
+            std::cout << "DEBUG: Starting BSP tree building with " << allWalls.size() << " walls" << std::endl;
             m_root = buildTree(std::move(allWalls));
+            std::cout << "DEBUG: BSP tree rebuilding completed successfully" << std::endl;
         }
         catch (const std::exception& e) {
             std::cerr << "Exception during BSP rebuild: " << e.what() << std::endl;
@@ -1000,6 +1031,8 @@ void BSPTree::update(float deltaTime) {
             std::cerr << "Unknown exception during BSP rebuild!" << std::endl;
             // Continue with the old BSP tree rather than crashing
         }
+        
+        std::cout << "DEBUG: BSP tree rebuild process completed" << std::endl;
     }
 }
 

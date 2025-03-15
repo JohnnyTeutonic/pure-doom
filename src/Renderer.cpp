@@ -302,6 +302,14 @@ void Renderer::loadTextures() {
     }
     
     std::cout << "Loaded " << m_textures.size() << " textures" << std::endl;
+    
+    // Upload textures to GPU immediately if GPU renderer is available
+    #if defined(ENABLE_CUDA)
+    if (m_gpuAccelerationEnabled && m_cudaRenderer) {
+        std::cout << "Uploading " << m_textures.size() << " textures to GPU" << std::endl;
+        m_cudaRenderer->uploadTextures(m_textures);
+    }
+    #endif
 }
 
 void Renderer::loadSpriteTextures() {
@@ -336,105 +344,39 @@ void Renderer::loadSpriteTextures() {
     
     // If any textures failed to load, create procedural textures
     if (blueTextureIndex == -1) {
-        // Create a simple sprite texture with a filled circle
-        Texture spriteTexture(64, 64);
-        int width = spriteTexture.width();
-        int height = spriteTexture.height();
-        
-        // Add a colored circle sprite texture
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                float centerX = width / 2.0f;
-                float centerY = height / 2.0f;
-                float dx = x - centerX;
-                float dy = y - centerY;
-                float distance = std::sqrt(dx * dx + dy * dy);
-                
-                if (distance < width / 2.0f) {
-                    // Inside circle
-                    float t = distance / (width / 2.0f);
-                    Color color = Color::fromHSV(240.0f, 0.7f, 1.0f - t * 0.5f);
-                    spriteTexture.m_pixels[y * width + x] = color;
-                } else {
-                    // Outside circle (transparent)
-                    spriteTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
-                }
-            }
+        std::shared_ptr<Texture> blueTex = TextureLoader::createProceduralTexture(64, 64, "blue");
+        if (blueTex) {
+            m_textures.push_back(*blueTex);
+            blueTextureIndex = m_textures.size() - 1;
         }
-        
-        m_textures.push_back(spriteTexture);
-        blueTextureIndex = m_textures.size() - 1;
     }
     
     if (greenTextureIndex == -1) {
-        // Add a simple item sprite (gem)
-        Texture itemTexture(64, 64);
-        int width = itemTexture.width();
-        int height = itemTexture.height();
-        
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                float centerX = width / 2.0f;
-                float centerY = height / 2.0f;
-                float dx = x - centerX;
-                float dy = y - centerY;
-                
-                // Diamond shape
-                float distance = std::abs(dx) + std::abs(dy);
-                
-                if (distance < width / 2.0f) {
-                    // Inside diamond
-                    float t = distance / (width / 2.0f);
-                    Color color = Color::fromHSV(120.0f, 0.8f, 1.0f - t * 0.3f);
-                    itemTexture.m_pixels[y * width + x] = color;
-                } else {
-                    // Outside diamond (transparent)
-                    itemTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
-                }
-            }
+        std::shared_ptr<Texture> greenTex = TextureLoader::createProceduralTexture(64, 64, "green");
+        if (greenTex) {
+            m_textures.push_back(*greenTex);
+            greenTextureIndex = m_textures.size() - 1;
         }
-        
-        m_textures.push_back(itemTexture);
-        greenTextureIndex = m_textures.size() - 1;
     }
     
     if (redTextureIndex == -1) {
-        // Create a simple enemy sprite (red diamond)
-        Texture enemyTexture(64, 64);
-        int width = enemyTexture.width();
-        int height = enemyTexture.height();
-        
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                float centerX = width / 2.0f;
-                float centerY = height / 2.0f;
-                float dx = x - centerX;
-                float dy = y - centerY;
-                
-                // Diamond shape
-                float distance = std::abs(dx) + std::abs(dy);
-                
-                if (distance < width / 2.0f) {
-                    // Inside diamond
-                    float t = distance / (width / 2.0f);
-                    Color color = Color::fromHSV(0.0f, 0.9f, 1.0f - t * 0.3f);
-                    enemyTexture.m_pixels[y * width + x] = color;
-                } else {
-                    // Outside diamond (transparent)
-                    enemyTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
-                }
-            }
+        std::shared_ptr<Texture> redTex = TextureLoader::createProceduralTexture(64, 64, "red");
+        if (redTex) {
+            m_textures.push_back(*redTex);
+            redTextureIndex = m_textures.size() - 1;
         }
-        
-        m_textures.push_back(enemyTexture);
-        redTextureIndex = m_textures.size() - 1;
     }
     
-    std::cout << "Loaded " << m_textures.size() << " textures (including sprite textures)" << std::endl;
-    std::cout << "Blue sprite texture index: " << blueTextureIndex << std::endl;
-    std::cout << "Green sprite texture index: " << greenTextureIndex << std::endl;
-    std::cout << "Red sprite texture index: " << redTextureIndex << std::endl;
-    std::cout << "Sprites in main.cpp should use these texture IDs!" << std::endl;
+    std::cout << "After loading sprite textures, we have " << m_textures.size() << " textures" << std::endl;
+    std::cout << "Sprite texture indices - Blue: " << blueTextureIndex << ", Green: " << greenTextureIndex << ", Red: " << redTextureIndex << std::endl;
+    
+    // Upload the updated textures to GPU if available
+    #if defined(ENABLE_CUDA)
+    if (m_gpuAccelerationEnabled && m_cudaRenderer) {
+        std::cout << "Uploading sprite textures to GPU" << std::endl;
+        m_cudaRenderer->uploadTextures(m_textures);
+    }
+    #endif
 }
 
 void Renderer::clearBuffers() {
@@ -455,63 +397,60 @@ void Renderer::clearBuffers() {
 }
 
 void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const std::vector<Sprite>& sprites) {
-    // Clear buffers
-    clearBuffers();
+    // Store the view position for use in rendering
+    m_viewPosition = view;
     
-    // Update skybox state
+    // Create a non-const copy of the sprites to pass to the new implementation
+    std::vector<Sprite> spritesCopy(sprites.begin(), sprites.end());
+    
+    // Call the updated implementation with default deltaTime
     static float deltaTime = 1.0f / 60.0f;
-    m_skybox.update(deltaTime);
-    
-    // Check if GPU acceleration is available and enabled
-    bool useGPU = isGpuAccelerationEnabled();
-    
-    if (useGPU) {
-        // Upload textures to GPU if needed (first frame or when textures change)
-        static bool texturesUploaded = false;
-        if (!texturesUploaded) {
-            m_cudaRenderer->uploadTextures(m_textures);
-            texturesUploaded = true;
-        }
-        
-        // Pass skybox reference to CUDA renderer
-        m_cudaRenderer->setSkybox(m_skybox);
-        
-        // Serialize BSP tree for CUDA rendering if needed
-        static bool bspUploaded = false;
-        if (!bspUploaded) {
-            m_cudaRenderer->serializeBSPForCuda(bsp);
-            bspUploaded = true;
-        }
-        
-        // Option 1: Optimized approach - render everything on the GPU and retrieve results
-        m_cudaRenderer->renderFrame(bsp, view, sprites, deltaTime);
-        m_cudaRenderer->retrieveRenderingResults(m_frameBuffer, m_zBuffer);
-        
-        /* 
-        // Option 2: Less efficient approach with more copying (kept for reference)
-        // Copy buffers to GPU
-        m_cudaRenderer->prepareForRendering(m_frameBuffer, m_zBuffer);
-        
-        // Render the entire scene on GPU
-        m_cudaRenderer->renderSkyboxCuda(view, deltaTime, m_skybox);
-        m_cudaRenderer->renderBSPCuda(bsp, view, m_skybox.maxViewDistance);
-        m_cudaRenderer->renderFloorAndCeilingCuda(bsp, view);
-        m_cudaRenderer->renderSpritesCuda(bsp, view, sprites);
-        
-        // Copy results back from GPU
-        m_cudaRenderer->retrieveRenderingResults(m_frameBuffer, m_zBuffer);
-        */
-    } else {
-        // Full CPU rendering pipeline
-        renderSkybox(view, deltaTime);
-        renderBSP(bsp, view);
-        renderFloorAndCeilingSpans(bsp, view);
-        renderSprites(bsp, view, sprites);
+    renderFrame(bsp, spritesCopy, deltaTime);
+}
+
+void Renderer::renderFrame(const BSPTree& bsp, std::vector<Sprite>& sprites, float deltaTime) {
+    // Toggle rendering mode if desired
+    if (m_toggleGPU) {
+        m_gpuAccelerationEnabled = !m_gpuAccelerationEnabled;
+        m_toggleGPU = false;
+        std::cout << "Rendering mode changed to: " << (m_gpuAccelerationEnabled ? "GPU" : "CPU") << std::endl;
     }
     
-    // Render the minimap if enabled
-    if (m_minimapEnabled) {
-        renderMinimap(bsp, view);
+    if (m_gpuAccelerationEnabled && m_cudaRenderer) {
+        try {
+            std::cout << "DEBUG: Starting GPU rendering frame" << std::endl;
+            
+            // First, upload any textures that haven't been uploaded yet
+            if (!m_texturesUploaded) {
+                std::cout << "DEBUG: Uploading textures to GPU" << std::endl;
+                m_cudaRenderer->uploadTextures(m_textures);
+                m_texturesUploaded = true;
+                std::cout << "DEBUG: Uploaded " << m_textures.size() << " textures to GPU" << std::endl;
+            }
+            
+            // Update skybox settings in the CUDA renderer
+            m_cudaRenderer->setSkybox(m_skybox);
+            
+            // Perform the entire rendering process on the GPU
+            std::cout << "DEBUG: Before serializing BSP tree to CUDA" << std::endl;
+            m_cudaRenderer->renderFrame(bsp, m_viewPosition, sprites, deltaTime);
+            std::cout << "DEBUG: After rendering frame on GPU" << std::endl;
+            
+            // Retrieve the results back to the host
+            m_cudaRenderer->retrieveRenderingResults(m_frameBuffer, m_zBuffer);
+            std::cout << "DEBUG: GPU rendering frame completed successfully" << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "ERROR in GPU rendering: " << e.what() << std::endl;
+            // Fall back to CPU rendering on error
+            renderCPU(bsp, sprites, deltaTime);
+        } catch (...) {
+            std::cerr << "UNKNOWN ERROR in GPU rendering" << std::endl;
+            // Fall back to CPU rendering on error
+            renderCPU(bsp, sprites, deltaTime);
+        }
+    } else {
+        // CPU rendering path
+        renderCPU(bsp, sprites, deltaTime);
     }
 }
 
@@ -2134,6 +2073,44 @@ void Renderer::setGpuAccelerationEnabled(bool enabled) {
                 m_cudaRenderer->freeBSPData();
             }
         }
+    }
+}
+
+void Renderer::addTexture(const Texture& texture) {
+    // Add to texture list
+    m_textures.push_back(texture);
+    
+    // If GPU acceleration is enabled, upload the updated texture list
+    #if defined(ENABLE_CUDA)
+    if (m_gpuAccelerationEnabled && m_cudaRenderer) {
+        try {
+            std::cout << "Uploading added texture to GPU, total textures: " << m_textures.size() << std::endl;
+            m_cudaRenderer->uploadTextures(m_textures);
+        } catch (const std::exception& e) {
+            std::cerr << "Error uploading new texture to GPU: " << e.what() << std::endl;
+            // Continue using CPU rendering for this texture
+        }
+    }
+    #endif
+}
+
+// CPU-only rendering implementation
+void Renderer::renderCPU(const BSPTree& bsp, std::vector<Sprite>& sprites, float deltaTime) {
+    // Clear buffers
+    clearBuffers();
+    
+    // Update skybox state
+    m_skybox.update(deltaTime);
+    
+    // Full CPU rendering pipeline
+    renderSkybox(m_viewPosition, deltaTime);
+    renderBSP(bsp, m_viewPosition);
+    renderFloorAndCeilingSpans(bsp, m_viewPosition);
+    renderSprites(bsp, m_viewPosition, sprites);
+    
+    // Render the minimap if enabled
+    if (m_minimapEnabled) {
+        renderMinimap(bsp, m_viewPosition);
     }
 }
 

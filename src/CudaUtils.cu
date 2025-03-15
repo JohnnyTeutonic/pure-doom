@@ -184,6 +184,17 @@ __device__ CudaWallCollision castRayBSP(
     collision.collision = false;
     collision.distance = maxDistance;
     
+    // Safety checks for null pointers or empty data
+    if (bsp.nodes == nullptr || bsp.walls == nullptr || bsp.sectors == nullptr || 
+        bsp.nodeCount <= 0 || bsp.wallCount <= 0 || bsp.sectorCount <= 0) {
+        return collision;
+    }
+    
+    // Validate root node index
+    if (bsp.rootNodeIndex < 0 || bsp.rootNodeIndex >= bsp.nodeCount) {
+        return collision;
+    }
+    
     // Stack-based BSP traversal (non-recursive)
     const int MAX_DEPTH = 32; // Maximum tree depth
     int nodeStack[MAX_DEPTH];
@@ -192,23 +203,40 @@ __device__ CudaWallCollision castRayBSP(
     // Start at the root node
     nodeStack[stackPos++] = bsp.rootNodeIndex;
     
-    while (stackPos > 0) {
+    // Prevent infinite loops with a traversal counter
+    int traversalCount = 0;
+    const int MAX_TRAVERSALS = 1000; // Safety limit
+    
+    while (stackPos > 0 && traversalCount < MAX_TRAVERSALS) {
+        traversalCount++;
+        
         // Pop node from stack
         int nodeIndex = nodeStack[--stackPos];
-        if (nodeIndex < 0 || nodeIndex >= bsp.nodeCount) continue;
+        if (nodeIndex < 0 || nodeIndex >= bsp.nodeCount) {
+            continue; // Skip invalid node index
+        }
         
         const CudaBSPNode& node = bsp.nodes[nodeIndex];
         
         if (node.isLeaf) {
+            // Validate wall range
+            if (node.wallStartIndex < 0 || node.wallCount <= 0 || 
+                node.wallStartIndex + node.wallCount > bsp.wallCount) {
+                continue; // Skip invalid wall range
+            }
+            
             // Check all walls in this leaf node
             for (int i = 0; i < node.wallCount; ++i) {
                 int wallIndex = node.wallStartIndex + i;
-                if (wallIndex < 0 || wallIndex >= bsp.wallCount) continue;
+                if (wallIndex < 0 || wallIndex >= bsp.wallCount) {
+                    continue; // Skip invalid wall index
+                }
                 
                 const CudaWall& wall = bsp.walls[wallIndex];
                 float distance, u;
                 
                 if (rayLineIntersection(rayOrigin, rayDir, wall.segment, distance, u)) {
+                    // Ensure the intersection is in front of the ray origin and closer than current closest hit
                     if (distance > 0.0001f && distance < collision.distance) {
                         collision.collision = true;
                         collision.distance = distance;
@@ -216,13 +244,14 @@ __device__ CudaWallCollision castRayBSP(
                         collision.textureId = wall.textureId;
                         collision.texCoordU = u;
                         
-                        // Get sector information
+                        // Get sector information with bounds checking
                         int sectorId = wall.sectorFront;
                         if (sectorId >= 0 && sectorId < bsp.sectorCount) {
                             collision.floorHeight = bsp.sectors[sectorId].floorHeight;
                             collision.ceilingHeight = bsp.sectors[sectorId].ceilingHeight;
                             collision.lightLevel = bsp.sectors[sectorId].lightLevel;
                         } else {
+                            // Use default values for invalid sector
                             collision.floorHeight = 0.0f;
                             collision.ceilingHeight = 1.0f;
                             collision.lightLevel = 255;
@@ -233,9 +262,21 @@ __device__ CudaWallCollision castRayBSP(
                 }
             }
         } else {
+            // Check for valid partitioner points
+            if (isnan(node.partitioner.start.x) || isnan(node.partitioner.start.y) ||
+                isnan(node.partitioner.end.x) || isnan(node.partitioner.end.y)) {
+                continue; // Skip invalid partitioner
+            }
+            
             // Determine which side of the partitioner the ray origin is on
             CudaVec2 toStart = subtract(rayOrigin, node.partitioner.start);
             CudaVec2 partitionerDir = subtract(node.partitioner.end, node.partitioner.start);
+            
+            // Check if partitioner vector is valid
+            if (length(partitionerDir) < 0.0001f) {
+                continue; // Skip degenerate partitioner
+            }
+            
             float side = crossProduct(toStart, partitionerDir);
             
             int nearNodeIndex, farNodeIndex;
@@ -249,22 +290,38 @@ __device__ CudaWallCollision castRayBSP(
                 farNodeIndex = node.frontNodeIndex;
             }
             
-            // Always process the near side first
-            if (nearNodeIndex >= 0) {
-                nodeStack[stackPos++] = nearNodeIndex;
-            }
-            
-            // Check if the ray intersects the partitioner
-            float distance, u;
-            if (rayLineIntersection(rayOrigin, rayDir, node.partitioner, distance, u)) {
-                if (distance > 0.0001f && distance < collision.distance) {
-                    // Ray intersects the partitioner, explore the far side as well
-                    if (farNodeIndex >= 0) {
-                        nodeStack[stackPos++] = farNodeIndex;
+            // Ensure we don't push invalid indices or overflow the stack
+            if (stackPos < MAX_DEPTH - 1) {
+                // Always process the near side first if valid
+                if (nearNodeIndex >= 0 && nearNodeIndex < bsp.nodeCount) {
+                    nodeStack[stackPos++] = nearNodeIndex;
+                }
+                
+                // Check if the ray intersects the partitioner
+                float distance, u;
+                if (rayLineIntersection(rayOrigin, rayDir, node.partitioner, distance, u)) {
+                    // Only consider intersections in front of the ray origin and within max distance
+                    if (distance > 0.0001f && distance < collision.distance) {
+                        // Ray intersects the partitioner, explore the far side as well if valid
+                        if (farNodeIndex >= 0 && farNodeIndex < bsp.nodeCount) {
+                            nodeStack[stackPos++] = farNodeIndex;
+                        }
                     }
                 }
             }
         }
+    }
+    
+    // Ensure reasonable values for collision data
+    if (collision.collision) {
+        // Clamp distance to reasonable range
+        collision.distance = fmaxf(0.0001f, fminf(collision.distance, maxDistance));
+        
+        // Ensure wall height is positive
+        collision.wallHeight = fmaxf(0.1f, collision.wallHeight);
+        
+        // Clamp texture coordinate to [0,1]
+        collision.texCoordU = collision.texCoordU - floorf(collision.texCoordU);
     }
     
     return collision;

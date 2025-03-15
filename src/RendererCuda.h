@@ -24,6 +24,9 @@ public:
     // Initialize the CUDA renderer
     bool initialize();
     
+    // Comprehensive cleanup of all resources
+    void cleanup();
+    
     // Memory management functions
     void allocateBuffers();  // Allocate GPU buffers if not already allocated
     void freeBuffers();      // Free GPU buffers

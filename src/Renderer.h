@@ -274,6 +274,9 @@ public:
     // Render a frame
     void renderFrame(const BSPTree& bsp, const ViewPosition& view, const std::vector<Sprite>& sprites = {});
     
+    // Implementation with different parameter order (for internal use)
+    void renderFrame(const BSPTree& bsp, std::vector<Sprite>& sprites, float deltaTime);
+    
     // Get the rendered frame buffer
     const uint8_t* getFrameBuffer() const { return reinterpret_cast<const uint8_t*>(m_frameBuffer.data()); }
     
@@ -283,6 +286,9 @@ public:
     
     // Add a sprite to the scene (for dynamic sprite creation)
     void addSprite(const Sprite& sprite);
+    
+    // Add a texture to the scene (and upload to GPU if enabled)
+    void addTexture(const Texture& texture);
     
     // Clear all sprites
     void clearSprites();
@@ -306,6 +312,9 @@ public:
     void setShowCollisions(bool show) { m_settings.showCollisions = show; }
     bool isShowingCollisions() const { return m_settings.showCollisions; }
     
+    // CPU-only rendering (fallback when GPU rendering fails)
+    void renderCPU(const BSPTree& bsp, std::vector<Sprite>& sprites, float deltaTime);
+    
 private:
     int m_width;
     int m_height;
@@ -314,6 +323,9 @@ private:
     std::vector<Texture> m_textures;         // Loaded textures
     std::vector<Sprite> m_sprites;           // Sprites to render
     Skybox m_skybox;                         // Skybox for background
+    ViewPosition m_viewPosition;             // Current view position for rendering
+    bool m_texturesUploaded;                 // Flag indicating if textures have been uploaded to GPU
+    bool m_toggleGPU;                        // Flag for toggling GPU rendering
     
     // Minimap properties
     bool m_minimapEnabled;                  // Whether to show the minimap

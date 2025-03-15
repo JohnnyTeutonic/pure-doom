@@ -6,6 +6,7 @@
 #include <iostream>
 #include <stdio.h>
 #include <string>
+#include <stdexcept>
 
 // CUDA compatibility macro
 #ifdef __CUDACC__
@@ -21,9 +22,11 @@ namespace PureDoom {
     { \
         cudaError_t err = call; \
         if (err != cudaSuccess) { \
-            std::cerr << "CUDA error in " << __FILE__ << " at line " << __LINE__ << ": " \
-                      << cudaGetErrorString(err) << std::endl; \
-            exit(EXIT_FAILURE); \
+            std::string errorMsg = "CUDA error in " + std::string(__FILE__) + \
+                                  " at line " + std::to_string(__LINE__) + ": " + \
+                                  std::string(cudaGetErrorString(err)); \
+            std::cerr << errorMsg << std::endl; \
+            throw std::runtime_error(errorMsg); \
         } \
     }
 

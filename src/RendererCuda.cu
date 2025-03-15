@@ -5,6 +5,7 @@
 #include <cmath>      // For std::fmod
 #include <algorithm>  // For std::max, std::min
 #include <vector>     // For BSP serialization
+#include <mutex>      // For std::mutex
 
 // Host and device implementations of Color methods for CUDA kernels
 namespace PureDoom {
@@ -264,7 +265,7 @@ __global__ void sunRenderKernel(Color* frameBuffer, float* zBuffer, int width, i
     }
 }
 
-// Update BSP ray casting kernel to use serialized BSP tree
+// Update BSP ray casting kernel to use serialized BSP tree and textures
 __global__ void bspRenderKernel(
     Color* frameBuffer,
     float* zBuffer,
@@ -276,13 +277,21 @@ __global__ void bspRenderKernel(
     float playerHeight,
     float fov,
     float maxDistance,
-    CudaBSPTree* bspTree)
+    CudaBSPTree* bspTree,
+    CudaRenderData::TextureData* textures,
+    int numTextures)
 {
     // Calculate the current pixel coordinates
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     
     // Early exit if outside screen bounds
     if (x >= width) return;
+    
+    // Early exit if no textures or BSP tree is available
+    if (textures == nullptr || bspTree == nullptr || 
+        bspTree->nodes == nullptr || bspTree->walls == nullptr) {
+        return;
+    }
     
     // Calculate ray angle for this column
     float halfFov = fov * 0.5f * (PI / 180.0f);
@@ -333,15 +342,59 @@ __global__ void bspRenderKernel(
         
         // Draw the wall column
         for (int y = wallTop; y <= wallBottom; y++) {
-            // Calculate texture coordinate V
+            // Calculate texture coordinate V (vertical)
             float wallY = (y - ceilingScreenY) / (floorScreenY - ceilingScreenY);
             
-            // Simple gray color for debugging
-            Color wallColor = Color(
-                (uint8_t)(200 * intensityFactor),
-                (uint8_t)(200 * intensityFactor),
-                (uint8_t)(200 * intensityFactor)
-            );
+            Color wallColor;
+            
+            // Use texture if valid ID, otherwise use gray color
+            if (collision.textureId >= 0 && collision.textureId < numTextures && textures[collision.textureId].pixels != nullptr) {
+                // Get the texture
+                CudaRenderData::TextureData texture = textures[collision.textureId];
+                
+                // Ensure texture has valid dimensions
+                if (texture.width > 0 && texture.height > 0) {
+                    // Sample texture coordinates
+                    float texU = collision.texCoordU;
+                    float texV = wallY;
+                    
+                    // Wrap texture coordinates to [0,1]
+                    texU = texU - floorf(texU);
+                    texV = texV - floorf(texV);
+                    
+                    // Convert to pixel coordinates
+                    int texX = (int)(texU * texture.width);
+                    int texY = (int)(texV * texture.height);
+                    
+                    // Clamp to texture bounds
+                    texX = max(0, min(texture.width - 1, texX));
+                    texY = max(0, min(texture.height - 1, texY));
+                    
+                    // Get texel color
+                    int texIndex = texY * texture.width + texX;
+                    Color texColor = texture.pixels[texIndex];
+                    
+                    // Apply lighting
+                    wallColor.r = (uint8_t)(texColor.r * intensityFactor);
+                    wallColor.g = (uint8_t)(texColor.g * intensityFactor);
+                    wallColor.b = (uint8_t)(texColor.b * intensityFactor);
+                    wallColor.a = texColor.a;
+                } else {
+                    // If texture has invalid dimensions, use fallback color
+                    wallColor = Color(
+                        (uint8_t)(200 * intensityFactor),
+                        (uint8_t)(200 * intensityFactor),
+                        (uint8_t)(200 * intensityFactor)
+                    );
+                }
+            } else {
+                // Fallback to solid color if texture ID is invalid
+                wallColor = Color(
+                    (uint8_t)(200 * intensityFactor),
+                    (uint8_t)(200 * intensityFactor),
+                    (uint8_t)(200 * intensityFactor)
+                );
+            }
             
             // Set pixel with depth
             int idx = y * width + x;
@@ -364,7 +417,11 @@ __global__ void floorRenderKernel(
     float fov,
     float maxDistance,
     float floorHeight,
-    float ceilingHeight)
+    float ceilingHeight,
+    int floorTextureId,
+    int lightLevel,
+    CudaRenderData::TextureData* textures,
+    int numTextures)
 {
     // Calculate the current pixel coordinates
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -372,6 +429,9 @@ __global__ void floorRenderKernel(
     
     // Early exit if outside screen bounds
     if (x >= width || y >= height) return;
+    
+    // Early exit if no textures are available
+    if (textures == nullptr) return;
     
     // Skip if pixel is not in the floor section (below horizon)
     int horizon = height / 2;
@@ -417,142 +477,160 @@ __global__ void floorRenderKernel(
     if (texU < 0) texU += 1.0f;
     if (texV < 0) texV += 1.0f;
     
-    // Apply a checkerboard pattern for demonstration
-    bool isEvenX = (int)worldX % 2 == 0;
-    bool isEvenY = (int)worldY % 2 == 0;
-    bool isCheckerLight = isEvenX != isEvenY;
-    
     // Apply a distance fog effect
     float fogFactor = 1.0f - min(1.0f, distance / maxDistance);
     
-    // Choose color based on checker pattern
-    Color baseColor = isCheckerLight ? Color(80, 80, 80) : Color(40, 40, 40);
+    // Apply lighting factor (0-1) from current sector
+    float lightFactor = min(1.0f, max(0.2f, lightLevel / 255.0f));
     
-    // Apply fog effect
-    Color finalColor = Color(
-        (uint8_t)(baseColor.r * fogFactor),
-        (uint8_t)(baseColor.g * fogFactor),
-        (uint8_t)(baseColor.b * fogFactor)
-    );
+    // Combined lighting and fog
+    float combinedLighting = lightFactor * fogFactor;
     
-    // Set pixel with depth
-    int idx = y * width + x;
+    Color floorColor;
     
-    // Only draw if this point is closer than what's already there
-    if (distance / maxDistance < zBuffer[idx]) {
-        frameBuffer[idx] = finalColor;
-        zBuffer[idx] = distance / maxDistance;
+    // Use actual texture if valid ID, otherwise use checkerboard pattern
+    if (floorTextureId >= 0 && floorTextureId < numTextures && 
+        textures[floorTextureId].pixels != nullptr && 
+        textures[floorTextureId].width > 0 && 
+        textures[floorTextureId].height > 0) {
+        // Get texture info
+        CudaRenderData::TextureData texture = textures[floorTextureId];
+        
+        // Sample the texture
+        int texX = (int)(texU * texture.width);
+        int texY = (int)(texV * texture.height);
+        
+        // Ensure texture coordinates are within bounds
+        texX = max(0, min(texture.width - 1, texX));
+        texY = max(0, min(texture.height - 1, texY));
+        
+        // Get the texel color
+        int texIndex = texY * texture.width + texX;
+        floorColor = texture.pixels[texIndex];
+    } else {
+        // Fallback to checkerboard pattern
+        bool isEvenX = (int)worldX % 2 == 0;
+        bool isEvenY = (int)worldY % 2 == 0;
+        bool isCheckerLight = isEvenX != isEvenY;
+        
+        // Choose color based on checker pattern
+        floorColor = isCheckerLight ? Color(80, 80, 80) : Color(40, 40, 40);
     }
+    
+    // Apply lighting and fog
+    floorColor.r = (uint8_t)(floorColor.r * combinedLighting);
+    floorColor.g = (uint8_t)(floorColor.g * combinedLighting);
+    floorColor.b = (uint8_t)(floorColor.b * combinedLighting);
+    
+    // Set the pixel
+    int idx = y * width + x;
+    frameBuffer[idx] = floorColor;
+    
+    // Update z-buffer - convert distance to normalized depth (0-1)
+    zBuffer[idx] = distance / maxDistance;
 }
 
 // This kernel will be called once per sprite
-__global__ void spriteRenderKernel(
-    Color* frameBuffer,
-    float* zBuffer,
-    int width,
-    int height,
-    float playerX,
-    float playerY,
-    float playerAngle,
-    float playerHeight,
-    float fov,
-    CudaSpriteData sprite,
-    int textureWidth,
-    int textureHeight,
-    Color* textureData)  // We would need to pass texture data to the kernel
-{
-    // Calculate the current pixel coordinates
+__global__ void spriteRenderKernel(Color* frameBuffer, float* zBuffer, 
+                                  int width, int height,
+                                  float playerX, float playerY, float playerAngle, 
+                                  float playerHeight, float fov,
+                                  CudaSpriteData sprite,
+                                  int textureWidth, int textureHeight, 
+                                  Color* texturePixels) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     
-    // Early exit if outside screen bounds or sprite not visible
     if (x >= width || y >= height || !sprite.visible) return;
     
-    // Calculate direction to sprite from player
+    // Safety check for null texture
+    if (texturePixels == nullptr || textureWidth <= 0 || textureHeight <= 0) {
+        // Draw a simple placeholder if texture is missing
+        if (sprite.distance < zBuffer[y * width + x]) {
+            // Draw a simple purple placeholder
+            Color purpleColor;
+            purpleColor.r = 128;
+            purpleColor.g = 0;
+            purpleColor.b = 128;
+            purpleColor.a = 255;
+            frameBuffer[y * width + x] = purpleColor;
+        }
+        return;
+    }
+    
+    // Calculate angle to sprite relative to player view
     float dx = sprite.x - playerX;
     float dy = sprite.y - playerY;
-    
-    // Calculate sprite angle relative to player's view
     float spriteAngle = atan2f(dy, dx);
     
-    // Normalize angles to [0, 2π)
-    while (spriteAngle < 0) spriteAngle += 2 * PI;
-    while (spriteAngle >= 2 * PI) spriteAngle -= 2 * PI;
-    while (playerAngle < 0) playerAngle += 2 * PI;
-    while (playerAngle >= 2 * PI) playerAngle -= 2 * PI;
+    // Adjust sprite angle relative to player angle
+    float angleDiff = spriteAngle - playerAngle;
+    if (angleDiff < -M_PI) angleDiff += 2.0f * M_PI;
+    if (angleDiff > M_PI) angleDiff -= 2.0f * M_PI;
     
-    // Calculate relative angle (accounting for wraparound)
-    float relativeAngle = spriteAngle - playerAngle;
-    if (relativeAngle > PI) relativeAngle -= 2 * PI;
-    if (relativeAngle < -PI) relativeAngle += 2 * PI;
+    // Skip if sprite is behind player (outside field of view + margin)
+    const float fovMargin = 0.2f; // Additional margin beyond FOV
+    if (fabsf(angleDiff) > (fov / 2.0f + fovMargin)) return;
     
-    // Check if sprite is in field of view
-    float halfFovRadians = fov * 0.5f * DEG_TO_RAD;
-    if (fabs(relativeAngle) > halfFovRadians) return;
+    // Calculate sprite position on screen
+    int spriteScreenX = static_cast<int>((0.5f + angleDiff / fov) * width);
     
-    // Calculate screen position of sprite center
-    float normalizedAngle = relativeAngle / halfFovRadians;  // [-1, 1]
-    float screenX = (width / 2.0f) * (1.0f + normalizedAngle);
+    // Calculate sprite dimensions
+    float spriteSize = (height / sprite.distance) * sprite.scale;
+    int spriteWidth = static_cast<int>(spriteSize);
+    int spriteHeight = static_cast<int>(spriteSize);
     
-    // Calculate sprite size on screen
-    float spriteSize = min(height, (int)(height / sprite.distance * sprite.scale * DISTANCE_MULTIPLIER / 120.0f));
-    if (spriteSize <= 0) return;
+    // Skip if sprite is too small
+    if (spriteWidth <= 0 || spriteHeight <= 0) return;
     
-    // Calculate sprite screen coordinates
-    float halfSize = spriteSize / 2.0f;
-    float spriteTopY = height / 2.0f - halfSize;
-    float spriteBottomY = height / 2.0f + halfSize;
-    float spriteLeftX = screenX - halfSize;
-    float spriteRightX = screenX + halfSize;
+    // Calculate sprite screen position
+    int drawStartX = spriteScreenX - spriteWidth / 2;
+    int drawEndX = spriteScreenX + spriteWidth / 2;
     
-    // Calculate this thread's contribution to the sprite
-    float textureU = (x - spriteLeftX) / (spriteRightX - spriteLeftX);
-    float textureV = (y - spriteTopY) / (spriteBottomY - spriteTopY);
+    // Calculate vertical position based on player height
+    float heightOffset = (playerHeight - 0.5f) * 100.0f / sprite.distance;
+    int drawStartY = height / 2 - spriteHeight / 2 + static_cast<int>(heightOffset);
+    int drawEndY = height / 2 + spriteHeight / 2 + static_cast<int>(heightOffset);
     
     // Check if this pixel is within the sprite bounds
-    if (textureU < 0.0f || textureU >= 1.0f || textureV < 0.0f || textureV >= 1.0f) return;
+    if (x < drawStartX || x >= drawEndX || y < drawStartY || y >= drawEndY) return;
     
-    // Sample the texture (simple nearest neighbor sampling)
-    int texX = (int)(textureU * textureWidth);
-    int texY = (int)(textureV * textureHeight);
-    int texIndex = texY * textureWidth + texX;
+    // Calculate texture coordinates using nearest neighbor sampling
+    int texX = static_cast<int>((x - drawStartX) * textureWidth / (float)(drawEndX - drawStartX));
+    int texY = static_cast<int>((y - drawStartY) * textureHeight / (float)(drawEndY - drawStartY));
     
-    // Get the texel color
-    Color texColor = textureData[texIndex];
+    // Clamp texture coordinates
+    texX = max(0, min(texX, textureWidth - 1));
+    texY = max(0, min(texY, textureHeight - 1));
     
-    // Skip transparent pixels
-    if (texColor.a < 10) return;
+    // Get texture color with bounds checking
+    Color texColor;
+    if (texX >= 0 && texX < textureWidth && texY >= 0 && texY < textureHeight) {
+        texColor = texturePixels[texY * textureWidth + texX];
+    } else {
+        // Fallback color if texture coordinates are out of bounds
+        texColor.r = 0;
+        texColor.g = 255;
+        texColor.b = 0;
+        texColor.a = 255;
+        return;
+    }
     
-    // Apply distance-based fog
-    float fogFactor = 1.0f - min(1.0f, sprite.distance / 30.0f);
-    Color finalColor = Color(
-        (uint8_t)(texColor.r * fogFactor),
-        (uint8_t)(texColor.g * fogFactor),
-        (uint8_t)(texColor.b * fogFactor),
-        texColor.a
-    );
+    // Skip if pixel is transparent (alpha < 128)
+    if (texColor.a < 128) return;
     
-    // Calculate the pixel index
-    int idx = y * width + x;
+    // Apply fog effect based on distance
+    float fogFactor = min(1.0f, max(0.0f, sprite.distance / 20.0f));
+    texColor.r = static_cast<uint8_t>(texColor.r * (1.0f - fogFactor));
+    texColor.g = static_cast<uint8_t>(texColor.g * (1.0f - fogFactor));
+    texColor.b = static_cast<uint8_t>(texColor.b * (1.0f - fogFactor));
+    texColor.a = 255; // Ensure fully opaque after fog
     
-    // Apply depth test - only draw if this sprite's pixel is closer than what's already drawn
-    if (sprite.distance < zBuffer[idx] * 30.0f) {  // Convert normalized z-buffer to world distance
-        // Handle alpha blending
-        if (texColor.a < 255) {
-            // Blend with existing color
-            float alpha = texColor.a / 255.0f;
-            Color existingColor = frameBuffer[idx];
-            finalColor = Color(
-                (uint8_t)(existingColor.r * (1.0f - alpha) + finalColor.r * alpha),
-                (uint8_t)(existingColor.g * (1.0f - alpha) + finalColor.g * alpha),
-                (uint8_t)(existingColor.b * (1.0f - alpha) + finalColor.b * alpha),
-                255
-            );
-        }
-        
-        frameBuffer[idx] = finalColor;
-        // Update z-buffer with a slight bias for sprites (0.99) to prevent z-fighting
-        zBuffer[idx] = sprite.distance / 30.0f * 0.99f;
+    // Depth test
+    if (sprite.distance < zBuffer[y * width + x]) {
+        frameBuffer[y * width + x] = texColor;
+        // Don't update z-buffer for partially transparent sprites
+        // zBuffer[y * width + x] = sprite.distance;
     }
 }
 
@@ -589,37 +667,69 @@ RendererCuda::RendererCuda(int width, int height)
 }
 
 RendererCuda::~RendererCuda() {
-    if (m_initialized) {
-        freeCudaMemory();
+    try {
+        cleanup();
+    } catch (const std::exception& e) {
+        std::cerr << "Error during CUDA renderer cleanup in destructor: " << e.what() << std::endl;
     }
-    
-    if (m_cudaData) {
-        delete m_cudaData;
-    }
-    
-    if (m_cudaAvailable) {
-        cleanupCuda();
+}
+
+void RendererCuda::cleanup() {
+    try {
+        if (m_initialized) {
+            freeCudaMemory();
+        }
+        
+        if (m_cudaData) {
+            delete m_cudaData;
+            m_cudaData = nullptr;
+        }
+        
+        if (m_cudaAvailable) {
+            cleanupCuda();
+        }
+        
+        m_initialized = false;
+        m_buffersAllocated = false;
+        m_texturesUploaded = false;
+        m_bspUploaded = false;
+    } catch (const std::exception& e) {
+        std::cerr << "Error in CUDA cleanup: " << e.what() << std::endl;
     }
 }
 
 bool RendererCuda::initialize() {
-    if (!m_cudaAvailable) {
-        std::cout << "CUDA is not available for initialization" << std::endl;
+    try {
+        if (!m_cudaAvailable) {
+            std::cerr << "CUDA is not available for initialization" << std::endl;
+            return false;
+        }
+        
+        // Clean up any existing data
+        cleanup();
+        
+        // Allocate cudaData structure
+        m_cudaData = new CudaRenderData();
+        if (!m_cudaData) {
+            std::cerr << "Failed to allocate CUDA data structure" << std::endl;
+            return false;
+        }
+        
+        m_cudaData->width = m_width;
+        m_cudaData->height = m_height;
+        m_cudaData->d_frameBuffer = nullptr;
+        m_cudaData->d_zBuffer = nullptr;
+        m_cudaData->d_textures = nullptr;
+        m_cudaData->numTextures = 0;
+        m_cudaData->d_bspTree = nullptr;
+        
+        m_initialized = true;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error initializing CUDA renderer: " << e.what() << std::endl;
+        cleanup();
         return false;
     }
-    
-    // Allocate cudaData structure
-    m_cudaData = new CudaRenderData();
-    m_cudaData->width = m_width;
-    m_cudaData->height = m_height;
-    m_cudaData->d_frameBuffer = nullptr;
-    m_cudaData->d_zBuffer = nullptr;
-    m_cudaData->d_textures = nullptr;
-    m_cudaData->numTextures = 0;
-    m_cudaData->d_bspTree = nullptr;
-    
-    m_initialized = true;
-    return true;
 }
 
 void RendererCuda::allocateBuffers() {
@@ -644,19 +754,30 @@ void RendererCuda::freeBuffers() {
         return;  // Not allocated or can't free
     }
     
-    // Free device memory for frame buffer
-    if (m_cudaData->d_frameBuffer) {
-        CUDA_CHECK(cudaFree(m_cudaData->d_frameBuffer));
-        m_cudaData->d_frameBuffer = nullptr;
+    try {
+        // Free device memory for frame buffer
+        if (m_cudaData->d_frameBuffer) {
+            cudaError_t err = cudaFree(m_cudaData->d_frameBuffer);
+            if (err != cudaSuccess) {
+                std::cerr << "Error freeing frame buffer: " << cudaGetErrorString(err) << std::endl;
+            }
+            m_cudaData->d_frameBuffer = nullptr;
+        }
+        
+        // Free device memory for Z-buffer
+        if (m_cudaData->d_zBuffer) {
+            cudaError_t err = cudaFree(m_cudaData->d_zBuffer);
+            if (err != cudaSuccess) {
+                std::cerr << "Error freeing Z-buffer: " << cudaGetErrorString(err) << std::endl;
+            }
+            m_cudaData->d_zBuffer = nullptr;
+        }
+        
+        m_buffersAllocated = false;
+    } catch (const std::exception& e) {
+        std::cerr << "Error in freeBuffers: " << e.what() << std::endl;
+        m_buffersAllocated = false;
     }
-    
-    // Free device memory for Z-buffer
-    if (m_cudaData->d_zBuffer) {
-        CUDA_CHECK(cudaFree(m_cudaData->d_zBuffer));
-        m_cudaData->d_zBuffer = nullptr;
-    }
-    
-    m_buffersAllocated = false;
 }
 
 void RendererCuda::clearBuffers() {
@@ -697,27 +818,32 @@ void RendererCuda::allocateCudaMemory() {
 void RendererCuda::freeCudaMemory() {
     if (!m_cudaAvailable || !m_cudaData) return;
     
-    // Free buffer memory
-    freeBuffers();
-    
-    // Free texture data
-    if (m_cudaData->d_textures) {
-        // Free each texture's pixel data
-        for (int i = 0; i < m_cudaData->numTextures; ++i) {
-            if (m_cudaData->d_textures[i].pixels) {
-                CUDA_CHECK(cudaFree(m_cudaData->d_textures[i].pixels));
+    try {
+        // Free buffer memory
+        freeBuffers();
+        
+        // Free texture data
+        if (m_cudaData->d_textures) {
+            // Free each texture's pixel data
+            for (int i = 0; i < m_cudaData->numTextures; ++i) {
+                if (m_cudaData->d_textures[i].pixels) {
+                    CUDA_CHECK(cudaFree(m_cudaData->d_textures[i].pixels));
+                    m_cudaData->d_textures[i].pixels = nullptr;
+                }
             }
+            
+            // Free the texture array
+            CUDA_CHECK(cudaFree(m_cudaData->d_textures));
+            m_cudaData->d_textures = nullptr;
+            m_cudaData->numTextures = 0;
+            m_texturesUploaded = false;
         }
         
-        // Free the texture array
-        CUDA_CHECK(cudaFree(m_cudaData->d_textures));
-        m_cudaData->d_textures = nullptr;
-        m_cudaData->numTextures = 0;
-        m_texturesUploaded = false;
+        // Free BSP data
+        freeBSPData();
+    } catch (const std::exception& e) {
+        std::cerr << "Error in freeCudaMemory: " << e.what() << std::endl;
     }
-    
-    // Free BSP data
-    freeBSPData();
 }
 
 void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
@@ -729,27 +855,48 @@ void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
         allocateBuffers();
     }
     
-    // Ensure BSP data is uploaded
-    if (!m_bspUploaded) {
-        serializeBSPForCuda(bsp);
+    try {
+        // Ensure BSP data is uploaded - Use a local copy of the BSP tree to prevent race conditions
+        bool needsUpload = !m_bspUploaded;
+        
+        if (needsUpload) {
+            serializeBSPForCuda(bsp);
+            if (!m_bspUploaded) {
+                std::cerr << "Failed to upload BSP data, skipping rendering" << std::endl;
+                return;
+            }
+        }
+        
+        // Clear buffers for new frame
+        clearBuffers();
+        
+        // Render all components directly on the GPU
+        
+        // 1. First render the skybox as the background (includes the ceiling)
+        renderSkyboxCuda(view, deltaTime, m_skybox);
+        
+        // 2. Check if BSP data is still valid before rendering walls
+        if (m_bspUploaded && m_cudaData->d_bspTree) {
+            // 2. Then render BSP walls which will properly occlude parts of the skybox
+            renderBSPCuda(bsp, view, m_skybox.maxViewDistance);
+            
+            // 3. Render floor (ceiling is now handled by skybox)
+            renderFloorCuda(bsp, view);
+        } else {
+            std::cerr << "BSP data became invalid during rendering" << std::endl;
+        }
+        
+        // 4. Finally render sprites on top
+        renderSpritesCuda(bsp, view, sprites);
+        
+        // Ensure all GPU operations are complete
+        cudaError_t err = cudaDeviceSynchronize();
+        if (err != cudaSuccess) {
+            std::cerr << "CUDA sync error: " << cudaGetErrorString(err) << std::endl;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error in renderFrame: " << e.what() << std::endl;
     }
-    
-    // Clear buffers for new frame
-    clearBuffers();
-    
-    // Render all components directly on the GPU
-    
-    // 1. First render the skybox as the background (includes the ceiling)
-    renderSkyboxCuda(view, deltaTime, m_skybox);
-    
-    // 2. Then render BSP walls which will properly occlude parts of the skybox
-    renderBSPCuda(bsp, view, m_skybox.maxViewDistance);
-    
-    // 3. Render floor (ceiling is now handled by skybox)
-    renderFloorCuda(bsp, view);
-    
-    // 4. Finally render sprites on top
-    renderSpritesCuda(bsp, view, sprites);
 }
 
 void RendererCuda::renderSkyboxCuda(const ViewPosition& view, float deltaTime, const Skybox& skybox) {
@@ -852,9 +999,20 @@ void RendererCuda::renderBSPCuda(const BSPTree& bsp, const ViewPosition& view, f
     float playerHeight = view.height;
     float fov = view.fov;
     
-    // Ensure BSP data is uploaded
-    if (!m_bspUploaded) {
-        serializeBSPForCuda(bsp);
+    // Create a static mutex to prevent race conditions when accessing the BSP tree
+    static std::mutex bspAccessMutex;
+    
+    // Try to acquire a lock to check if we need to update BSP data
+    {
+        std::unique_lock<std::mutex> lock(bspAccessMutex, std::try_to_lock);
+        if (lock.owns_lock() && !m_bspUploaded) {
+            try {
+                serializeBSPForCuda(bsp);
+            } catch (const std::exception& e) {
+                std::cerr << "Error serializing BSP for rendering: " << e.what() << std::endl;
+                // Continue with existing data if available
+            }
+        }
     }
     
     // Make sure buffers are allocated
@@ -864,87 +1022,174 @@ void RendererCuda::renderBSPCuda(const BSPTree& bsp, const ViewPosition& view, f
     
     // Ensure BSP data was successfully uploaded
     if (!m_bspUploaded || !m_cudaData->d_bspTree) {
-        std::cout << "Error: BSP data not available for CUDA rendering" << std::endl;
+        std::cerr << "Error: BSP data not available for CUDA rendering" << std::endl;
         return;
+    }
+    
+    // Check if textures are available
+    if (!m_texturesUploaded || !m_cudaData->d_textures || m_cudaData->numTextures <= 0) {
+        std::cerr << "Warning: No textures available for CUDA rendering" << std::endl;
+        // We'll continue and the kernel will handle this case with a fallback
     }
     
     // Determine thread block and grid sizes
     dim3 blockSize(16, 1);  // Use 16 threads per block for simplicity
     dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x);
     
-    // Launch the BSP rendering kernel with the serialized BSP tree
-    bspRenderKernel<<<gridSize, blockSize>>>(
-        m_cudaData->d_frameBuffer,
-        m_cudaData->d_zBuffer,
-        m_width,
-        m_height,
-        playerX,
-        playerY,
-        playerAngle,
-        playerHeight,
-        fov,
-        maxViewDistance,
-        m_cudaData->d_bspTree
-    );
-    
-    // Check for errors
-    CUDA_CHECK(cudaGetLastError());
+    try {
+        // Launch the BSP rendering kernel with the serialized BSP tree and textures
+        bspRenderKernel<<<gridSize, blockSize>>>(
+            m_cudaData->d_frameBuffer,
+            m_cudaData->d_zBuffer,
+            m_width,
+            m_height,
+            playerX,
+            playerY,
+            playerAngle,
+            playerHeight,
+            fov,
+            maxViewDistance,
+            m_cudaData->d_bspTree,
+            m_cudaData->d_textures,
+            m_cudaData->numTextures
+        );
+        
+        // Check for errors
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            std::cerr << "CUDA error in BSP rendering: " << cudaGetErrorString(err) << std::endl;
+        } else {
+            // Sync after kernel execution to catch any delayed errors
+            err = cudaDeviceSynchronize();
+            if (err != cudaSuccess) {
+                std::cerr << "CUDA sync error after BSP rendering: " << cudaGetErrorString(err) << std::endl;
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error in renderBSPCuda: " << e.what() << std::endl;
+    }
 }
 
 void RendererCuda::renderFloorCuda(const BSPTree& bsp, const ViewPosition& view) {
     if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
     
-    // Get player information
-    float playerX = view.position.x;
-    float playerY = view.position.y;
-    float playerAngle = view.angle;
-    float playerHeight = view.height;
-    float fov = view.fov;
-    
-    // Get current sector information (floor and ceiling heights)
-    float floorHeight = 0.0f;
-    float ceilingHeight = 2.0f;  // Default ceiling height
-    int playerSectorId = bsp.findSector(view.position);
-    if (playerSectorId >= 0 && playerSectorId < static_cast<int>(bsp.getSectors().size())) {
-        const Sector& playerSector = bsp.getSectors()[playerSectorId];
-        floorHeight = playerSector.floorHeight;
-        ceilingHeight = playerSector.ceilingHeight;
+    try {
+        // Check if device buffers are allocated
+        if (!m_buffersAllocated || !m_cudaData->d_frameBuffer || !m_cudaData->d_zBuffer) {
+            std::cerr << "Error: CUDA buffers not allocated for floor rendering" << std::endl;
+            return;
+        }
+        
+        // Get player information
+        float playerX = view.position.x;
+        float playerY = view.position.y;
+        float playerAngle = view.angle;
+        float playerHeight = view.height;
+        float fov = view.fov;
+        
+        // Get current sector information (floor and ceiling heights)
+        float floorHeight = 0.0f;
+        float ceilingHeight = 2.0f;  // Default ceiling height
+        int floorTextureId = 0;      // Default floor texture ID
+        int lightLevel = 255;        // Default light level
+        
+        // Create a static mutex to prevent race conditions when accessing the BSP tree
+        static std::mutex bspAccessMutex;
+        
+        // Local copy to prevent race conditions if BSP is being updated
+        std::vector<Sector> sectors;
+        int playerSectorId = -1;
+        
+        // Try to get BSP data with mutex protection
+        {
+            std::unique_lock<std::mutex> lock(bspAccessMutex, std::try_to_lock);
+            
+            if (lock.owns_lock()) {
+                try {
+                    // Only access the BSP if we can lock the mutex
+                    sectors = bsp.getSectors();
+                    playerSectorId = bsp.findSector(view.position);
+                } catch (const std::exception& e) {
+                    std::cerr << "Error accessing BSP data for floor rendering: " << e.what() << std::endl;
+                    // Continue with default values
+                }
+            } else {
+                // Couldn't lock the mutex, BSP might be being updated
+                std::cerr << "Warning: BSP is locked, using default floor values" << std::endl;
+            }
+        }
+        
+        // Use sector data if valid
+        if (playerSectorId >= 0 && playerSectorId < static_cast<int>(sectors.size())) {
+            const Sector& playerSector = sectors[playerSectorId];
+            floorHeight = playerSector.floorHeight;
+            ceilingHeight = playerSector.ceilingHeight;
+            floorTextureId = playerSector.floorTextureId;
+            lightLevel = playerSector.lightLevel;
+        }
+        
+        // Use the maxViewDistance from skybox
+        float maxViewDistance = m_skybox.maxViewDistance;
+        
+        // Check if textures are available
+        if (!m_texturesUploaded || !m_cudaData->d_textures || m_cudaData->numTextures <= 0) {
+            std::cerr << "Warning: No textures available for CUDA floor rendering" << std::endl;
+            // We'll continue and the kernel will handle this case with a fallback
+        }
+        
+        // Determine thread block and grid sizes - use 2D grid for floor
+        dim3 blockSize(16, 16);  // 16x16 threads per block
+        dim3 gridSize(
+            (m_width + blockSize.x - 1) / blockSize.x,
+            (m_height + blockSize.y - 1) / blockSize.y
+        );
+        
+        // Launch the floor rendering kernel
+        floorRenderKernel<<<gridSize, blockSize>>>(
+            m_cudaData->d_frameBuffer,
+            m_cudaData->d_zBuffer,
+            m_width,
+            m_height,
+            playerX,
+            playerY,
+            playerAngle,
+            playerHeight,
+            fov,
+            maxViewDistance,
+            floorHeight,
+            ceilingHeight,
+            floorTextureId,
+            lightLevel,
+            m_cudaData->d_textures,
+            m_cudaData->numTextures
+        );
+        
+        // Check for errors
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            std::cerr << "CUDA error in floor rendering: " << cudaGetErrorString(err) << std::endl;
+        } else {
+            // Sync after kernel execution to catch any delayed errors
+            err = cudaDeviceSynchronize();
+            if (err != cudaSuccess) {
+                std::cerr << "CUDA sync error after floor rendering: " << cudaGetErrorString(err) << std::endl;
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error in renderFloorCuda: " << e.what() << std::endl;
     }
-    
-    // Use the maxViewDistance from skybox
-    float maxViewDistance = m_skybox.maxViewDistance;
-    
-    // Determine thread block and grid sizes - use 2D grid for floor
-    dim3 blockSize(16, 16);  // 16x16 threads per block
-    dim3 gridSize(
-        (m_width + blockSize.x - 1) / blockSize.x,
-        (m_height + blockSize.y - 1) / blockSize.y
-    );
-    
-    // Launch the floor rendering kernel
-    floorRenderKernel<<<gridSize, blockSize>>>(
-        m_cudaData->d_frameBuffer,
-        m_cudaData->d_zBuffer,
-        m_width,
-        m_height,
-        playerX,
-        playerY,
-        playerAngle,
-        playerHeight,
-        fov,
-        maxViewDistance,
-        floorHeight,
-        ceilingHeight
-    );
-    
-    // Check for errors
-    CUDA_CHECK(cudaGetLastError());
 }
 
 void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& view, 
                                    const std::vector<Sprite>& sprites) {
     if (!m_cudaAvailable || !m_initialized || !m_cudaData || sprites.empty()) return;
     
+    // Skip if textures aren't available
+    if (!m_texturesUploaded || !m_cudaData->d_textures || m_cudaData->numTextures <= 0) {
+        std::cerr << "Warning: No textures available for CUDA sprite rendering" << std::endl;
+        return;
+    }
+    
     // Get player information
     float playerX = view.position.x;
     float playerY = view.position.y;
@@ -952,86 +1197,102 @@ void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& vie
     float playerHeight = view.height;
     float fov = view.fov;
     
-    // Sort sprites by distance (farthest to nearest)
-    std::vector<std::pair<float, size_t>> sortedIndices;
-    for (size_t i = 0; i < sprites.size(); ++i) {
-        const Sprite& sprite = sprites[i];
-        
-        // Calculate distance to sprite
-        float dx = sprite.position.x - playerX;
-        float dy = sprite.position.y - playerY;
-        float distance = std::sqrt(dx * dx + dy * dy);
-        
-        // Add to the list of indices to sort
-        sortedIndices.push_back(std::make_pair(distance, i));
-    }
-    
-    // Sort from farthest to nearest
-    std::sort(sortedIndices.begin(), sortedIndices.end(), 
-              [](const std::pair<float, size_t>& a, const std::pair<float, size_t>& b) { 
-                  return a.first > b.first; 
-              });
-    
-    // Iterate through sorted sprites
-    for (size_t i = 0; i < sortedIndices.size(); ++i) {
-        float distance = sortedIndices[i].first;
-        size_t index = sortedIndices[i].second;
-        const Sprite& sprite = sprites[index];
-        
-        // Skip if too far or too close
-        if (distance > 30.0f || distance < 0.1f) continue;
-        
-        // Get the current frame
-        const SpriteFrame& frame = sprite.getCurrentFrame();
-        int textureId = frame.textureId;
-        
-        // Check if the texture ID is valid
-        if (textureId < 0 || textureId >= m_cudaData->numTextures) {
-            std::cerr << "Invalid texture ID for sprite: " << textureId << std::endl;
-            continue;
+    try {
+        // Sort sprites by distance (farthest to nearest)
+        std::vector<std::pair<float, size_t>> sortedIndices;
+        for (size_t i = 0; i < sprites.size(); ++i) {
+            const Sprite& sprite = sprites[i];
+            
+            // Skip invalid sprites
+            if (!sprite.visible) continue;
+            
+            // Calculate distance to sprite
+            float dx = sprite.position.x - playerX;
+            float dy = sprite.position.y - playerY;
+            float distance = std::sqrt(dx * dx + dy * dy);
+            
+            // Add to the list of indices to sort
+            sortedIndices.push_back(std::make_pair(distance, i));
         }
         
-        // Create sprite data for CUDA
-        CudaSpriteData spriteData;
-        spriteData.x = sprite.position.x;
-        spriteData.y = sprite.position.y;
-        spriteData.scale = sprite.scale;
-        spriteData.textureId = textureId;
-        spriteData.type = static_cast<int>(sprite.type);
-        spriteData.distance = distance;
-        spriteData.visible = sprite.visible;
+        // Sort from farthest to nearest
+        std::sort(sortedIndices.begin(), sortedIndices.end(), 
+                [](const std::pair<float, size_t>& a, const std::pair<float, size_t>& b) { 
+                    return a.first > b.first; 
+                });
         
-        // Determine block and grid sizes for the sprite
-        dim3 blockSize(16, 16);
-        dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x,
-                      (m_height + blockSize.y - 1) / blockSize.y);
-        
-        // Get texture information
-        CudaRenderData::TextureData textureData;
-        CUDA_CHECK(cudaMemcpy(&textureData, 
-                            &(m_cudaData->d_textures[textureId]), 
-                            sizeof(CudaRenderData::TextureData), 
-                            cudaMemcpyDeviceToHost));
-        
-        // Launch kernel for this sprite
-        spriteRenderKernel<<<gridSize, blockSize>>>(
-            m_cudaData->d_frameBuffer,
-            m_cudaData->d_zBuffer,
-            m_width,
-            m_height,
-            playerX,
-            playerY, 
-            playerAngle,
-            playerHeight,
-            fov,
-            spriteData,
-            textureData.width,
-            textureData.height,
-            textureData.pixels
-        );
-        
-        // Check for errors
-        CUDA_CHECK(cudaGetLastError());
+        // Iterate through sorted sprites
+        for (size_t i = 0; i < sortedIndices.size(); ++i) {
+            float distance = sortedIndices[i].first;
+            size_t index = sortedIndices[i].second;
+            const Sprite& sprite = sprites[index];
+            
+            // Skip if too far or too close
+            if (distance > 30.0f || distance < 0.1f) continue;
+            
+            // Get the current frame
+            const SpriteFrame& frame = sprite.getCurrentFrame();
+            int textureId = frame.textureId;
+            
+            // Check if the texture ID is valid
+            if (textureId < 0 || textureId >= m_cudaData->numTextures) {
+                // Skip invalid texture ID
+                continue;
+            }
+            
+            // Get texture information
+            CudaRenderData::TextureData textureData;
+            cudaError_t err = cudaMemcpy(&textureData, 
+                                    &(m_cudaData->d_textures[textureId]), 
+                                    sizeof(CudaRenderData::TextureData), 
+                                    cudaMemcpyDeviceToHost);
+            
+            if (err != cudaSuccess || textureData.pixels == nullptr || 
+                textureData.width <= 0 || textureData.height <= 0) {
+                // Skip this sprite if texture is invalid
+                continue;
+            }
+            
+            // Create sprite data for CUDA
+            CudaSpriteData spriteData;
+            spriteData.x = sprite.position.x;
+            spriteData.y = sprite.position.y;
+            spriteData.scale = sprite.scale;
+            spriteData.textureId = textureId;
+            spriteData.type = static_cast<int>(sprite.type);
+            spriteData.distance = distance;
+            spriteData.visible = sprite.visible;
+            
+            // Determine block and grid sizes for the sprite
+            dim3 blockSize(16, 16);
+            dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x,
+                        (m_height + blockSize.y - 1) / blockSize.y);
+            
+            // Launch kernel for this sprite using the Color* type
+            spriteRenderKernel<<<gridSize, blockSize>>>(
+                m_cudaData->d_frameBuffer,
+                m_cudaData->d_zBuffer,
+                m_width,
+                m_height,
+                playerX,
+                playerY, 
+                playerAngle,
+                playerHeight,
+                fov,
+                spriteData,
+                textureData.width,
+                textureData.height,
+                textureData.pixels
+            );
+            
+            // Check for errors
+            cudaError_t kernelErr = cudaGetLastError();
+            if (kernelErr != cudaSuccess) {
+                std::cerr << "CUDA error in sprite rendering: " << cudaGetErrorString(kernelErr) << std::endl;
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error in renderSpritesCuda: " << e.what() << std::endl;
     }
 }
 
@@ -1039,25 +1300,41 @@ void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& vie
 void RendererCuda::uploadTextures(const std::vector<Texture>& textures) {
     if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
     
-    // If textures are already uploaded, free existing memory first
+    // If textures already uploaded, free existing memory first
     if (m_texturesUploaded && m_cudaData->d_textures) {
-        // Free each texture's pixel data
-        for (int i = 0; i < m_cudaData->numTextures; ++i) {
-            if (m_cudaData->d_textures[i].pixels) {
-                CUDA_CHECK(cudaFree(m_cudaData->d_textures[i].pixels));
+        try {
+            // Free each texture's pixel data
+            for (int i = 0; i < m_cudaData->numTextures; ++i) {
+                if (m_cudaData->d_textures[i].pixels) {
+                    CUDA_CHECK(cudaFree(m_cudaData->d_textures[i].pixels));
+                    m_cudaData->d_textures[i].pixels = nullptr;
+                }
             }
+            
+            // Free the texture array
+            CUDA_CHECK(cudaFree(m_cudaData->d_textures));
+            m_cudaData->d_textures = nullptr;
+        } catch (const std::exception& e) {
+            std::cerr << "Error freeing texture memory: " << e.what() << std::endl;
+            // Clean up any remaining state
+            m_cudaData->d_textures = nullptr;
+            m_cudaData->numTextures = 0;
+            m_texturesUploaded = false;
+            return; // Don't attempt to upload new textures if cleanup failed
         }
-        
-        // Free the texture array
-        CUDA_CHECK(cudaFree(m_cudaData->d_textures));
-        m_cudaData->d_textures = nullptr;
     }
     
     // Allocate new texture array
     int numTextures = static_cast<int>(textures.size());
     m_cudaData->numTextures = numTextures;
     
-    if (numTextures > 0) {
+    if (numTextures <= 0) {
+        // If no textures to upload, just mark as not uploaded
+        m_texturesUploaded = false;
+        return;
+    }
+    
+    try {
         // Allocate device memory for texture array
         CUDA_CHECK(cudaMalloc(&m_cudaData->d_textures, numTextures * sizeof(CudaRenderData::TextureData)));
         
@@ -1067,6 +1344,15 @@ void RendererCuda::uploadTextures(const std::vector<Texture>& textures) {
         // Upload each texture
         for (int i = 0; i < numTextures; ++i) {
             const Texture& texture = textures[i];
+            
+            // Skip if texture has no dimensions or pixels
+            if (texture.width() <= 0 || texture.height() <= 0 || texture.m_pixels.empty()) {
+                hostTextures[i].pixels = nullptr;
+                hostTextures[i].width = 0;
+                hostTextures[i].height = 0;
+                continue;
+            }
+            
             int pixelCount = texture.width() * texture.height();
             
             // Allocate device memory for texture pixels
@@ -1074,7 +1360,7 @@ void RendererCuda::uploadTextures(const std::vector<Texture>& textures) {
             
             // Copy texture data to device
             CUDA_CHECK(cudaMemcpy(hostTextures[i].pixels, texture.m_pixels.data(), 
-                              pixelCount * sizeof(Color), cudaMemcpyHostToDevice));
+                                pixelCount * sizeof(Color), cudaMemcpyHostToDevice));
             
             // Set texture dimensions
             hostTextures[i].width = texture.width();
@@ -1083,12 +1369,23 @@ void RendererCuda::uploadTextures(const std::vector<Texture>& textures) {
         
         // Copy the texture array to device
         CUDA_CHECK(cudaMemcpy(m_cudaData->d_textures, hostTextures, 
-                           numTextures * sizeof(CudaRenderData::TextureData), cudaMemcpyHostToDevice));
+                            numTextures * sizeof(CudaRenderData::TextureData), cudaMemcpyHostToDevice));
         
         // Free host-side array
         delete[] hostTextures;
         
         m_texturesUploaded = true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error uploading textures to GPU: " << e.what() << std::endl;
+        
+        // Clean up any allocated memory
+        if (m_cudaData->d_textures) {
+            cudaFree(m_cudaData->d_textures);
+            m_cudaData->d_textures = nullptr;
+        }
+        
+        m_cudaData->numTextures = 0;
+        m_texturesUploaded = false;
     }
 }
 
@@ -1125,136 +1422,361 @@ void RendererCuda::retrieveRenderingResults(std::vector<Color>& frameBuffer, std
 
 // Serializing the BSP tree for CUDA
 void RendererCuda::serializeBSPForCuda(const BSPTree& bsp) {
+    std::cout << "DEBUG: serializeBSPForCuda - Starting serialization" << std::endl;
+    
     if (!m_cudaAvailable || !m_initialized) {
-        std::cout << "Can't serialize BSP: CUDA not available or not initialized" << std::endl;
+        std::cerr << "Can't serialize BSP: CUDA not available or not initialized" << std::endl;
         return;
     }
     
-    // Free existing BSP data if present
-    freeBSPData();
-    
-    // Get the sectors from the BSP tree
-    const std::vector<Sector>& sectors = bsp.getSectors();
-    
-    // Collect all unique walls from all sectors
-    std::vector<CudaWall> wallsData;
-    std::vector<CudaSector> sectorsData;
-    std::vector<CudaBSPNode> nodesData;
-    
-    // First pass: Build sectors and walls
-    for (size_t i = 0; i < sectors.size(); i++) {
-        const Sector& sector = sectors[i];
+    try {
+        // Add a static mutex to synchronize BSP serialization
+        static std::mutex serializeMutex;
+        std::cout << "DEBUG: serializeBSPForCuda - Attempting to acquire mutex" << std::endl;
+        std::lock_guard<std::mutex> lock(serializeMutex);
+        std::cout << "DEBUG: serializeBSPForCuda - Mutex acquired" << std::endl;
         
-        CudaSector cudaSector;
-        cudaSector.wallStartIndex = wallsData.size();
-        cudaSector.wallCount = sector.walls.size();
-        cudaSector.floorHeight = sector.floorHeight;
-        cudaSector.ceilingHeight = sector.ceilingHeight;
-        cudaSector.floorTextureId = sector.floorTextureId;
-        cudaSector.ceilingTextureId = sector.ceilingTextureId;
-        cudaSector.lightLevel = sector.lightLevel;
-        
-        // Add all walls from this sector
-        for (const Wall& wall : sector.walls) {
-            CudaWall cudaWall;
-            
-            // Convert coordinates
-            cudaWall.segment.start.x = wall.segment.start.position.x;
-            cudaWall.segment.start.y = wall.segment.start.position.y;
-            cudaWall.segment.end.x = wall.segment.end.position.x;
-            cudaWall.segment.end.y = wall.segment.end.position.y;
-            
-            // Add other wall properties
-            cudaWall.sectorFront = wall.sectorFront;
-            cudaWall.sectorBack = wall.sectorBack;
-            cudaWall.textureId = wall.textureId;
-            cudaWall.textureOffsetX = wall.textureOffsetX;
-            cudaWall.textureOffsetY = wall.textureOffsetY;
-            cudaWall.lightLevel = sector.lightLevel; // Use sector light level
-            
-            wallsData.push_back(cudaWall);
+        // First make a local deep copy of the BSP tree data to prevent race conditions
+        std::vector<Sector> sectorsCopy;
+        try {
+            std::cout << "DEBUG: serializeBSPForCuda - Getting sectors from BSP tree" << std::endl;
+            sectorsCopy = bsp.getSectors();
+            std::cout << "DEBUG: serializeBSPForCuda - Got " << sectorsCopy.size() << " sectors" << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "Error getting sectors for serialization: " << e.what() << std::endl;
+            return;
         }
         
-        sectorsData.push_back(cudaSector);
+        // Free existing BSP data if present
+        try {
+            std::cout << "DEBUG: serializeBSPForCuda - Freeing existing BSP data" << std::endl;
+            freeBSPData();
+            std::cout << "DEBUG: serializeBSPForCuda - Freed existing BSP data" << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "Error freeing existing BSP data: " << e.what() << std::endl;
+            // Still continue with the upload attempt
+        }
+        
+        // Continue only if we have sectors
+        if (sectorsCopy.empty()) {
+            std::cerr << "No sectors to serialize for CUDA" << std::endl;
+            return;
+        }
+        
+        std::cout << "DEBUG: serializeBSPForCuda - Starting to collect wall data" << std::endl;
+        
+        // Collect all unique walls from all sectors
+        std::vector<CudaWall> wallsData;
+        std::vector<CudaSector> sectorsData;
+        std::vector<CudaBSPNode> nodesData;
+        
+        // Preallocate vectors for better performance
+        size_t totalWalls = 0;
+        for (const auto& sector : sectorsCopy) {
+            totalWalls += sector.walls.size();
+        }
+        wallsData.reserve(totalWalls);
+        sectorsData.reserve(sectorsCopy.size());
+        
+        std::cout << "DEBUG: serializeBSPForCuda - Reserved space for " << totalWalls 
+                 << " walls and " << sectorsCopy.size() << " sectors" << std::endl;
+        
+        // First pass: Build sectors and walls
+        for (size_t i = 0; i < sectorsCopy.size(); i++) {
+            const Sector& sector = sectorsCopy[i];
+            
+            CudaSector cudaSector;
+            cudaSector.wallStartIndex = wallsData.size();
+            cudaSector.wallCount = sector.walls.size();
+            cudaSector.floorHeight = sector.floorHeight;
+            cudaSector.ceilingHeight = sector.ceilingHeight;
+            cudaSector.floorTextureId = sector.floorTextureId;
+            cudaSector.ceilingTextureId = sector.ceilingTextureId;
+            cudaSector.lightLevel = sector.lightLevel;
+            
+            std::cout << "DEBUG: serializeBSPForCuda - Processing sector " << i 
+                     << " with " << sector.walls.size() << " walls" << std::endl;
+            
+            // Add all walls from this sector
+            for (const Wall& wall : sector.walls) {
+                CudaWall cudaWall;
+                
+                // Convert coordinates
+                cudaWall.segment.start.x = wall.segment.start.position.x;
+                cudaWall.segment.start.y = wall.segment.start.position.y;
+                cudaWall.segment.end.x = wall.segment.end.position.x;
+                cudaWall.segment.end.y = wall.segment.end.position.y;
+                
+                // Add other wall properties
+                cudaWall.sectorFront = wall.sectorFront;
+                cudaWall.sectorBack = wall.sectorBack;
+                cudaWall.textureId = wall.textureId;
+                cudaWall.textureOffsetX = wall.textureOffsetX;
+                cudaWall.textureOffsetY = wall.textureOffsetY;
+                cudaWall.lightLevel = sector.lightLevel; // Use sector light level
+                
+                wallsData.push_back(cudaWall);
+            }
+            
+            sectorsData.push_back(cudaSector);
+        }
+        
+        std::cout << "DEBUG: serializeBSPForCuda - Collected " << wallsData.size() 
+                 << " walls into " << sectorsData.size() << " sectors" << std::endl;
+        
+        // Skip if we ended up with no walls
+        if (wallsData.empty()) {
+            std::cerr << "No walls to serialize for CUDA" << std::endl;
+            return;
+        }
+        
+        // For simplicity, create a simple BSP structure
+        // In a more advanced implementation, you would need to serialize the actual BSP tree
+        // but for now, we'll create a single leaf node containing all walls
+        std::cout << "DEBUG: serializeBSPForCuda - Creating root BSP node" << std::endl;
+        CudaBSPNode rootNode;
+        rootNode.isLeaf = true;
+        rootNode.wallStartIndex = 0;
+        rootNode.wallCount = wallsData.size();
+        rootNode.sectorId = 0; // Default to first sector
+        
+        nodesData.push_back(rootNode);
+        
+        // Skip if there's no data to upload
+        if (wallsData.empty() || sectorsData.empty() || nodesData.empty()) {
+            std::cerr << "No BSP data to upload" << std::endl;
+            return;
+        }
+        
+        std::cout << "DEBUG: serializeBSPForCuda - Starting CUDA memory allocation" << std::endl;
+        
+        // Use separate try-catch blocks for each allocation to ensure proper cleanup
+        CudaWall* d_walls = nullptr;
+        CudaSector* d_sectors = nullptr;
+        CudaBSPNode* d_nodes = nullptr;
+        CudaBSPTree* d_bspTree = nullptr;
+        
+        try {
+            // Allocate memory for walls
+            std::cout << "DEBUG: serializeBSPForCuda - Allocating CUDA memory for walls (" 
+                     << wallsData.size() << " walls, " << (wallsData.size() * sizeof(CudaWall)) 
+                     << " bytes)" << std::endl;
+            cudaError_t err = cudaMalloc((void**)&d_walls, wallsData.size() * sizeof(CudaWall));
+            if (err != cudaSuccess) {
+                throw std::runtime_error(std::string("Failed to allocate memory for walls: ") + 
+                                         cudaGetErrorString(err));
+            }
+            std::cout << "DEBUG: serializeBSPForCuda - Allocated CUDA memory for walls at " 
+                     << d_walls << std::endl;
+            
+            // Allocate memory for sectors
+            std::cout << "DEBUG: serializeBSPForCuda - Allocating CUDA memory for sectors (" 
+                     << sectorsData.size() << " sectors, " << (sectorsData.size() * sizeof(CudaSector)) 
+                     << " bytes)" << std::endl;
+            err = cudaMalloc((void**)&d_sectors, sectorsData.size() * sizeof(CudaSector));
+            if (err != cudaSuccess) {
+                throw std::runtime_error(std::string("Failed to allocate memory for sectors: ") + 
+                                         cudaGetErrorString(err));
+            }
+            std::cout << "DEBUG: serializeBSPForCuda - Allocated CUDA memory for sectors at " 
+                     << d_sectors << std::endl;
+            
+            // Allocate memory for nodes
+            std::cout << "DEBUG: serializeBSPForCuda - Allocating CUDA memory for nodes (" 
+                     << nodesData.size() << " nodes, " << (nodesData.size() * sizeof(CudaBSPNode)) 
+                     << " bytes)" << std::endl;
+            err = cudaMalloc((void**)&d_nodes, nodesData.size() * sizeof(CudaBSPNode));
+            if (err != cudaSuccess) {
+                throw std::runtime_error(std::string("Failed to allocate memory for nodes: ") + 
+                                         cudaGetErrorString(err));
+            }
+            std::cout << "DEBUG: serializeBSPForCuda - Allocated CUDA memory for nodes at " 
+                     << d_nodes << std::endl;
+            
+            // Allocate memory for BSP tree
+            std::cout << "DEBUG: serializeBSPForCuda - Allocating CUDA memory for BSP tree structure (" 
+                     << sizeof(CudaBSPTree) << " bytes)" << std::endl;
+            err = cudaMalloc((void**)&d_bspTree, sizeof(CudaBSPTree));
+            if (err != cudaSuccess) {
+                throw std::runtime_error(std::string("Failed to allocate memory for BSP tree: ") + 
+                                         cudaGetErrorString(err));
+            }
+            std::cout << "DEBUG: serializeBSPForCuda - Allocated CUDA memory for BSP tree at " 
+                     << d_bspTree << std::endl;
+            
+            // Copy data to device
+            std::cout << "DEBUG: serializeBSPForCuda - Copying wall data to CUDA device" << std::endl;
+            err = cudaMemcpy(d_walls, wallsData.data(), wallsData.size() * sizeof(CudaWall), cudaMemcpyHostToDevice);
+            if (err != cudaSuccess) {
+                throw std::runtime_error(std::string("Failed to copy walls to device: ") + 
+                                         cudaGetErrorString(err));
+            }
+            std::cout << "DEBUG: serializeBSPForCuda - Wall data copied successfully" << std::endl;
+            
+            std::cout << "DEBUG: serializeBSPForCuda - Copying sector data to CUDA device" << std::endl;
+            err = cudaMemcpy(d_sectors, sectorsData.data(), sectorsData.size() * sizeof(CudaSector), cudaMemcpyHostToDevice);
+            if (err != cudaSuccess) {
+                throw std::runtime_error(std::string("Failed to copy sectors to device: ") + 
+                                         cudaGetErrorString(err));
+            }
+            std::cout << "DEBUG: serializeBSPForCuda - Sector data copied successfully" << std::endl;
+            
+            std::cout << "DEBUG: serializeBSPForCuda - Copying node data to CUDA device" << std::endl;
+            err = cudaMemcpy(d_nodes, nodesData.data(), nodesData.size() * sizeof(CudaBSPNode), cudaMemcpyHostToDevice);
+            if (err != cudaSuccess) {
+                throw std::runtime_error(std::string("Failed to copy nodes to device: ") + 
+                                         cudaGetErrorString(err));
+            }
+            std::cout << "DEBUG: serializeBSPForCuda - Node data copied successfully" << std::endl;
+            
+            // Create device BSP tree structure
+            std::cout << "DEBUG: serializeBSPForCuda - Creating BSP tree structure" << std::endl;
+            CudaBSPTree hostBSPTree;
+            hostBSPTree.nodes = d_nodes;
+            hostBSPTree.nodeCount = nodesData.size();
+            hostBSPTree.rootNodeIndex = 0;
+            hostBSPTree.walls = d_walls;
+            hostBSPTree.wallCount = wallsData.size();
+            hostBSPTree.sectors = d_sectors;
+            hostBSPTree.sectorCount = sectorsData.size();
+            
+            // Copy BSP tree structure to device
+            std::cout << "DEBUG: serializeBSPForCuda - Copying BSP tree structure to CUDA device" << std::endl;
+            err = cudaMemcpy(d_bspTree, &hostBSPTree, sizeof(CudaBSPTree), cudaMemcpyHostToDevice);
+            if (err != cudaSuccess) {
+                throw std::runtime_error(std::string("Failed to copy BSP tree to device: ") + 
+                                         cudaGetErrorString(err));
+            }
+            std::cout << "DEBUG: serializeBSPForCuda - BSP tree structure copied successfully" << std::endl;
+            
+            // Ensure we've synced all operations
+            std::cout << "DEBUG: serializeBSPForCuda - Synchronizing CUDA device" << std::endl;
+            err = cudaDeviceSynchronize();
+            if (err != cudaSuccess) {
+                throw std::runtime_error(std::string("Failed to synchronize after BSP upload: ") + 
+                                         cudaGetErrorString(err));
+            }
+            std::cout << "DEBUG: serializeBSPForCuda - CUDA device synchronized successfully" << std::endl;
+            
+            // Store device pointers only if everything succeeded
+            m_deviceBSPTree = hostBSPTree;
+            m_cudaData->d_bspTree = d_bspTree;
+            
+            m_bspUploaded = true;
+            
+            std::cout << "BSP tree serialized for CUDA: " 
+                    << wallsData.size() << " walls, " 
+                    << sectorsData.size() << " sectors, " 
+                    << nodesData.size() << " nodes" << std::endl;
+            std::cout << "DEBUG: serializeBSPForCuda - Serialization completed successfully" << std::endl;
+            
+        } catch (const std::exception& e) {
+            // Clean up any allocated memory on error
+            std::cout << "DEBUG: serializeBSPForCuda - ERROR during serialization, cleaning up" << std::endl;
+            if (d_walls) {
+                std::cout << "DEBUG: Freeing d_walls at " << d_walls << std::endl;
+                cudaFree(d_walls);
+            }
+            if (d_sectors) {
+                std::cout << "DEBUG: Freeing d_sectors at " << d_sectors << std::endl;
+                cudaFree(d_sectors);
+            }
+            if (d_nodes) {
+                std::cout << "DEBUG: Freeing d_nodes at " << d_nodes << std::endl;
+                cudaFree(d_nodes);
+            }
+            if (d_bspTree) {
+                std::cout << "DEBUG: Freeing d_bspTree at " << d_bspTree << std::endl;
+                cudaFree(d_bspTree);
+            }
+            
+            // Reset state
+            m_bspUploaded = false;
+            
+            // Re-throw with additional context
+            throw std::runtime_error(std::string("Error during BSP upload: ") + e.what());
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error in serializeBSPForCuda: " << e.what() << std::endl;
+        // Clean up any allocated memory
+        freeBSPData();
+        m_bspUploaded = false;
     }
-    
-    // For simplicity, create a simple BSP structure
-    // In a more advanced implementation, you would need to serialize the actual BSP tree
-    // but for now, we'll create a single leaf node containing all walls
-    CudaBSPNode rootNode;
-    rootNode.isLeaf = true;
-    rootNode.wallStartIndex = 0;
-    rootNode.wallCount = wallsData.size();
-    rootNode.sectorId = 0; // Default to first sector
-    
-    nodesData.push_back(rootNode);
-    
-    // Allocate device memory for BSP data
-    CudaWall* d_walls = nullptr;
-    CudaSector* d_sectors = nullptr;
-    CudaBSPNode* d_nodes = nullptr;
-    CudaBSPTree* d_bspTree = nullptr;
-    
-    CUDA_CHECK(cudaMalloc((void**)&d_walls, wallsData.size() * sizeof(CudaWall)));
-    CUDA_CHECK(cudaMalloc((void**)&d_sectors, sectorsData.size() * sizeof(CudaSector)));
-    CUDA_CHECK(cudaMalloc((void**)&d_nodes, nodesData.size() * sizeof(CudaBSPNode)));
-    CUDA_CHECK(cudaMalloc((void**)&d_bspTree, sizeof(CudaBSPTree)));
-    
-    // Copy data to device
-    CUDA_CHECK(cudaMemcpy(d_walls, wallsData.data(), wallsData.size() * sizeof(CudaWall), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_sectors, sectorsData.data(), sectorsData.size() * sizeof(CudaSector), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_nodes, nodesData.data(), nodesData.size() * sizeof(CudaBSPNode), cudaMemcpyHostToDevice));
-    
-    // Create device BSP tree structure
-    CudaBSPTree hostBSPTree;
-    hostBSPTree.nodes = d_nodes;
-    hostBSPTree.nodeCount = nodesData.size();
-    hostBSPTree.rootNodeIndex = 0;
-    hostBSPTree.walls = d_walls;
-    hostBSPTree.wallCount = wallsData.size();
-    hostBSPTree.sectors = d_sectors;
-    hostBSPTree.sectorCount = sectorsData.size();
-    
-    // Copy BSP tree structure to device
-    CUDA_CHECK(cudaMemcpy(d_bspTree, &hostBSPTree, sizeof(CudaBSPTree), cudaMemcpyHostToDevice));
-    
-    // Store device pointers
-    m_deviceBSPTree = hostBSPTree;
-    m_cudaData->d_bspTree = d_bspTree;
-    
-    m_bspUploaded = true;
-    
-    std::cout << "BSP tree serialized for CUDA: " 
-              << wallsData.size() << " walls, " 
-              << sectorsData.size() << " sectors, " 
-              << nodesData.size() << " nodes" << std::endl;
 }
 
 // Free BSP data on device
 void RendererCuda::freeBSPData() {
-    if (!m_cudaAvailable || !m_bspUploaded) return;
+    std::cout << "DEBUG: freeBSPData - Starting cleanup" << std::endl;
     
-    if (m_deviceBSPTree.walls) {
-        CUDA_CHECK(cudaFree(m_deviceBSPTree.walls));
-        m_deviceBSPTree.walls = nullptr;
+    if (!m_cudaAvailable) {
+        std::cout << "DEBUG: freeBSPData - CUDA not available, skipping cleanup" << std::endl;
+        return;
     }
     
-    if (m_deviceBSPTree.sectors) {
-        CUDA_CHECK(cudaFree(m_deviceBSPTree.sectors));
-        m_deviceBSPTree.sectors = nullptr;
+    if (!m_bspUploaded) {
+        std::cout << "DEBUG: freeBSPData - No BSP data uploaded, skipping cleanup" << std::endl;
+        return;
     }
     
-    if (m_deviceBSPTree.nodes) {
-        CUDA_CHECK(cudaFree(m_deviceBSPTree.nodes));
-        m_deviceBSPTree.nodes = nullptr;
+    try {
+        if (m_deviceBSPTree.walls) {
+            std::cout << "DEBUG: freeBSPData - Freeing walls at " << m_deviceBSPTree.walls << std::endl;
+            cudaError_t err = cudaFree(m_deviceBSPTree.walls);
+            if (err != cudaSuccess) {
+                std::cerr << "Error freeing BSP walls: " << cudaGetErrorString(err) << std::endl;
+            } else {
+                std::cout << "DEBUG: freeBSPData - Walls freed successfully" << std::endl;
+            }
+            m_deviceBSPTree.walls = nullptr;
+        } else {
+            std::cout << "DEBUG: freeBSPData - No walls to free" << std::endl;
+        }
+        
+        if (m_deviceBSPTree.sectors) {
+            std::cout << "DEBUG: freeBSPData - Freeing sectors at " << m_deviceBSPTree.sectors << std::endl;
+            cudaError_t err = cudaFree(m_deviceBSPTree.sectors);
+            if (err != cudaSuccess) {
+                std::cerr << "Error freeing BSP sectors: " << cudaGetErrorString(err) << std::endl;
+            } else {
+                std::cout << "DEBUG: freeBSPData - Sectors freed successfully" << std::endl;
+            }
+            m_deviceBSPTree.sectors = nullptr;
+        } else {
+            std::cout << "DEBUG: freeBSPData - No sectors to free" << std::endl;
+        }
+        
+        if (m_deviceBSPTree.nodes) {
+            std::cout << "DEBUG: freeBSPData - Freeing nodes at " << m_deviceBSPTree.nodes << std::endl;
+            cudaError_t err = cudaFree(m_deviceBSPTree.nodes);
+            if (err != cudaSuccess) {
+                std::cerr << "Error freeing BSP nodes: " << cudaGetErrorString(err) << std::endl;
+            } else {
+                std::cout << "DEBUG: freeBSPData - Nodes freed successfully" << std::endl;
+            }
+            m_deviceBSPTree.nodes = nullptr;
+        } else {
+            std::cout << "DEBUG: freeBSPData - No nodes to free" << std::endl;
+        }
+        
+        if (m_cudaData->d_bspTree) {
+            std::cout << "DEBUG: freeBSPData - Freeing BSP tree at " << m_cudaData->d_bspTree << std::endl;
+            cudaError_t err = cudaFree(m_cudaData->d_bspTree);
+            if (err != cudaSuccess) {
+                std::cerr << "Error freeing BSP tree: " << cudaGetErrorString(err) << std::endl;
+            } else {
+                std::cout << "DEBUG: freeBSPData - BSP tree freed successfully" << std::endl;
+            }
+            m_cudaData->d_bspTree = nullptr;
+        } else {
+            std::cout << "DEBUG: freeBSPData - No BSP tree to free" << std::endl;
+        }
+        
+        m_bspUploaded = false;
+        std::cout << "DEBUG: freeBSPData - Cleanup completed successfully" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "Error in freeBSPData: " << e.what() << std::endl;
+        m_bspUploaded = false;
     }
-    
-    if (m_cudaData->d_bspTree) {
-        CUDA_CHECK(cudaFree(m_cudaData->d_bspTree));
-        m_cudaData->d_bspTree = nullptr;
-    }
-    
-    m_bspUploaded = false;
 }
 
 } // namespace PureDoom 
