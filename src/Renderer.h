@@ -363,8 +363,8 @@ private:
     // Calculate projected wall height
     float calculateWallHeight(float distance, float wallHeight) const;
     
-    // Calculate screen space Y coordinate from wall height
-    int calculateScreenY(float projHeight, float offset) const;
+    // Calculate screen space Y coordinate based on world height, distance, and view height
+    float calculateScreenYPosition(float worldY, float distance, float viewHeight) const;
     
     // Convert world space to screen space
     Vec2 worldToScreen(const Vec2& worldPos, const ViewPosition& view) const;

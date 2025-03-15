@@ -721,9 +721,6 @@ void Renderer::renderWallSlice(const WallSlice& slice, const ViewPosition& view)
     // Calculate lighting factor (0-1)
     float lightFactor = std::min(1.0f, std::max(0.0f, slice.lightLevel / 255.0f));
     
-    // Calculate the scaling factor for perspective projection
-    float scale = DISTANCE_MULTIPLIER / slice.distance;
-    
     // Apply a depth bias for z-fighting prevention
     float depthBias = 0.0f;
     if (slice.isPortal) {
@@ -739,17 +736,11 @@ void Renderer::renderWallSlice(const WallSlice& slice, const ViewPosition& view)
     
     // Check if this is a portal with height differences
     if (slice.isPortal && slice.hasHeightDifference) {
-        // Calculate vertical offsets for different wall sections
-        float playerHeightAboveFloor = view.height - slice.floorHeight;
-        float playerHeightBelowCeiling = slice.ceilingHeight - view.height;
-        
         // 1. Upper section (if adjacent ceiling is lower than current ceiling)
         if (slice.adjacentCeilingHeight < slice.ceilingHeight) {
-            float upperWallHeight = slice.ceilingHeight - slice.adjacentCeilingHeight;
-            
-            // Upper wall section (from current ceiling to adjacent ceiling)
-            int upperWallTop = centerY - static_cast<int>(playerHeightBelowCeiling * scale);
-            int upperWallBottom = centerY - static_cast<int>((slice.adjacentCeilingHeight - view.height) * scale);
+            // Calculate screen positions using consistent function
+            int upperWallTop = static_cast<int>(calculateScreenYPosition(slice.ceilingHeight, slice.distance, view.height));
+            int upperWallBottom = static_cast<int>(calculateScreenYPosition(slice.adjacentCeilingHeight, slice.distance, view.height));
             
             // Clamp to screen bounds
             int clampedUpperTop = std::max(0, upperWallTop);
@@ -780,11 +771,9 @@ void Renderer::renderWallSlice(const WallSlice& slice, const ViewPosition& view)
         
         // 2. Lower section (if adjacent floor is higher than current floor)
         if (slice.adjacentFloorHeight > slice.floorHeight) {
-            float lowerWallHeight = slice.adjacentFloorHeight - slice.floorHeight;
-            
-            // Lower wall section (from adjacent floor to current floor)
-            int lowerWallTop = centerY + static_cast<int>((slice.adjacentFloorHeight - view.height) * scale);
-            int lowerWallBottom = centerY + static_cast<int>(playerHeightAboveFloor * scale);
+            // Calculate screen positions using consistent function
+            int lowerWallTop = static_cast<int>(calculateScreenYPosition(slice.adjacentFloorHeight, slice.distance, view.height));
+            int lowerWallBottom = static_cast<int>(calculateScreenYPosition(slice.floorHeight, slice.distance, view.height));
             
             // Clamp to screen bounds
             int clampedLowerTop = std::max(0, lowerWallTop);
@@ -819,16 +808,10 @@ void Renderer::renderWallSlice(const WallSlice& slice, const ViewPosition& view)
     }
     
     // Standard wall rendering for solid walls or portals without height differences
-    float playerHeightAboveFloor = view.height - slice.floorHeight;
-    float playerHeightBelowCeiling = slice.ceilingHeight - view.height;
     
-    // Calculate how much of the wall should be below and above the horizontal centerline
-    float wallHeight = slice.ceilingHeight - slice.floorHeight;
-    float projectedHeight = calculateWallHeight(slice.distance, wallHeight);
-    
-    // Determine vertical placement
-    int wallTop = centerY - static_cast<int>(playerHeightBelowCeiling * scale);
-    int wallBottom = centerY + static_cast<int>(playerHeightAboveFloor * scale);
+    // Calculate screen positions using consistent function
+    int wallTop = static_cast<int>(calculateScreenYPosition(slice.ceilingHeight, slice.distance, view.height));
+    int wallBottom = static_cast<int>(calculateScreenYPosition(slice.floorHeight, slice.distance, view.height));
     
     // Clamp to screen bounds
     int clampedTop = std::max(0, wallTop);
@@ -1237,17 +1220,16 @@ void Renderer::renderSprite(const Sprite& sprite, const BSPTree& bsp, const View
         return;
     }
     
-    // Calculate sprite vertical position on screen
-    float spriteWorldY = spriteY + spriteHeight / 2.0f;
-    float heightDifference = spriteWorldY - view.height;
-    
-    // Calculate projected sprite height
+    // Calculate projected sprite height using the consistent projection function
     float projectedHeight = calculateWallHeight(distance, spriteHeight);
     
-    // Calculate sprite top and bottom on screen
-    int centerY = m_height / 2 - static_cast<int>((heightDifference / distance) * DISTANCE_MULTIPLIER);
-    int spriteTop = centerY - static_cast<int>(projectedHeight / 2);
-    int spriteBottom = centerY + static_cast<int>(projectedHeight / 2);
+    // Calculate vertical position - use consistent positioning method
+    float spriteTopWorld = spriteY + spriteHeight;
+    float spriteBottomWorld = spriteY;
+    
+    // Use the consistent function to calculate screen positions
+    int spriteTop = static_cast<int>(calculateScreenYPosition(spriteTopWorld, distance, view.height));
+    int spriteBottom = static_cast<int>(calculateScreenYPosition(spriteBottomWorld, distance, view.height));
     
     // Calculate sprite left and right on screen
     float projectedWidth = calculateWallHeight(distance, spriteWidth);
@@ -1269,30 +1251,23 @@ void Renderer::renderSprite(const Sprite& sprite, const BSPTree& bsp, const View
     // Apply distance fog
     float fogFactor = 1.0f - std::min(1.0f, distance / 30.0f);
     
-    // Calculate inverse Z for perspective correction
-    float invZ = 1.0f / std::max(0.1f, distance);
-    
     // Draw the sprite
     for (int x = left; x <= right; x++) {
-        // Calculate texture coordinate with perspective correction
+        // Calculate texture coordinate
         float screenX = static_cast<float>(x - spriteLeft) / (spriteRight - spriteLeft);
         if (sprite.flipped) {
             screenX = 1.0f - screenX;
         }
         
-        // Apply perspective correction
-        // For sprites, we want to maintain the billboard effect, so we apply a slight
-        // perspective correction that keeps the overall billboard shape but reduces texture swimming
         float u = screenX;
         
         // Apply subtle perspective distortion to make the sprite feel more 3D
-        // This simulates the curve you'd see on a true 3D object
         float distFromCenter = std::abs(screenX - 0.5f) * 2.0f; // 0 at center, 1 at edges
         float edgeDistance = distance * (1.0f + distFromCenter * 0.1f); // Slightly more distant at edges
         
         // Draw vertical stripe
         for (int y = top; y <= bottom; y++) {
-            // Calculate texture coordinate with perspective correction
+            // Calculate texture coordinate
             float screenY = static_cast<float>(y - spriteTop) / (spriteBottom - spriteTop);
             float v = screenY;
             
@@ -1378,9 +1353,12 @@ float Renderer::calculateWallHeight(float distance, float wallHeight) const {
     return (DISTANCE_MULTIPLIER * wallHeight) / distance;
 }
 
-int Renderer::calculateScreenY(float projHeight, float offset) const {
+// Consistent helper function to calculate screen Y position based on world height and distance
+float Renderer::calculateScreenYPosition(float worldY, float distance, float viewHeight) const {
+    if (distance < 0.1f) distance = 0.1f; // Prevent division by zero
+    float relativeHeight = worldY - viewHeight;
     int centerY = m_height / 2;
-    return centerY - static_cast<int>(projHeight * offset);
+    return centerY - ((relativeHeight * DISTANCE_MULTIPLIER) / distance);
 }
 
 Vec2 Renderer::worldToScreen(const Vec2& worldPos, const ViewPosition& view) const {
