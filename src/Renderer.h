@@ -2,6 +2,7 @@
 #define RENDERER_H
 
 #include "BSPTree.h"
+#include "Sprite.h"
 #include <vector>
 #include <memory>
 #include <array>
@@ -111,10 +112,10 @@ public:
     
     int width() const { return m_width; }
     int height() const { return m_height; }
-    
+    std::vector<Color> m_pixels;
+
 private:
     int m_width, m_height;
-    std::vector<Color> m_pixels;
     
     void loadFromFile(const std::string& filename);
     void generateCheckerboard();
@@ -130,7 +131,7 @@ public:
     void initialize();
     
     // Render a frame
-    void renderFrame(const BSPTree& bsp, const ViewPosition& view);
+    void renderFrame(const BSPTree& bsp, const ViewPosition& view, const std::vector<Sprite>& sprites = {});
     
     // Get the rendered frame buffer
     const uint8_t* getFrameBuffer() const { return reinterpret_cast<const uint8_t*>(m_frameBuffer.data()); }
@@ -139,12 +140,19 @@ public:
     int getWidth() const { return m_width; }
     int getHeight() const { return m_height; }
     
+    // Add a sprite to the scene (for dynamic sprite creation)
+    void addSprite(const Sprite& sprite);
+    
+    // Clear all sprites
+    void clearSprites();
+    
 private:
     int m_width;
     int m_height;
     std::vector<Color> m_frameBuffer;
     std::vector<float> m_zBuffer;            // Depth buffer for each column
     std::vector<Texture> m_textures;         // Loaded textures
+    std::vector<Sprite> m_sprites;           // Sprites to render
     
     // Wall Y coordinates for each column
     struct WallExtent {
@@ -166,6 +174,10 @@ private:
     void makeVisplanes(const BSPTree& bsp, const ViewPosition& view);
     void renderVisplane(const Visplane& visplane, const ViewPosition& view);
     void renderSpan(const Span& span);
+    
+    // Sprite rendering (billboarded)
+    void renderSprites(const BSPTree& bsp, const ViewPosition& view, const std::vector<Sprite>& sprites);
+    void renderSprite(const Sprite& sprite, const BSPTree& bsp, const ViewPosition& view, float distance);
     
     // Simple floor and ceiling fill (for comparison)
     void renderFloorAndCeilingSimple(const BSPTree& bsp, const ViewPosition& view);
@@ -189,6 +201,15 @@ private:
     
     // Load textures
     void loadTextures();
+    
+    // Load sprite textures
+    void loadSpriteTextures();
+    
+    // Sort sprites by distance from viewer
+    std::vector<SpriteRenderData> sortSprites(const std::vector<Sprite>& sprites, const ViewPosition& view) const;
+    
+    // Check if sprite is visible
+    bool isSpriteVisible(const Sprite& sprite, const ViewPosition& view, float& distance) const;
 };
 
 } // namespace PureDoom

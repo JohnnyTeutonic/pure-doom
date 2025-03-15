@@ -14,6 +14,7 @@ add_executable(PureDoom
     src/main.cpp
     src/BSPTree.cpp
     src/Renderer.cpp
+    src/Sprite.cpp
 )
 
 # Include directories
@@ -36,4 +37,4 @@ set_target_properties(PureDoom
 )
 
 # Print status message
-message(STATUS "Configuring PureDoom with BSP Tree and Renderer implementation") 
+message(STATUS "Configuring PureDoom with BSP Tree, Renderer, and Sprite support") 

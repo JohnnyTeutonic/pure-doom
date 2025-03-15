@@ -121,6 +121,7 @@ Renderer::~Renderer() = default;
 
 void Renderer::initialize() {
     loadTextures();
+    loadSpriteTextures();
     clearBuffers();
 }
 
@@ -138,6 +139,109 @@ void Renderer::loadTextures() {
     std::cout << "Loaded " << m_textures.size() << " textures" << std::endl;
 }
 
+void Renderer::loadSpriteTextures() {
+    // In a real implementation, you'd load sprite textures here
+    // For now, we'll create some basic patterns for testing
+
+    // List current textures
+    std::cout << "Before loading sprite textures, we have " << m_textures.size() << " textures" << std::endl;
+
+    // Create a simple sprite texture with a filled circle
+    Texture spriteTexture(64, 64);
+    int width = spriteTexture.width();
+    int height = spriteTexture.height();
+    
+    // Add a colored circle sprite texture
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            float centerX = width / 2.0f;
+            float centerY = height / 2.0f;
+            float dx = x - centerX;
+            float dy = y - centerY;
+            float distance = std::sqrt(dx * dx + dy * dy);
+            
+            if (distance < width / 2.0f) {
+                // Inside circle
+                float t = distance / (width / 2.0f);
+                Color color = Color::fromHSV(240.0f, 0.7f, 1.0f - t * 0.5f);
+                spriteTexture.m_pixels[y * width + x] = color;
+            } else {
+                // Outside circle (transparent)
+                spriteTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
+            }
+        }
+    }
+    
+    m_textures.push_back(spriteTexture);
+    int blueTextureIndex = m_textures.size() - 1;
+    
+    // Add a simple item sprite (gem)
+    Texture itemTexture(64, 64);
+    width = itemTexture.width();
+    height = itemTexture.height();
+    
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            float centerX = width / 2.0f;
+            float centerY = height / 2.0f;
+            float dx = x - centerX;
+            float dy = y - centerY;
+            
+            // Diamond shape
+            float distance = std::abs(dx) + std::abs(dy);
+            
+            if (distance < width / 2.0f) {
+                // Inside diamond
+                float t = distance / (width / 2.0f);
+                Color color = Color::fromHSV(120.0f, 0.8f, 1.0f - t * 0.3f);
+                itemTexture.m_pixels[y * width + x] = color;
+            } else {
+                // Outside diamond (transparent)
+                itemTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
+            }
+        }
+    }
+    
+    m_textures.push_back(itemTexture);
+    int greenTextureIndex = m_textures.size() - 1;
+    
+    // Create a simple enemy sprite (red diamond)
+    Texture enemyTexture(64, 64);
+    width = enemyTexture.width();
+    height = enemyTexture.height();
+    
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            float centerX = width / 2.0f;
+            float centerY = height / 2.0f;
+            float dx = x - centerX;
+            float dy = y - centerY;
+            
+            // Diamond shape
+            float distance = std::abs(dx) + std::abs(dy);
+            
+            if (distance < width / 2.0f) {
+                // Inside diamond
+                float t = distance / (width / 2.0f);
+                Color color = Color::fromHSV(0.0f, 0.9f, 1.0f - t * 0.3f);
+                enemyTexture.m_pixels[y * width + x] = color;
+            } else {
+                // Outside diamond (transparent)
+                enemyTexture.m_pixels[y * width + x] = Color(0, 0, 0, 0);
+            }
+        }
+    }
+    
+    m_textures.push_back(enemyTexture);
+    int redTextureIndex = m_textures.size() - 1;
+    
+    std::cout << "Loaded " << m_textures.size() << " textures (including sprite textures)" << std::endl;
+    std::cout << "Blue sprite texture index: " << blueTextureIndex << std::endl;
+    std::cout << "Green sprite texture index: " << greenTextureIndex << std::endl;
+    std::cout << "Red sprite texture index: " << redTextureIndex << std::endl;
+    std::cout << "Sprites in main.cpp should use these texture IDs!" << std::endl;
+}
+
 void Renderer::clearBuffers() {
     // Clear the frame buffer to black
     std::fill(m_frameBuffer.begin(), m_frameBuffer.end(), Color(0, 0, 0));
@@ -146,7 +250,7 @@ void Renderer::clearBuffers() {
     std::fill(m_zBuffer.begin(), m_zBuffer.end(), std::numeric_limits<float>::max());
 }
 
-void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view) {
+void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const std::vector<Sprite>& sprites) {
     clearBuffers();
     
     // Reset wall extents for this frame
@@ -163,6 +267,9 @@ void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view) {
     
     // Render floors and ceilings using span-based approach
     renderFloorAndCeilingSpans(bsp, view);
+    
+    // Render sprites
+    renderSprites(bsp, view, sprites);
 }
 
 void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
@@ -530,58 +637,203 @@ void Renderer::renderSpan(const Span& span) {
     }
 }
 
-// Backward compatible simpler method (not span-based)
-void Renderer::renderFloorAndCeilingSimple(const BSPTree& bsp, const ViewPosition& view) {
-    // Find which sector the viewer is in
-    int sectorId = bsp.findSector(view.position);
-    if (sectorId < 0 || sectorId >= static_cast<int>(bsp.getSectors().size())) return;
+void Renderer::renderSprites(const BSPTree& bsp, const ViewPosition& view, const std::vector<Sprite>& sprites) {
+    // Combine local and passed sprites
+    std::vector<Sprite> allSprites = m_sprites;
+    allSprites.insert(allSprites.end(), sprites.begin(), sprites.end());
     
-    const Sector& sector = bsp.getSectors()[sectorId];
+    // If no sprites, nothing to render
+    if (allSprites.empty()) {
+        std::cout << "No sprites to render!" << std::endl;
+        return;
+    }
     
-    // Basic colors for floor and ceiling
-    Color floorColor(50, 50, 150);    // Dark blue floor
-    Color ceilingColor(150, 150, 150); // Light gray ceiling
+    std::cout << "Total sprites: " << allSprites.size() << std::endl;
     
-    // Adjust by sector light level
-    float lightFactor = std::min(1.0f, std::max(0.0f, sector.lightLevel / 255.0f));
-    floorColor = Color::blend(Color(0, 0, 0), floorColor, lightFactor);
-    ceilingColor = Color::blend(Color(0, 0, 0), ceilingColor, lightFactor);
+    // Sort sprites from back to front
+    std::vector<SpriteRenderData> sortedSprites = sortSprites(allSprites, view);
     
-    // Screen center Y
-    int centerY = m_height / 2;
+    std::cout << "Visible sprites after sorting: " << sortedSprites.size() << std::endl;
     
-    // Draw simple floor and ceiling
-    for (int x = 0; x < m_width; x++) {
-        // Get the wall height from the z-buffer
-        float distance = m_zBuffer[x];
+    // Render each sprite in order
+    int renderedCount = 0;
+    for (const auto& spriteData : sortedSprites) {
+        std::cout << "Rendering sprite: " << spriteData.sprite->tag 
+                  << " at position (" << spriteData.sprite->position.x << ", " << spriteData.sprite->position.y 
+                  << "), texture ID: " << spriteData.sprite->getCurrentFrame().textureId 
+                  << ", distance: " << spriteData.distance << std::endl;
         
-        // If there's no wall hit at this column, fill the entire column
-        if (distance >= std::numeric_limits<float>::max() - 1.0f) {
-            for (int y = 0; y < centerY; y++) {
-                drawPixel(x, y, ceilingColor);
-            }
-            for (int y = centerY; y < m_height; y++) {
-                drawPixel(x, y, floorColor);
-            }
+        renderSprite(*spriteData.sprite, bsp, view, spriteData.distance);
+        renderedCount++;
+    }
+    
+    std::cout << "Actually rendered " << renderedCount << " sprites" << std::endl;
+}
+
+std::vector<SpriteRenderData> Renderer::sortSprites(const std::vector<Sprite>& sprites, const ViewPosition& view) const {
+    std::vector<SpriteRenderData> sortedSprites;
+    sortedSprites.reserve(sprites.size());
+    
+    // Calculate distance for each sprite and check visibility
+    for (const Sprite& sprite : sprites) {
+        if (!sprite.visible) {
             continue;
         }
         
-        // Calculate the wall height to determine where to start floor/ceiling
-        float wallHeight = sector.ceilingHeight - sector.floorHeight;
-        float projectedHeight = calculateWallHeight(distance, wallHeight);
-        int wallTop = centerY - static_cast<int>(projectedHeight / 2);
-        int wallBottom = centerY + static_cast<int>(projectedHeight / 2);
-        
-        // Draw ceiling
-        for (int y = 0; y < wallTop; y++) {
-            drawPixel(x, y, ceilingColor);
-        }
-        
-        // Draw floor
-        for (int y = wallBottom + 1; y < m_height; y++) {
-            drawPixel(x, y, floorColor);
+        float distance;
+        if (isSpriteVisible(sprite, view, distance)) {
+            sortedSprites.emplace_back(&sprite, distance);
         }
     }
+    
+    // Sort by distance (back to front)
+    std::sort(sortedSprites.begin(), sortedSprites.end());
+    
+    return sortedSprites;
+}
+
+bool Renderer::isSpriteVisible(const Sprite& sprite, const ViewPosition& view, float& distance) const {
+    // Calculate vector from viewer to sprite
+    Vec2 toSprite = sprite.position - view.position;
+    
+    // Calculate distance
+    distance = toSprite.length();
+    
+    // If too close or too far, not visible
+    if (distance < 0.1f || distance > 100.0f) {
+        std::cout << "Sprite '" << sprite.tag << "' too close or too far: " << distance << std::endl;
+        return false;
+    }
+    
+    // Calculate angle to sprite
+    float angle = std::atan2(toSprite.y, toSprite.x);
+    
+    // Normalize angle to [0, 2π)
+    while (angle < 0) angle += 2 * PI;
+    while (angle >= 2 * PI) angle -= 2 * PI;
+    
+    // Calculate angle difference
+    float viewAngle = view.angle;
+    while (viewAngle < 0) viewAngle += 2 * PI;
+    while (viewAngle >= 2 * PI) viewAngle -= 2 * PI;
+    
+    float angleDiff = std::abs(angle - viewAngle);
+    if (angleDiff > PI) {
+        angleDiff = 2 * PI - angleDiff;
+    }
+    
+    // Check if within field of view
+    float halfFOV = view.fov * DEG_TO_RAD / 2.0f;
+    bool isVisible = angleDiff <= halfFOV;
+    
+    if (!isVisible) {
+        std::cout << "Sprite '" << sprite.tag << "' outside FOV. Angle diff: " << (angleDiff * 180.0f / PI) 
+                  << " degrees, Half FOV: " << (halfFOV * 180.0f / PI) << " degrees" << std::endl;
+    }
+    
+    return isVisible;
+}
+
+void Renderer::renderSprite(const Sprite& sprite, const BSPTree& bsp, const ViewPosition& view, float distance) {
+    // Get the current frame
+    const SpriteFrame& frame = sprite.getCurrentFrame();
+    if (frame.textureId < 0 || frame.textureId >= static_cast<int>(m_textures.size())) {
+        std::cout << "Skipping sprite '" << sprite.tag << "': Invalid texture ID " << frame.textureId << " (texture count: " << m_textures.size() << ")" << std::endl;
+        return; // Invalid texture
+    }
+    
+    // Get world height
+    float spriteY = sprite.getWorldHeight(bsp);
+    
+    // Calculate sprite dimensions in world
+    float spriteWidth = frame.width * sprite.scale;
+    float spriteHeight = frame.height * sprite.scale;
+    
+    // Calculate sprite position in screen space
+    Vec2 screenPos = worldToScreen(sprite.position, view);
+    
+    // If behind camera, don't render
+    if (screenPos.x < 0) {
+        std::cout << "Skipping sprite '" << sprite.tag << "': Behind camera (screen x: " << screenPos.x << ")" << std::endl;
+        return;
+    }
+    
+    // Calculate sprite vertical position on screen
+    float spriteWorldY = spriteY + spriteHeight / 2.0f;
+    float heightDifference = spriteWorldY - view.height;
+    
+    // Calculate projected sprite height
+    float projectedHeight = calculateWallHeight(distance, spriteHeight);
+    
+    // Calculate sprite top and bottom on screen
+    int centerY = m_height / 2 - static_cast<int>((heightDifference / distance) * DISTANCE_MULTIPLIER);
+    int spriteTop = centerY - static_cast<int>(projectedHeight / 2);
+    int spriteBottom = centerY + static_cast<int>(projectedHeight / 2);
+    
+    // Calculate sprite left and right on screen
+    float projectedWidth = calculateWallHeight(distance, spriteWidth);
+    int spriteLeft = static_cast<int>(screenPos.x - projectedWidth / 2);
+    int spriteRight = static_cast<int>(screenPos.x + projectedWidth / 2);
+    
+    // Clamp to screen bounds
+    int left = std::max(0, spriteLeft);
+    int right = std::min(m_width - 1, spriteRight);
+    int top = std::max(0, spriteTop);
+    int bottom = std::min(m_height - 1, spriteBottom);
+    
+    // Get sprite texture
+    const Texture& texture = m_textures[frame.textureId];
+    
+    // Calculate lighting factor (0-1)
+    float lightFactor = std::min(1.0f, std::max(0.0f, sprite.lightLevel / 255.0f));
+    
+    // Apply distance fog
+    float fogFactor = 1.0f - std::min(1.0f, distance / 30.0f);
+    
+    // Draw the sprite
+    for (int x = left; x <= right; x++) {
+        // Skip if obscured by a wall
+        if (m_zBuffer[x] <= distance) {
+            continue;
+        }
+        
+        // Calculate texture coordinate
+        float u = static_cast<float>(x - spriteLeft) / (spriteRight - spriteLeft);
+        if (sprite.flipped) {
+            u = 1.0f - u;
+        }
+        
+        // Draw vertical stripe
+        for (int y = top; y <= bottom; y++) {
+            // Calculate texture coordinate
+            float v = static_cast<float>(y - spriteTop) / (spriteBottom - spriteTop);
+            
+            // Sample texture
+            Color color = texture.sample(u, v);
+            
+            // Skip transparent pixels
+            if (color.a < 128) {
+                continue;
+            }
+            
+            // Apply lighting
+            Color litColor = Color::blend(Color(0, 0, 0), color, lightFactor);
+            
+            // Apply fog
+            Color finalColor = Color::blend(Color(0, 0, 0), litColor, fogFactor);
+            
+            // Draw pixel
+            drawPixel(x, y, finalColor);
+        }
+    }
+}
+
+void Renderer::addSprite(const Sprite& sprite) {
+    m_sprites.push_back(sprite);
+}
+
+void Renderer::clearSprites() {
+    m_sprites.clear();
 }
 
 void Renderer::drawVerticalLine(int x, int y1, int y2, const Color& color) {

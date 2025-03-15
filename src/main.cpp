@@ -1,5 +1,6 @@
 #include "BSPTree.h"
 #include "Renderer.h"
+#include "Sprite.h"
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -7,6 +8,59 @@
 #include <SDL.h>
 
 using namespace PureDoom;
+
+// Function to create test sprites for the map
+std::vector<Sprite> createTestSprites() {
+    std::vector<Sprite> sprites;
+    
+    // Create a blue circular sprite in the main room
+    Sprite blueSprite(Vec2(5.0f, 5.0f), 0.7f, SpriteType::PROP);
+    blueSprite.addFrame(10, 1.0f, 1.0f); // Use a lower texture ID that actually exists
+    blueSprite.scale = 0.8f;
+    blueSprite.lightLevel = 200;
+    blueSprite.tag = "blue_orb";
+    sprites.push_back(blueSprite);
+    
+    // Create a green item in the second room
+    Sprite greenItem(Vec2(15.0f, 5.0f), 0.5f, SpriteType::ITEM);
+    greenItem.addFrame(11, 0.8f, 0.8f); // Use a lower texture ID that actually exists
+    greenItem.scale = 0.6f;
+    greenItem.lightLevel = 255;
+    greenItem.tag = "green_gem";
+    sprites.push_back(greenItem);
+    
+    // Create a red enemy near the elevator
+    Sprite redEnemy(Vec2(17.0f, 11.0f), 0.8f, SpriteType::ENEMY);
+    redEnemy.addFrame(12, 1.0f, 1.5f); // Use a lower texture ID that actually exists
+    redEnemy.scale = 1.0f;
+    redEnemy.lightLevel = 180;
+    redEnemy.tag = "red_enemy";
+    sprites.push_back(redEnemy);
+    
+    // Add some more items in various locations
+    for (int i = 0; i < 4; i++) {
+        float x = 2.0f + i * 2.0f;
+        float y = 2.0f + i * 1.5f;
+        
+        Sprite item(Vec2(x, y), 0.5f, SpriteType::ITEM);
+        item.addFrame(11, 0.8f, 0.8f); // Use a lower texture ID that actually exists
+        item.scale = 0.5f;
+        item.lightLevel = 220;
+        item.tag = "item_" + std::to_string(i);
+        sprites.push_back(item);
+    }
+    
+    // Add some enemies in the door room
+    Sprite doorEnemy(Vec2(6.0f, 12.0f), 0.8f, SpriteType::ENEMY);
+    doorEnemy.addFrame(12, 1.0f, 1.5f); // Use a lower texture ID that actually exists
+    doorEnemy.scale = 0.9f;
+    doorEnemy.lightLevel = 150;
+    doorEnemy.tag = "door_guard";
+    sprites.push_back(doorEnemy);
+    
+    std::cout << "Created " << sprites.size() << " test sprites\n";
+    return sprites;
+}
 
 // Function to create an enhanced test map with more features
 std::vector<Sector> createEnhancedTestMap() {
@@ -270,7 +324,7 @@ void renderWithSDL(BSPTree& bsp) {
     const int SCREEN_HEIGHT = 480;
     
     // Create SDL window
-    SDL_Window* window = SDL_CreateWindow("PureDoom Renderer with Span-Based Floors", 
+    SDL_Window* window = SDL_CreateWindow("PureDoom Renderer with Sprites", 
                                           SDL_WINDOWPOS_UNDEFINED, 
                                           SDL_WINDOWPOS_UNDEFINED, 
                                           SCREEN_WIDTH, 
@@ -309,15 +363,33 @@ void renderWithSDL(BSPTree& bsp) {
     Renderer renderer(SCREEN_WIDTH, SCREEN_HEIGHT);
     renderer.initialize();
     
-    std::cout << "\n--- DOOM-style Rendering ---\n";
-    std::cout << "This implementation uses two different rendering approaches:\n";
+    // Create test sprites
+    std::vector<Sprite> sprites = createTestSprites();
+    
+    std::cout << "\n--- Created " << sprites.size() << " sprites ---\n";
+    for (const auto& sprite : sprites) {
+        std::cout << "Sprite: " << sprite.tag 
+                  << ", Position: (" << sprite.position.x << ", " << sprite.position.y << ")"
+                  << ", Type: " << static_cast<int>(sprite.type)
+                  << ", Texture ID: " << sprite.getCurrentFrame().textureId
+                  << ", Scale: " << sprite.scale
+                  << ", Height offset: " << sprite.heightOffset
+                  << ", Light level: " << sprite.lightLevel << std::endl;
+    }
+    std::cout << "-----------------------------\n\n";
+    
+    std::cout << "\n--- DOOM-style Rendering with Sprites ---\n";
+    std::cout << "This implementation uses three different rendering approaches:\n";
     std::cout << "1. Column-based rendering for walls (raycasting)\n";
-    std::cout << "2. Span-based rendering for floors and ceilings\n\n";
-    std::cout << "Span-based rendering advantages:\n";
-    std::cout << "- Reduces overdraw by only drawing visible floor/ceiling pixels\n";
-    std::cout << "- Better memory access patterns for improved cache performance\n";
-    std::cout << "- More efficient for complex lighting and texture mapping\n";
-    std::cout << "- Scales better with scene complexity\n\n";
+    std::cout << "2. Span-based rendering for floors and ceilings\n";
+    std::cout << "3. Billboarded rendering for sprites\n\n";
+    std::cout << "Sprite rendering features:\n";
+    std::cout << "- Billboarding (sprites always face the camera)\n";
+    std::cout << "- Z-buffer integration (sprites correctly occluded by walls)\n";
+    std::cout << "- Depth sorting (sprites rendered from back to front)\n";
+    std::cout << "- Transparency support\n";
+    std::cout << "- Scaling with distance\n";
+    std::cout << "- Animation support (though not animated in this demo)\n\n";
     
     // Initial player position and movement variables
     ViewPosition view;
@@ -341,6 +413,10 @@ void renderWithSDL(BSPTree& bsp) {
     
     // For calculating deltaTime
     auto lastTime = std::chrono::high_resolution_clock::now();
+    
+    // Variables for sprite animation
+    float spriteAnimTimer = 0.0f;
+    const float spriteAnimRate = 1.0f;  // Animation speed in seconds
     
     std::cout << "\n--- Starting Rendering Loop ---\n";
     std::cout << "Use WASD to move, QE to rotate.\n";
@@ -406,8 +482,33 @@ void renderWithSDL(BSPTree& bsp) {
         // Update moving sectors
         bsp.update(deltaTime);
         
-        // Render the frame
-        renderer.renderFrame(bsp, view);
+        // Update sprites
+        spriteAnimTimer += deltaTime;
+        if (spriteAnimTimer >= spriteAnimRate) {
+            spriteAnimTimer -= spriteAnimRate;
+            
+            // Rotate some sprites by adjusting their positions
+            for (auto& sprite : sprites) {
+                if (sprite.type == SpriteType::ITEM) {
+                    // Make items bob up and down
+                    sprite.heightOffset = 0.5f + 0.1f * sin(spriteAnimTimer * 2.0f * PI);
+                }
+                else if (sprite.type == SpriteType::ENEMY) {
+                    // Make enemies move slightly
+                    float angle = spriteAnimTimer * 2.0f * PI;
+                    Vec2 offset(0.2f * sin(angle), 0.2f * cos(angle));
+                    sprite.position = sprite.position + offset * deltaTime;
+                }
+            }
+            
+            // Update sprite animations (if they had any)
+            for (auto& sprite : sprites) {
+                sprite.update(deltaTime);
+            }
+        }
+        
+        // Render the frame with sprites
+        renderer.renderFrame(bsp, view, sprites);
         
         // Update the SDL texture with our frame buffer
         SDL_UpdateTexture(texture, NULL, renderer.getFrameBuffer(), SCREEN_WIDTH * 4);
@@ -439,6 +540,7 @@ int main() {
     std::cout << "- Span-based floor and ceiling rendering\n";
     std::cout << "- Texture mapping with perspective correction\n";
     std::cout << "- Visplane optimization for efficient rendering\n";
+    std::cout << "- Billboarded sprite rendering for entities\n";
     std::cout << "- Distance-based fog and lighting effects\n\n";
     
     // Create enhanced test map
