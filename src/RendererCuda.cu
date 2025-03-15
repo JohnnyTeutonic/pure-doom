@@ -6,7 +6,8 @@
 #include <algorithm>  // For std::max, std::min
 #include <vector>     // For BSP serialization
 #include <mutex>      // For std::mutex
-
+#include <set>
+#include <queue>
 // Host and device implementations of Color methods for CUDA kernels
 namespace PureDoom {
 
@@ -289,7 +290,7 @@ __global__ void bspRenderKernel(
     
     // Early exit if no textures or BSP tree is available
     if (textures == nullptr || bspTree == nullptr || 
-        bspTree->nodes == nullptr || bspTree->walls == nullptr) {
+        bspTree->nodes == nullptr || bspTree->walls == nullptr || bspTree->sectors == nullptr) {
         return;
     }
     
@@ -310,7 +311,7 @@ __global__ void bspRenderKernel(
     CudaVec2 rayOrigin(playerX, playerY);
     CudaVec2 rayDir(rayDirX, rayDirY);
     
-    // Cast ray through BSP tree
+    // Cast ray through BSP tree - using improved traversal
     CudaWallCollision collision = castRayBSP(*bspTree, rayOrigin, rayDir, maxDistance);
     
     if (collision.collision) {
@@ -336,7 +337,7 @@ __global__ void bspRenderKernel(
         int wallTop = max(0, (int)ceilingScreenY);
         int wallBottom = min(height - 1, (int)floorScreenY);
         
-        // Calculate lighting based on distance
+        // Calculate lighting based on distance and wall light level
         float intensityFactor = 1.0f - min(1.0f, correctedDistance / maxDistance);
         intensityFactor = max(0.2f, intensityFactor) * collision.lightLevel / 255.0f;
         
@@ -379,6 +380,13 @@ __global__ void bspRenderKernel(
                     wallColor.g = (uint8_t)(texColor.g * intensityFactor);
                     wallColor.b = (uint8_t)(texColor.b * intensityFactor);
                     wallColor.a = texColor.a;
+                    
+                    // Handle portals (special coloring or effect if needed)
+                    if (collision.isPortal) {
+                        // Add a slight portal effect if desired
+                        // For example, a slight blue tint
+                        wallColor.b = min(255, wallColor.b + 20);
+                    }
                 } else {
                     // If texture has invalid dimensions, use fallback color
                     wallColor = Color(
@@ -859,6 +867,23 @@ void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
         // Ensure BSP data is uploaded - Use a local copy of the BSP tree to prevent race conditions
         bool needsUpload = !m_bspUploaded;
         
+        // Check if textures need to be uploaded or re-uploaded
+        bool needsTextureUpload = !m_texturesUploaded;
+        
+        // Check for any invalid texture references in sprites
+        for (const auto& sprite : sprites) {
+            const SpriteFrame& frame = sprite.getCurrentFrame();
+            int textureId = frame.textureId;
+            if (textureId >= m_cudaData->numTextures) {
+                // We found a sprite referring to a texture that isn't uploaded
+                needsTextureUpload = true;
+                std::cout << "Detected sprite using texture ID " << textureId 
+                          << " which exceeds current texture count " << m_cudaData->numTextures 
+                          << ". Re-uploading textures." << std::endl;
+                break;
+            }
+        }
+        
         if (needsUpload) {
             serializeBSPForCuda(bsp);
             if (!m_bspUploaded) {
@@ -1026,18 +1051,105 @@ void RendererCuda::renderBSPCuda(const BSPTree& bsp, const ViewPosition& view, f
         return;
     }
     
-    // Check if textures are available
+    // Verify texture status
     if (!m_texturesUploaded || !m_cudaData->d_textures || m_cudaData->numTextures <= 0) {
-        std::cerr << "Warning: No textures available for CUDA rendering" << std::endl;
-        // We'll continue and the kernel will handle this case with a fallback
+        std::cerr << "Warning: No textures available for CUDA BSP rendering" << std::endl;
+        // Force re-upload on next frame
+        m_texturesUploaded = false;
+    }
+    
+    // Check for specific texture IDs required by the BSP - scan sectors for needed textures
+    std::set<int> requiredTextureIds;
+    
+    // Copy sectors and walls data from device to host for checking texture IDs
+    if (m_bspUploaded) {
+        // We can't directly access device memory, so we need to create host copies
+        CudaSector* hostSectors = nullptr;
+        CudaWall* hostWalls = nullptr;
+        
+        try {
+            // Check if we have sectors and walls to copy
+            if (m_deviceBSPTree.sectorCount > 0 && m_deviceBSPTree.sectors != nullptr) {
+                // Allocate host memory for sectors
+                hostSectors = new CudaSector[m_deviceBSPTree.sectorCount];
+                
+                // Copy sectors from device to host
+                cudaError_t err = cudaMemcpy(hostSectors, m_deviceBSPTree.sectors, 
+                                          m_deviceBSPTree.sectorCount * sizeof(CudaSector), 
+                                          cudaMemcpyDeviceToHost);
+                if (err != cudaSuccess) {
+                    std::cerr << "Failed to copy sectors for texture check: " 
+                              << cudaGetErrorString(err) << std::endl;
+                } else {
+                    // Collect texture IDs from sectors
+                    for (int i = 0; i < m_deviceBSPTree.sectorCount; i++) {
+                        requiredTextureIds.insert(hostSectors[i].floorTextureId);
+                        requiredTextureIds.insert(hostSectors[i].ceilingTextureId);
+                    }
+                }
+            }
+            
+            // Check if we have walls to copy
+            if (m_deviceBSPTree.wallCount > 0 && m_deviceBSPTree.walls != nullptr) {
+                // Allocate host memory for walls
+                hostWalls = new CudaWall[m_deviceBSPTree.wallCount];
+                
+                // Copy walls from device to host
+                cudaError_t err = cudaMemcpy(hostWalls, m_deviceBSPTree.walls, 
+                                          m_deviceBSPTree.wallCount * sizeof(CudaWall), 
+                                          cudaMemcpyDeviceToHost);
+                if (err != cudaSuccess) {
+                    std::cerr << "Failed to copy walls for texture check: " 
+                              << cudaGetErrorString(err) << std::endl;
+                } else {
+                    // Collect texture IDs from walls
+                    for (int i = 0; i < m_deviceBSPTree.wallCount; i++) {
+                        requiredTextureIds.insert(hostWalls[i].textureId);
+                    }
+                }
+            }
+            
+            // Check if all required textures are available
+            bool missingTextures = false;
+            for (int texId : requiredTextureIds) {
+                if (texId >= 0 && texId >= m_cudaData->numTextures) { // -1 is valid as "no texture"
+                    std::cerr << "Required texture ID " << texId << " is missing from CUDA renderer" << std::endl;
+                    missingTextures = true;
+                }
+            }
+            
+            if (missingTextures) {
+                // Flag that we need to re-upload textures
+                m_texturesUploaded = false;
+                std::cerr << "Missing textures required by BSP - will request re-upload" << std::endl;
+            }
+            
+            // Clean up host memory
+            if (hostSectors) {
+                delete[] hostSectors;
+            }
+            if (hostWalls) {
+                delete[] hostWalls;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error checking required textures: " << e.what() << std::endl;
+            
+            // Clean up if exception occurred
+            if (hostSectors) {
+                delete[] hostSectors;
+            }
+            if (hostWalls) {
+                delete[] hostWalls;
+            }
+        }
     }
     
     // Determine thread block and grid sizes
     dim3 blockSize(16, 1);  // Use 16 threads per block for simplicity
     dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x);
     
+    // Launch kernel for rendering
     try {
-        // Launch the BSP rendering kernel with the serialized BSP tree and textures
         bspRenderKernel<<<gridSize, blockSize>>>(
             m_cudaData->d_frameBuffer,
             m_cudaData->d_zBuffer,
@@ -1059,14 +1171,14 @@ void RendererCuda::renderBSPCuda(const BSPTree& bsp, const ViewPosition& view, f
         if (err != cudaSuccess) {
             std::cerr << "CUDA error in BSP rendering: " << cudaGetErrorString(err) << std::endl;
         } else {
-            // Sync after kernel execution to catch any delayed errors
+            // Sync after BSP rendering to catch any delayed errors
             err = cudaDeviceSynchronize();
             if (err != cudaSuccess) {
                 std::cerr << "CUDA sync error after BSP rendering: " << cudaGetErrorString(err) << std::endl;
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "Error in renderBSPCuda: " << e.what() << std::endl;
+        std::cerr << "Exception in BSP rendering: " << e.what() << std::endl;
     }
 }
 
@@ -1187,6 +1299,8 @@ void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& vie
     // Skip if textures aren't available
     if (!m_texturesUploaded || !m_cudaData->d_textures || m_cudaData->numTextures <= 0) {
         std::cerr << "Warning: No textures available for CUDA sprite rendering" << std::endl;
+        // Flag that textures need to be re-uploaded
+        m_texturesUploaded = false;
         return;
     }
     
@@ -1198,6 +1312,32 @@ void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& vie
     float fov = view.fov;
     
     try {
+        // Collect required texture IDs for sprites first
+        std::set<int> requiredTextureIds;
+        for (const auto& sprite : sprites) {
+            if (sprite.visible) {
+                const SpriteFrame& frame = sprite.getCurrentFrame();
+                requiredTextureIds.insert(frame.textureId);
+            }
+        }
+        
+        // Check if all required textures are available
+        bool missingTextures = false;
+        for (int texId : requiredTextureIds) {
+            if (texId >= 0 && texId >= m_cudaData->numTextures) {
+                std::cerr << "Sprite requires texture ID " << texId 
+                          << " which is missing (only have " << m_cudaData->numTextures << ")" << std::endl;
+                missingTextures = true;
+            }
+        }
+        
+        if (missingTextures) {
+            // Flag that textures need to be re-uploaded
+            m_texturesUploaded = false;
+            std::cerr << "Missing textures required by sprites - will request re-upload" << std::endl;
+            return; // Skip rendering this frame
+        }
+        
         // Sort sprites by distance (farthest to nearest)
         std::vector<std::pair<float, size_t>> sortedIndices;
         for (size_t i = 0; i < sprites.size(); ++i) {
@@ -1221,6 +1361,10 @@ void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& vie
                     return a.first > b.first; 
                 });
         
+        // Track sprite rendering status for debugging
+        int renderedSprites = 0;
+        int skippedSprites = 0;
+        
         // Iterate through sorted sprites
         for (size_t i = 0; i < sortedIndices.size(); ++i) {
             float distance = sortedIndices[i].first;
@@ -1228,7 +1372,10 @@ void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& vie
             const Sprite& sprite = sprites[index];
             
             // Skip if too far or too close
-            if (distance > 30.0f || distance < 0.1f) continue;
+            if (distance > 30.0f || distance < 0.1f) {
+                skippedSprites++;
+                continue;
+            }
             
             // Get the current frame
             const SpriteFrame& frame = sprite.getCurrentFrame();
@@ -1237,6 +1384,9 @@ void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& vie
             // Check if the texture ID is valid
             if (textureId < 0 || textureId >= m_cudaData->numTextures) {
                 // Skip invalid texture ID
+                std::cerr << "Sprite texture ID " << textureId << " is out of range (0-" 
+                          << (m_cudaData->numTextures - 1) << ")" << std::endl;
+                skippedSprites++;
                 continue;
             }
             
@@ -1247,9 +1397,16 @@ void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& vie
                                     sizeof(CudaRenderData::TextureData), 
                                     cudaMemcpyDeviceToHost);
             
-            if (err != cudaSuccess || textureData.pixels == nullptr || 
-                textureData.width <= 0 || textureData.height <= 0) {
+            if (err != cudaSuccess) {
+                std::cerr << "CUDA error fetching texture data: " << cudaGetErrorString(err) << std::endl;
+                skippedSprites++;
+                continue;
+            }
+            
+            if (textureData.pixels == nullptr || textureData.width <= 0 || textureData.height <= 0) {
                 // Skip this sprite if texture is invalid
+                std::cerr << "Sprite texture ID " << textureId << " has invalid data (null pixels or zero size)" << std::endl;
+                skippedSprites++;
                 continue;
             }
             
@@ -1289,7 +1446,16 @@ void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& vie
             cudaError_t kernelErr = cudaGetLastError();
             if (kernelErr != cudaSuccess) {
                 std::cerr << "CUDA error in sprite rendering: " << cudaGetErrorString(kernelErr) << std::endl;
+                skippedSprites++;
+            } else {
+                renderedSprites++;
             }
+        }
+        
+        // Log sprite rendering statistics
+        if (sprites.size() > 0) {
+            std::cout << "Sprite rendering: " << renderedSprites << " rendered, " 
+                      << skippedSprites << " skipped out of " << sprites.size() << " total" << std::endl;
         }
     } catch (const std::exception& e) {
         std::cerr << "Error in renderSpritesCuda: " << e.what() << std::endl;
@@ -1422,7 +1588,6 @@ void RendererCuda::retrieveRenderingResults(std::vector<Color>& frameBuffer, std
 
 // Serializing the BSP tree for CUDA
 void RendererCuda::serializeBSPForCuda(const BSPTree& bsp) {
-    std::cout << "DEBUG: serializeBSPForCuda - Starting serialization" << std::endl;
     
     if (!m_cudaAvailable || !m_initialized) {
         std::cerr << "Can't serialize BSP: CUDA not available or not initialized" << std::endl;
@@ -1432,16 +1597,15 @@ void RendererCuda::serializeBSPForCuda(const BSPTree& bsp) {
     try {
         // Add a static mutex to synchronize BSP serialization
         static std::mutex serializeMutex;
-        std::cout << "DEBUG: serializeBSPForCuda - Attempting to acquire mutex" << std::endl;
         std::lock_guard<std::mutex> lock(serializeMutex);
-        std::cout << "DEBUG: serializeBSPForCuda - Mutex acquired" << std::endl;
+        
+        std::cout << "Starting BSP tree serialization for CUDA..." << std::endl;
         
         // First make a local deep copy of the BSP tree data to prevent race conditions
         std::vector<Sector> sectorsCopy;
         try {
-            std::cout << "DEBUG: serializeBSPForCuda - Getting sectors from BSP tree" << std::endl;
             sectorsCopy = bsp.getSectors();
-            std::cout << "DEBUG: serializeBSPForCuda - Got " << sectorsCopy.size() << " sectors" << std::endl;
+            std::cout << "Retrieved " << sectorsCopy.size() << " sectors for serialization" << std::endl;
         } catch (const std::exception& e) {
             std::cerr << "Error getting sectors for serialization: " << e.what() << std::endl;
             return;
@@ -1449,9 +1613,8 @@ void RendererCuda::serializeBSPForCuda(const BSPTree& bsp) {
         
         // Free existing BSP data if present
         try {
-            std::cout << "DEBUG: serializeBSPForCuda - Freeing existing BSP data" << std::endl;
             freeBSPData();
-            std::cout << "DEBUG: serializeBSPForCuda - Freed existing BSP data" << std::endl;
+            std::cout << "Freed existing BSP data" << std::endl;
         } catch (const std::exception& e) {
             std::cerr << "Error freeing existing BSP data: " << e.what() << std::endl;
             // Still continue with the upload attempt
@@ -1463,39 +1626,43 @@ void RendererCuda::serializeBSPForCuda(const BSPTree& bsp) {
             return;
         }
         
-        std::cout << "DEBUG: serializeBSPForCuda - Starting to collect wall data" << std::endl;
-        
-        // Collect all unique walls from all sectors
+        // Start by collecting all sectors, walls and prepare for BSP nodes
         std::vector<CudaWall> wallsData;
         std::vector<CudaSector> sectorsData;
         std::vector<CudaBSPNode> nodesData;
         
-        // Preallocate vectors for better performance
-        size_t totalWalls = 0;
-        for (const auto& sector : sectorsCopy) {
-            totalWalls += sector.walls.size();
-        }
-        wallsData.reserve(totalWalls);
-        sectorsData.reserve(sectorsCopy.size());
+        // First, process all sectors and build a map of sector walls
+        std::map<int, std::vector<size_t>> sectorWallIndices; // Maps sector ID to wall indices in wallsData
         
-        std::cout << "DEBUG: serializeBSPForCuda - Reserved space for " << totalWalls 
-                 << " walls and " << sectorsCopy.size() << " sectors" << std::endl;
+        std::cout << "Processing sectors and walls..." << std::endl;
         
-        // First pass: Build sectors and walls
+        // First process all sectors
         for (size_t i = 0; i < sectorsCopy.size(); i++) {
             const Sector& sector = sectorsCopy[i];
             
+            // Create CUDA sector
             CudaSector cudaSector;
-            cudaSector.wallStartIndex = wallsData.size();
-            cudaSector.wallCount = sector.walls.size();
             cudaSector.floorHeight = sector.floorHeight;
             cudaSector.ceilingHeight = sector.ceilingHeight;
             cudaSector.floorTextureId = sector.floorTextureId;
             cudaSector.ceilingTextureId = sector.ceilingTextureId;
             cudaSector.lightLevel = sector.lightLevel;
             
-            std::cout << "DEBUG: serializeBSPForCuda - Processing sector " << i 
-                     << " with " << sector.walls.size() << " walls" << std::endl;
+            // Wall indices will be set later after we process all walls
+            cudaSector.wallStartIndex = -1;
+            cudaSector.wallCount = 0;
+            
+            sectorsData.push_back(cudaSector);
+        }
+        
+        std::cout << "Processed " << sectorsData.size() << " sectors" << std::endl;
+        
+        // Now process all walls from all sectors
+        for (size_t i = 0; i < sectorsCopy.size(); i++) {
+            const Sector& sector = sectorsCopy[i];
+            
+            // Store the starting index for this sector's walls
+            size_t startIdx = wallsData.size();
             
             // Add all walls from this sector
             for (const Wall& wall : sector.walls) {
@@ -1515,14 +1682,21 @@ void RendererCuda::serializeBSPForCuda(const BSPTree& bsp) {
                 cudaWall.textureOffsetY = wall.textureOffsetY;
                 cudaWall.lightLevel = sector.lightLevel; // Use sector light level
                 
+                // Add to wall data vector
                 wallsData.push_back(cudaWall);
+                
+                // Add wall index to the sector's wall indices
+                sectorWallIndices[i].push_back(wallsData.size() - 1);
             }
             
-            sectorsData.push_back(cudaSector);
+            // Store wall range in the sector data
+            if (startIdx < wallsData.size()) {
+                sectorsData[i].wallStartIndex = startIdx;
+                sectorsData[i].wallCount = wallsData.size() - startIdx;
+            }
         }
         
-        std::cout << "DEBUG: serializeBSPForCuda - Collected " << wallsData.size() 
-                 << " walls into " << sectorsData.size() << " sectors" << std::endl;
+        std::cout << "Processed " << wallsData.size() << " walls across all sectors" << std::endl;
         
         // Skip if we ended up with no walls
         if (wallsData.empty()) {
@@ -1530,25 +1704,166 @@ void RendererCuda::serializeBSPForCuda(const BSPTree& bsp) {
             return;
         }
         
-        // For simplicity, create a simple BSP structure
-        // In a more advanced implementation, you would need to serialize the actual BSP tree
-        // but for now, we'll create a single leaf node containing all walls
-        std::cout << "DEBUG: serializeBSPForCuda - Creating root BSP node" << std::endl;
-        CudaBSPNode rootNode;
-        rootNode.isLeaf = true;
-        rootNode.wallStartIndex = 0;
-        rootNode.wallCount = wallsData.size();
-        rootNode.sectorId = 0; // Default to first sector
+        // Now we need to build an actual BSP tree structure for CUDA
+        // Since we can't directly access the CPU BSP tree structure,
+        // we'll build our own simplified version based on the collected data
         
-        nodesData.push_back(rootNode);
+        std::cout << "Building BSP tree structure for CUDA..." << std::endl;
         
-        // Skip if there's no data to upload
-        if (wallsData.empty() || sectorsData.empty() || nodesData.empty()) {
-            std::cerr << "No BSP data to upload" << std::endl;
-            return;
+        // Initialize a queue for BFS tree construction (more stable than recursion)
+        struct NodeToBuild {
+            int nodeIndex; // Index of this node in nodesData
+            std::vector<size_t> wallIndices; // Wall indices to process in this node
+            int sectorId; // Sector ID if this is a leaf node
+        };
+        
+        std::queue<NodeToBuild> nodesToProcess;
+        
+        // Start with all walls
+        std::vector<size_t> allWallIndices;
+        for (size_t i = 0; i < wallsData.size(); i++) {
+            allWallIndices.push_back(i);
         }
         
-        std::cout << "DEBUG: serializeBSPForCuda - Starting CUDA memory allocation" << std::endl;
+        // Create root node
+        nodesData.push_back(CudaBSPNode()); // Reserve index 0 for root
+        int rootIndex = 0;
+        
+        // Queue the root node for processing
+        nodesToProcess.push({rootIndex, allWallIndices, -1});
+        
+        // Process nodes until the queue is empty
+        while (!nodesToProcess.empty()) {
+            NodeToBuild current = nodesToProcess.front();
+            nodesToProcess.pop();
+            
+            // If no walls or just one wall, create a leaf node
+            if (current.wallIndices.empty() || current.wallIndices.size() == 1) {
+                CudaBSPNode& node = nodesData[current.nodeIndex];
+                node.isLeaf = true;
+                
+                if (!current.wallIndices.empty()) {
+                    int wallIdx = current.wallIndices[0];
+                    node.wallStartIndex = wallIdx;
+                    node.wallCount = 1;
+                    node.sectorId = wallsData[wallIdx].sectorFront;
+                } else if (current.sectorId >= 0) {
+                    // Use provided sector ID if available
+                    node.sectorId = current.sectorId;
+                }
+                
+                continue;
+            }
+            
+            // Choose a wall as partitioner (simplification - just use the first wall)
+            size_t partitionerWallIdx = current.wallIndices[0];
+            CudaWall& partitionerWall = wallsData[partitionerWallIdx];
+            
+            // Set the partitioner line in the node
+            CudaBSPNode& node = nodesData[current.nodeIndex];
+            node.partitioner = partitionerWall.segment;
+            node.isLeaf = false;
+            
+            // Distribute walls to front and back sides
+            std::vector<size_t> frontWallIndices;
+            std::vector<size_t> backWallIndices;
+            
+            // Include the partitioner wall in the front side
+            frontWallIndices.push_back(partitionerWallIdx);
+            
+            // Check all other walls
+            for (size_t i = 1; i < current.wallIndices.size(); i++) {
+                size_t wallIdx = current.wallIndices[i];
+                CudaWall& wall = wallsData[wallIdx];
+                
+                // Simplified wall classification - just check if midpoint is front or back of partitioner
+                // This is a simplification - proper implementation would use BSP line classification
+                
+                // Calculate midpoint of the wall
+                float midX = (wall.segment.start.x + wall.segment.end.x) * 0.5f;
+                float midY = (wall.segment.start.y + wall.segment.end.y) * 0.5f;
+                
+                // Calculate vector from partitioner start to midpoint
+                float vx = midX - partitionerWall.segment.start.x;
+                float vy = midY - partitionerWall.segment.start.y;
+                
+                // Calculate partitioner direction vector
+                float dirX = partitionerWall.segment.end.x - partitionerWall.segment.start.x;
+                float dirY = partitionerWall.segment.end.y - partitionerWall.segment.start.y;
+                
+                // Cross product to determine side (sign of z component in 3D cross product)
+                float cross = dirX * vy - dirY * vx;
+                
+                if (cross >= 0) {
+                    frontWallIndices.push_back(wallIdx);
+                } else {
+                    backWallIndices.push_back(wallIdx);
+                }
+            }
+            
+            // If all walls ended up on one side, make this a leaf node
+            if (frontWallIndices.size() == current.wallIndices.size() || 
+                backWallIndices.size() == 0) {
+                
+                node.isLeaf = true;
+                
+                // Find a common sector if possible
+                int commonSector = -1;
+                for (size_t idx : frontWallIndices) {
+                    int sector = wallsData[idx].sectorFront;
+                    if (commonSector == -1) {
+                        commonSector = sector;
+                    } else if (commonSector != sector) {
+                        // If sectors differ, just use the first one
+                        break;
+                    }
+                }
+                
+                node.sectorId = (commonSector != -1) ? commonSector : wallsData[frontWallIndices[0]].sectorFront;
+                node.wallStartIndex = frontWallIndices[0]; // Use the first wall
+                node.wallCount = frontWallIndices.size();  // Count all walls
+                
+                continue;
+            }
+            
+            if (backWallIndices.size() == current.wallIndices.size() || 
+                frontWallIndices.size() == 0) {
+                
+                node.isLeaf = true;
+                
+                // Find a common sector if possible
+                int commonSector = -1;
+                for (size_t idx : backWallIndices) {
+                    int sector = wallsData[idx].sectorFront;
+                    if (commonSector == -1) {
+                        commonSector = sector;
+                    } else if (commonSector != sector) {
+                        // If sectors differ, just use the first one
+                        break;
+                    }
+                }
+                
+                node.sectorId = (commonSector != -1) ? commonSector : wallsData[backWallIndices[0]].sectorFront;
+                node.wallStartIndex = backWallIndices[0]; // Use the first wall
+                node.wallCount = backWallIndices.size();  // Count all walls
+                
+                continue;
+            }
+            
+            // Create front child node
+            node.frontNodeIndex = nodesData.size();
+            nodesData.push_back(CudaBSPNode());
+            
+            // Create back child node
+            node.backNodeIndex = nodesData.size();
+            nodesData.push_back(CudaBSPNode());
+            
+            // Queue child nodes for processing
+            nodesToProcess.push({node.frontNodeIndex, frontWallIndices, -1});
+            nodesToProcess.push({node.backNodeIndex, backWallIndices, -1});
+        }
+        
+        std::cout << "Built BSP tree with " << nodesData.size() << " nodes" << std::endl;
         
         // Use separate try-catch blocks for each allocation to ensure proper cleanup
         CudaWall* d_walls = nullptr;
@@ -1558,221 +1873,182 @@ void RendererCuda::serializeBSPForCuda(const BSPTree& bsp) {
         
         try {
             // Allocate memory for walls
-            std::cout << "DEBUG: serializeBSPForCuda - Allocating CUDA memory for walls (" 
-                     << wallsData.size() << " walls, " << (wallsData.size() * sizeof(CudaWall)) 
-                     << " bytes)" << std::endl;
             cudaError_t err = cudaMalloc((void**)&d_walls, wallsData.size() * sizeof(CudaWall));
             if (err != cudaSuccess) {
                 throw std::runtime_error(std::string("Failed to allocate memory for walls: ") + 
                                          cudaGetErrorString(err));
             }
-            std::cout << "DEBUG: serializeBSPForCuda - Allocated CUDA memory for walls at " 
-                     << d_walls << std::endl;
             
             // Allocate memory for sectors
-            std::cout << "DEBUG: serializeBSPForCuda - Allocating CUDA memory for sectors (" 
-                     << sectorsData.size() << " sectors, " << (sectorsData.size() * sizeof(CudaSector)) 
-                     << " bytes)" << std::endl;
             err = cudaMalloc((void**)&d_sectors, sectorsData.size() * sizeof(CudaSector));
             if (err != cudaSuccess) {
+                cudaFree(d_walls); // Clean up previously allocated memory
                 throw std::runtime_error(std::string("Failed to allocate memory for sectors: ") + 
                                          cudaGetErrorString(err));
             }
-            std::cout << "DEBUG: serializeBSPForCuda - Allocated CUDA memory for sectors at " 
-                     << d_sectors << std::endl;
             
             // Allocate memory for nodes
-            std::cout << "DEBUG: serializeBSPForCuda - Allocating CUDA memory for nodes (" 
-                     << nodesData.size() << " nodes, " << (nodesData.size() * sizeof(CudaBSPNode)) 
-                     << " bytes)" << std::endl;
             err = cudaMalloc((void**)&d_nodes, nodesData.size() * sizeof(CudaBSPNode));
             if (err != cudaSuccess) {
+                cudaFree(d_walls);
+                cudaFree(d_sectors);
                 throw std::runtime_error(std::string("Failed to allocate memory for nodes: ") + 
                                          cudaGetErrorString(err));
             }
-            std::cout << "DEBUG: serializeBSPForCuda - Allocated CUDA memory for nodes at " 
-                     << d_nodes << std::endl;
             
             // Allocate memory for BSP tree
-            std::cout << "DEBUG: serializeBSPForCuda - Allocating CUDA memory for BSP tree structure (" 
-                     << sizeof(CudaBSPTree) << " bytes)" << std::endl;
             err = cudaMalloc((void**)&d_bspTree, sizeof(CudaBSPTree));
             if (err != cudaSuccess) {
+                cudaFree(d_walls);
+                cudaFree(d_sectors);
+                cudaFree(d_nodes);
                 throw std::runtime_error(std::string("Failed to allocate memory for BSP tree: ") + 
                                          cudaGetErrorString(err));
             }
-            std::cout << "DEBUG: serializeBSPForCuda - Allocated CUDA memory for BSP tree at " 
-                     << d_bspTree << std::endl;
             
             // Copy data to device
-            std::cout << "DEBUG: serializeBSPForCuda - Copying wall data to CUDA device" << std::endl;
             err = cudaMemcpy(d_walls, wallsData.data(), wallsData.size() * sizeof(CudaWall), cudaMemcpyHostToDevice);
             if (err != cudaSuccess) {
+                cudaFree(d_walls);
+                cudaFree(d_sectors);
+                cudaFree(d_nodes);
+                cudaFree(d_bspTree);
                 throw std::runtime_error(std::string("Failed to copy walls to device: ") + 
                                          cudaGetErrorString(err));
             }
-            std::cout << "DEBUG: serializeBSPForCuda - Wall data copied successfully" << std::endl;
             
-            std::cout << "DEBUG: serializeBSPForCuda - Copying sector data to CUDA device" << std::endl;
             err = cudaMemcpy(d_sectors, sectorsData.data(), sectorsData.size() * sizeof(CudaSector), cudaMemcpyHostToDevice);
             if (err != cudaSuccess) {
+                cudaFree(d_walls);
+                cudaFree(d_sectors);
+                cudaFree(d_nodes);
+                cudaFree(d_bspTree);
                 throw std::runtime_error(std::string("Failed to copy sectors to device: ") + 
                                          cudaGetErrorString(err));
             }
-            std::cout << "DEBUG: serializeBSPForCuda - Sector data copied successfully" << std::endl;
             
-            std::cout << "DEBUG: serializeBSPForCuda - Copying node data to CUDA device" << std::endl;
             err = cudaMemcpy(d_nodes, nodesData.data(), nodesData.size() * sizeof(CudaBSPNode), cudaMemcpyHostToDevice);
             if (err != cudaSuccess) {
+                cudaFree(d_walls);
+                cudaFree(d_sectors);
+                cudaFree(d_nodes);
+                cudaFree(d_bspTree);
                 throw std::runtime_error(std::string("Failed to copy nodes to device: ") + 
                                          cudaGetErrorString(err));
             }
-            std::cout << "DEBUG: serializeBSPForCuda - Node data copied successfully" << std::endl;
             
             // Create device BSP tree structure
-            std::cout << "DEBUG: serializeBSPForCuda - Creating BSP tree structure" << std::endl;
             CudaBSPTree hostBSPTree;
             hostBSPTree.nodes = d_nodes;
             hostBSPTree.nodeCount = nodesData.size();
-            hostBSPTree.rootNodeIndex = 0;
+            hostBSPTree.rootNodeIndex = rootIndex;
             hostBSPTree.walls = d_walls;
             hostBSPTree.wallCount = wallsData.size();
             hostBSPTree.sectors = d_sectors;
             hostBSPTree.sectorCount = sectorsData.size();
             
             // Copy BSP tree structure to device
-            std::cout << "DEBUG: serializeBSPForCuda - Copying BSP tree structure to CUDA device" << std::endl;
             err = cudaMemcpy(d_bspTree, &hostBSPTree, sizeof(CudaBSPTree), cudaMemcpyHostToDevice);
             if (err != cudaSuccess) {
+                cudaFree(d_walls);
+                cudaFree(d_sectors);
+                cudaFree(d_nodes);
+                cudaFree(d_bspTree);
                 throw std::runtime_error(std::string("Failed to copy BSP tree to device: ") + 
                                          cudaGetErrorString(err));
             }
-            std::cout << "DEBUG: serializeBSPForCuda - BSP tree structure copied successfully" << std::endl;
             
             // Ensure we've synced all operations
-            std::cout << "DEBUG: serializeBSPForCuda - Synchronizing CUDA device" << std::endl;
             err = cudaDeviceSynchronize();
             if (err != cudaSuccess) {
+                cudaFree(d_walls);
+                cudaFree(d_sectors);
+                cudaFree(d_nodes);
+                cudaFree(d_bspTree);
                 throw std::runtime_error(std::string("Failed to synchronize after BSP upload: ") + 
                                          cudaGetErrorString(err));
             }
-            std::cout << "DEBUG: serializeBSPForCuda - CUDA device synchronized successfully" << std::endl;
             
             // Store device pointers only if everything succeeded
-            m_deviceBSPTree = hostBSPTree;
+            m_deviceBSPTree.walls = d_walls;
+            m_deviceBSPTree.wallCount = wallsData.size();
+            m_deviceBSPTree.sectors = d_sectors;
+            m_deviceBSPTree.sectorCount = sectorsData.size();
+            m_deviceBSPTree.nodes = d_nodes;
+            m_deviceBSPTree.nodeCount = nodesData.size();
+            m_deviceBSPTree.rootNodeIndex = rootIndex;
+            
             m_cudaData->d_bspTree = d_bspTree;
             
             m_bspUploaded = true;
             
-            std::cout << "BSP tree serialized for CUDA: " 
-                    << wallsData.size() << " walls, " 
-                    << sectorsData.size() << " sectors, " 
-                    << nodesData.size() << " nodes" << std::endl;
-            std::cout << "DEBUG: serializeBSPForCuda - Serialization completed successfully" << std::endl;
+            std::cout << "BSP tree serialized successfully for CUDA: " 
+                     << wallsData.size() << " walls, " 
+                     << sectorsData.size() << " sectors, " 
+                     << nodesData.size() << " nodes" << std::endl;
             
         } catch (const std::exception& e) {
-            // Clean up any allocated memory on error
-            std::cout << "DEBUG: serializeBSPForCuda - ERROR during serialization, cleaning up" << std::endl;
-            if (d_walls) {
-                std::cout << "DEBUG: Freeing d_walls at " << d_walls << std::endl;
-                cudaFree(d_walls);
-            }
-            if (d_sectors) {
-                std::cout << "DEBUG: Freeing d_sectors at " << d_sectors << std::endl;
-                cudaFree(d_sectors);
-            }
-            if (d_nodes) {
-                std::cout << "DEBUG: Freeing d_nodes at " << d_nodes << std::endl;
-                cudaFree(d_nodes);
-            }
-            if (d_bspTree) {
-                std::cout << "DEBUG: Freeing d_bspTree at " << d_bspTree << std::endl;
-                cudaFree(d_bspTree);
-            }
+            std::cerr << "Error serializing BSP tree for CUDA: " << e.what() << std::endl;
             
-            // Reset state
+            // Clean up any resources that might have been allocated
+            if (d_walls) cudaFree(d_walls);
+            if (d_sectors) cudaFree(d_sectors);
+            if (d_nodes) cudaFree(d_nodes);
+            if (d_bspTree) cudaFree(d_bspTree);
+            
             m_bspUploaded = false;
-            
-            // Re-throw with additional context
-            throw std::runtime_error(std::string("Error during BSP upload: ") + e.what());
         }
     } catch (const std::exception& e) {
-        std::cerr << "Error in serializeBSPForCuda: " << e.what() << std::endl;
-        // Clean up any allocated memory
-        freeBSPData();
+        std::cerr << "High-level error in serializeBSPForCuda: " << e.what() << std::endl;
         m_bspUploaded = false;
     }
 }
 
 // Free BSP data on device
 void RendererCuda::freeBSPData() {
-    std::cout << "DEBUG: freeBSPData - Starting cleanup" << std::endl;
     
     if (!m_cudaAvailable) {
-        std::cout << "DEBUG: freeBSPData - CUDA not available, skipping cleanup" << std::endl;
         return;
     }
     
     if (!m_bspUploaded) {
-        std::cout << "DEBUG: freeBSPData - No BSP data uploaded, skipping cleanup" << std::endl;
         return;
     }
     
     try {
         if (m_deviceBSPTree.walls) {
-            std::cout << "DEBUG: freeBSPData - Freeing walls at " << m_deviceBSPTree.walls << std::endl;
             cudaError_t err = cudaFree(m_deviceBSPTree.walls);
             if (err != cudaSuccess) {
                 std::cerr << "Error freeing BSP walls: " << cudaGetErrorString(err) << std::endl;
-            } else {
-                std::cout << "DEBUG: freeBSPData - Walls freed successfully" << std::endl;
             }
             m_deviceBSPTree.walls = nullptr;
-        } else {
-            std::cout << "DEBUG: freeBSPData - No walls to free" << std::endl;
         }
         
         if (m_deviceBSPTree.sectors) {
-            std::cout << "DEBUG: freeBSPData - Freeing sectors at " << m_deviceBSPTree.sectors << std::endl;
             cudaError_t err = cudaFree(m_deviceBSPTree.sectors);
             if (err != cudaSuccess) {
                 std::cerr << "Error freeing BSP sectors: " << cudaGetErrorString(err) << std::endl;
-            } else {
-                std::cout << "DEBUG: freeBSPData - Sectors freed successfully" << std::endl;
-            }
+            } 
             m_deviceBSPTree.sectors = nullptr;
-        } else {
-            std::cout << "DEBUG: freeBSPData - No sectors to free" << std::endl;
         }
         
         if (m_deviceBSPTree.nodes) {
-            std::cout << "DEBUG: freeBSPData - Freeing nodes at " << m_deviceBSPTree.nodes << std::endl;
             cudaError_t err = cudaFree(m_deviceBSPTree.nodes);
             if (err != cudaSuccess) {
                 std::cerr << "Error freeing BSP nodes: " << cudaGetErrorString(err) << std::endl;
-            } else {
-                std::cout << "DEBUG: freeBSPData - Nodes freed successfully" << std::endl;
             }
             m_deviceBSPTree.nodes = nullptr;
-        } else {
-            std::cout << "DEBUG: freeBSPData - No nodes to free" << std::endl;
         }
         
         if (m_cudaData->d_bspTree) {
-            std::cout << "DEBUG: freeBSPData - Freeing BSP tree at " << m_cudaData->d_bspTree << std::endl;
             cudaError_t err = cudaFree(m_cudaData->d_bspTree);
             if (err != cudaSuccess) {
                 std::cerr << "Error freeing BSP tree: " << cudaGetErrorString(err) << std::endl;
-            } else {
-                std::cout << "DEBUG: freeBSPData - BSP tree freed successfully" << std::endl;
             }
             m_cudaData->d_bspTree = nullptr;
-        } else {
-            std::cout << "DEBUG: freeBSPData - No BSP tree to free" << std::endl;
         }
         
         m_bspUploaded = false;
-        std::cout << "DEBUG: freeBSPData - Cleanup completed successfully" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Error in freeBSPData: " << e.what() << std::endl;
         m_bspUploaded = false;

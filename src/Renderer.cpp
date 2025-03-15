@@ -229,6 +229,15 @@ void Renderer::initialize() {
         loadSpriteTextures();
     }
     
+    // Register DOOM dungeon textures with the renderer
+    // This ensures that the texture IDs in the BSP sectors match the renderer's texture vector
+    TextureLoader::registerDoomTexturesWithRenderer(this);
+    std::cout << "Total textures after registering DOOM textures: " << m_textures.size() << std::endl;
+    
+    // Flag that we need to upload textures to GPU on next render if enabled
+    m_texturesUploaded = false;
+    m_toggleGPU = true;
+    
     clearBuffers();
     
     // Initialize CUDA renderer if GPU acceleration is enabled
@@ -397,7 +406,7 @@ void Renderer::clearBuffers() {
 }
 
 void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const std::vector<Sprite>& sprites) {
-    // Store the view position for use in rendering
+    // Store the view position for rendering
     m_viewPosition = view;
     
     // Create a non-const copy of the sprites to pass to the new implementation
@@ -409,49 +418,64 @@ void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const s
 }
 
 void Renderer::renderFrame(const BSPTree& bsp, std::vector<Sprite>& sprites, float deltaTime) {
-    // Toggle rendering mode if desired
+    // Store the view position
+    m_viewPosition = ViewPosition(m_viewPosition);  // Ensure we have a proper copy
+    
+    // Clear buffers
+    clearBuffers();
+    
+    // Update skybox animation
+    m_skybox.update(deltaTime);
+    
+    // Toggle GPU rendering if keyboard toggles it (handled externally)
     if (m_toggleGPU) {
-        m_gpuAccelerationEnabled = !m_gpuAccelerationEnabled;
+        m_texturesUploaded = false; // Force texture upload
         m_toggleGPU = false;
-        std::cout << "Rendering mode changed to: " << (m_gpuAccelerationEnabled ? "GPU" : "CPU") << std::endl;
+        std::cout << "GPU rendering state toggled, current state: " << (m_gpuAccelerationEnabled ? "enabled" : "disabled") << std::endl;
     }
     
+    // If GPU acceleration is enabled and available, use it
+    #if defined(ENABLE_CUDA)
     if (m_gpuAccelerationEnabled && m_cudaRenderer) {
+        // Upload textures to GPU if needed or if explicitly requested by CUDA renderer
+        if (!m_texturesUploaded || m_cudaRenderer->needsTextureReUpload()) {
+            std::cout << "Uploading " << m_textures.size() << " textures to GPU..." << std::endl;
+            
+            // Reset the texturesUploaded flag before attempting upload
+            m_texturesUploaded = false;
+            
+            // Attempt to upload textures
+            m_cudaRenderer->uploadTextures(m_textures);
+            
+            // Mark as uploaded regardless of success (CUDA renderer will set its own internal flag)
+            m_texturesUploaded = true;
+            std::cout << "Texture upload complete. " << m_textures.size() << " textures now available for GPU rendering." << std::endl;
+        }
+        
+        // Attempt to render with GPU
         try {
-            std::cout << "DEBUG: Starting GPU rendering frame" << std::endl;
-            
-            // First, upload any textures that haven't been uploaded yet
-            if (!m_texturesUploaded) {
-                std::cout << "DEBUG: Uploading textures to GPU" << std::endl;
-                m_cudaRenderer->uploadTextures(m_textures);
-                m_texturesUploaded = true;
-                std::cout << "DEBUG: Uploaded " << m_textures.size() << " textures to GPU" << std::endl;
-            }
-            
-            // Update skybox settings in the CUDA renderer
-            m_cudaRenderer->setSkybox(m_skybox);
-            
-            // Perform the entire rendering process on the GPU
-            std::cout << "DEBUG: Before serializing BSP tree to CUDA" << std::endl;
+            // Use the correct signature for renderFrame - it expects deltaTime as the last parameter
             m_cudaRenderer->renderFrame(bsp, m_viewPosition, sprites, deltaTime);
-            std::cout << "DEBUG: After rendering frame on GPU" << std::endl;
             
-            // Retrieve the results back to the host
-            m_cudaRenderer->retrieveRenderingResults(m_frameBuffer, m_zBuffer);
-            std::cout << "DEBUG: GPU rendering frame completed successfully" << std::endl;
+            // Render minimap with CPU if enabled (not worth GPU overhead)
+            if (m_minimapEnabled) {
+                renderMinimap(bsp, m_viewPosition);
+            }
         } catch (const std::exception& e) {
-            std::cerr << "ERROR in GPU rendering: " << e.what() << std::endl;
-            // Fall back to CPU rendering on error
-            renderCPU(bsp, sprites, deltaTime);
-        } catch (...) {
-            std::cerr << "UNKNOWN ERROR in GPU rendering" << std::endl;
-            // Fall back to CPU rendering on error
+            std::cerr << "CUDA rendering failed: " << e.what() << std::endl;
+            std::cerr << "Falling back to CPU rendering" << std::endl;
+            
+            // Fall back to CPU rendering
             renderCPU(bsp, sprites, deltaTime);
         }
     } else {
-        // CPU rendering path
+        // Use CPU rendering
         renderCPU(bsp, sprites, deltaTime);
     }
+    #else
+    // Always use CPU rendering
+    renderCPU(bsp, sprites, deltaTime);
+    #endif
 }
 
 void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
@@ -2080,12 +2104,21 @@ void Renderer::addTexture(const Texture& texture) {
     // Add to texture list
     m_textures.push_back(texture);
     
+    // Force texture re-upload flag regardless of CUDA status
+    m_texturesUploaded = false;
+    
+    // Log the addition
+    std::cout << "Added new texture to renderer, total textures: " << m_textures.size() << std::endl;
+    
     // If GPU acceleration is enabled, upload the updated texture list
     #if defined(ENABLE_CUDA)
     if (m_gpuAccelerationEnabled && m_cudaRenderer) {
         try {
             std::cout << "Uploading added texture to GPU, total textures: " << m_textures.size() << std::endl;
             m_cudaRenderer->uploadTextures(m_textures);
+            
+            // Note: We don't set m_texturesUploaded to true here because we want the main
+            // render loop to verify the upload was successful during the next frame
         } catch (const std::exception& e) {
             std::cerr << "Error uploading new texture to GPU: " << e.what() << std::endl;
             // Continue using CPU rendering for this texture

@@ -70,6 +70,9 @@ public:
     // Check if we have a CUDA-capable device
     bool isCudaAvailable() const { return m_cudaAvailable; }
     
+    // Check if textures need to be re-uploaded
+    bool needsTextureReUpload() const { return !m_texturesUploaded; }
+    
 private:
     int m_width;
     int m_height;

@@ -63,19 +63,15 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
     static int buildDepth = 0;
     buildDepth++;
     
-    std::cout << "DEBUG: buildTree depth=" << buildDepth << ", walls=" << walls.size() << std::endl;
     
     // If no walls are left, return nullptr (empty space)
     if (walls.empty()) {
-        std::cout << "DEBUG: No walls left at depth " << buildDepth << ", returning nullptr" << std::endl;
         buildDepth--;
         return nullptr;
     }
     
     // If only one wall is left, create a leaf node
     if (walls.size() == 1) {
-        std::cout << "DEBUG: Single wall at depth " << buildDepth << ", creating leaf node with sector ID: " 
-                 << walls[0].sectorFront << std::endl;
         auto node = std::make_unique<BSPNode>();
         node->isLeaf = true;
         node->sectorId = walls[0].sectorFront;
@@ -85,7 +81,6 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
     }
     
     // Find the best splitter among the walls
-    std::cout << "DEBUG: Finding best splitter among " << walls.size() << " walls at depth " << buildDepth << std::endl;
     Line splitter = findBestSplitter(walls);
     
     // Create the node with this splitter
@@ -133,7 +128,6 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
     // Check if we're making progress in splitting the walls
     if ((frontWalls.size() == walls.size() && backWalls.empty()) || 
         (backWalls.size() == walls.size() && frontWalls.empty())) {
-        std::cout << "DEBUG: No progress in splitting walls at depth " << buildDepth << ". Creating leaf node." << std::endl;
         
         // If we're not making progress, just make a leaf node with all walls
         auto leafNode = std::make_unique<BSPNode>();
@@ -146,7 +140,6 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
                 commonSector = wall.sectorFront;
             } else if (commonSector != wall.sectorFront) {
                 // If walls belong to different sectors, use the first one
-                std::cout << "DEBUG: Walls belong to different sectors in leaf node at depth " << buildDepth << std::endl;
                 break;
             }
         }
@@ -154,29 +147,19 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
         leafNode->sectorId = (commonSector != -1) ? commonSector : walls[0].sectorFront;
         leafNode->walls = walls; // Copy all walls
         
-        std::cout << "DEBUG: Created special leaf node with " << walls.size() << " walls at depth " << buildDepth << std::endl;
         buildDepth--;
         return leafNode;
     }
     
     // Recursively build the front and back subtrees
-    std::cout << "DEBUG: Building front subtree with " << frontWalls.size() << " walls at depth " << buildDepth << std::endl;
     if (!frontWalls.empty()) {
         node->front = buildTree(std::move(frontWalls));
-        std::cout << "DEBUG: Front subtree built successfully at depth " << buildDepth << std::endl;
-    } else {
-        std::cout << "DEBUG: No front walls, skipping front subtree at depth " << buildDepth << std::endl;
     }
     
-    std::cout << "DEBUG: Building back subtree with " << backWalls.size() << " walls at depth " << buildDepth << std::endl;
     if (!backWalls.empty()) {
         node->back = buildTree(std::move(backWalls));
-        std::cout << "DEBUG: Back subtree built successfully at depth " << buildDepth << std::endl;
-    } else {
-        std::cout << "DEBUG: No back walls, skipping back subtree at depth " << buildDepth << std::endl;
     }
     
-    std::cout << "DEBUG: Completed building node at depth " << buildDepth << std::endl;
     buildDepth--;
     return node;
 }
@@ -990,16 +973,11 @@ void BSPTree::update(float deltaTime) {
     // If any sector moved, we need to rebuild the BSP tree
     if (anySectorMoved) {
         // Rebuild the BSP tree with the updated sectors
-        std::cout << "Moving sectors updated. Rebuilding BSP tree..." << std::endl;
-        
-        std::cout << "DEBUG: Starting BSP rebuild - collecting walls from " << m_sectors.size() << " sectors" << std::endl;
-        
         // Collect all walls from all sectors
         std::vector<Wall> allWalls;
         try {
             for (size_t i = 0; i < m_sectors.size(); ++i) {
                 const Sector& sector = m_sectors[i];
-                std::cout << "DEBUG: Processing sector " << i << " with " << sector.walls.size() << " walls" << std::endl;
                 
                 for (const Wall& wall : sector.walls) {
                     Wall wallCopy = wall;
@@ -1010,7 +988,6 @@ void BSPTree::update(float deltaTime) {
                 }
             }
             
-            std::cout << "DEBUG: Collected " << allWalls.size() << " walls for BSP rebuild" << std::endl;
         } catch (const std::exception& e) {
             std::cerr << "ERROR: Exception during wall collection: " << e.what() << std::endl;
         } catch (...) {
@@ -1019,9 +996,7 @@ void BSPTree::update(float deltaTime) {
         
         // Rebuild the tree
         try {
-            std::cout << "DEBUG: Starting BSP tree building with " << allWalls.size() << " walls" << std::endl;
             m_root = buildTree(std::move(allWalls));
-            std::cout << "DEBUG: BSP tree rebuilding completed successfully" << std::endl;
         }
         catch (const std::exception& e) {
             std::cerr << "Exception during BSP rebuild: " << e.what() << std::endl;
@@ -1032,7 +1007,6 @@ void BSPTree::update(float deltaTime) {
             // Continue with the old BSP tree rather than crashing
         }
         
-        std::cout << "DEBUG: BSP tree rebuild process completed" << std::endl;
     }
 }
 
@@ -1043,7 +1017,6 @@ void BSPTree::triggerSector(const std::string& tag) {
         for (int sectorId : it->second) {
             if (sectorId >= 0 && sectorId < static_cast<int>(m_sectors.size())) {
                 m_sectors[sectorId].trigger();
-                std::cout << "Triggered sector " << sectorId << " with tag '" << tag << "'" << std::endl;
             }
         }
     }

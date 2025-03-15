@@ -233,6 +233,130 @@ std::vector<Sector> createEnhancedTestMap() {
     return sectors;
 }
 
+// Function to create a DOOM-like dungeon with hellish features
+std::vector<Sector> createDoomDungeon() {
+    std::vector<Sector> sectors;
+    
+    // 1. ENTRANCE HALL - A dimly lit entrance with ominous brick walls
+    Sector entranceHall;
+    entranceHall.floorHeight = 0.0f;
+    entranceHall.ceilingHeight = 3.0f;
+    entranceHall.floorTextureId = 101; // Dark stone floor
+    entranceHall.ceilingTextureId = 102; // Cracked ceiling
+    entranceHall.lightLevel = 100; // Dim lighting
+    entranceHall.tag = "entrance_hall";
+    
+    // Walls for entrance hall (rectangular room)
+    entranceHall.walls.push_back(Wall(Line(Vertex(0.0f, 0.0f), Vertex(20.0f, 0.0f)), 0, -1, 103)); // North wall
+    entranceHall.walls.push_back(Wall(Line(Vertex(20.0f, 0.0f), Vertex(20.0f, 15.0f)), 0, -1, 104)); // East wall
+    entranceHall.walls.push_back(Wall(Line(Vertex(20.0f, 15.0f), Vertex(0.0f, 15.0f)), 0, 1, 105)); // South wall - portal to stairs
+    entranceHall.walls.push_back(Wall(Line(Vertex(0.0f, 15.0f), Vertex(0.0f, 0.0f)), 0, -1, 106)); // West wall
+    
+    // 2. STAIRWAY SECTOR - Connecting entrance to main chamber with descending stairs
+    Sector stairway;
+    stairway.floorHeight = 0.0f; // Start at same level as entrance
+    stairway.ceilingHeight = 3.0f;
+    stairway.floorTextureId = 107; // Stair texture
+    stairway.ceilingTextureId = 102; // Same cracked ceiling
+    stairway.lightLevel = 80; // Darker than entrance
+    stairway.tag = "stairway";
+    stairway.type = SectorType::SPECIAL;
+    
+    // Stairs setup - descending to main chamber
+    stairway.floorMovement = MovementType::SINE_WAVE;
+    stairway.movementDistance = -2.0f; // Drop 2 units from entrance to main chamber
+    stairway.movementActive = true;
+    
+    // Walls for stairway (connecting entrance to main chamber)
+    stairway.walls.push_back(Wall(Line(Vertex(0.0f, 15.0f), Vertex(20.0f, 15.0f)), 1, 0, 105)); // North wall - portal to entrance
+    stairway.walls.push_back(Wall(Line(Vertex(20.0f, 15.0f), Vertex(20.0f, 25.0f)), 1, -1, 108)); // East wall
+    stairway.walls.push_back(Wall(Line(Vertex(20.0f, 25.0f), Vertex(0.0f, 25.0f)), 1, 2, 109)); // South wall - portal to main chamber
+    stairway.walls.push_back(Wall(Line(Vertex(0.0f, 25.0f), Vertex(0.0f, 15.0f)), 1, -1, 110)); // West wall
+    
+    // 3. MAIN CHAMBER - Large central area with multiple exits
+    Sector mainChamber;
+    mainChamber.floorHeight = -2.0f; // Lower than entrance
+    mainChamber.ceilingHeight = 4.0f; // Higher ceiling for dramatic effect
+    mainChamber.floorTextureId = 111; // Pentagram-inscribed floor
+    mainChamber.ceilingTextureId = 112; // Hellish ceiling
+    mainChamber.lightLevel = 120; // Moderate lighting
+    mainChamber.tag = "main_chamber";
+    
+    // Walls for main chamber (larger hex-like room)
+    mainChamber.walls.push_back(Wall(Line(Vertex(0.0f, 25.0f), Vertex(20.0f, 25.0f)), 2, 1, 109)); // North wall - portal to stairs
+    mainChamber.walls.push_back(Wall(Line(Vertex(20.0f, 25.0f), Vertex(30.0f, 35.0f)), 2, -1, 113)); // Northeast wall
+    mainChamber.walls.push_back(Wall(Line(Vertex(30.0f, 35.0f), Vertex(20.0f, 45.0f)), 2, 3, 114)); // East wall - portal to sludge room
+    mainChamber.walls.push_back(Wall(Line(Vertex(20.0f, 45.0f), Vertex(0.0f, 45.0f)), 2, 4, 115)); // South wall - portal to ritual chamber
+    mainChamber.walls.push_back(Wall(Line(Vertex(0.0f, 45.0f), Vertex(-10.0f, 35.0f)), 2, -1, 116)); // Southwest wall
+    mainChamber.walls.push_back(Wall(Line(Vertex(-10.0f, 35.0f), Vertex(0.0f, 25.0f)), 2, 5, 117)); // West wall - portal to secret area
+    
+    // 4. TOXIC SLUDGE ROOM - Dangerous area with radioactive pit
+    Sector sludgeRoom;
+    sludgeRoom.floorHeight = -3.0f; // Lower than main chamber for sludge pit
+    sludgeRoom.ceilingHeight = 3.0f;
+    sludgeRoom.floorTextureId = 118; // Glowing green sludge
+    sludgeRoom.ceilingTextureId = 119; // Pipe-filled ceiling
+    sludgeRoom.lightLevel = 150; // Brighter from the glow of the sludge
+    sludgeRoom.tag = "sludge_room";
+    sludgeRoom.type = SectorType::DAMAGING; // Deals damage when walked on
+    
+    // Sludge animation
+    sludgeRoom.floorMovement = MovementType::SINE_WAVE;
+    sludgeRoom.movementSpeed = 0.3f;
+    sludgeRoom.movementDistance = 0.4f; // Bubbling effect
+    sludgeRoom.movementActive = true;
+    
+    // Walls for sludge room
+    sludgeRoom.walls.push_back(Wall(Line(Vertex(30.0f, 35.0f), Vertex(40.0f, 35.0f)), 3, -1, 120)); // North wall
+    sludgeRoom.walls.push_back(Wall(Line(Vertex(40.0f, 35.0f), Vertex(40.0f, 45.0f)), 3, -1, 121)); // East wall
+    sludgeRoom.walls.push_back(Wall(Line(Vertex(40.0f, 45.0f), Vertex(20.0f, 45.0f)), 3, -1, 122)); // South wall
+    sludgeRoom.walls.push_back(Wall(Line(Vertex(20.0f, 45.0f), Vertex(30.0f, 35.0f)), 3, 2, 114)); // West wall - portal to main chamber
+    
+    // 5. RITUAL CHAMBER - Ominous room with altar
+    Sector ritualChamber;
+    ritualChamber.floorHeight = -2.0f; // Same level as main chamber
+    ritualChamber.ceilingHeight = 5.0f; // Higher for dramatic effect
+    ritualChamber.floorTextureId = 123; // Blood-stained floor
+    ritualChamber.ceilingTextureId = 124; // Demonic symbols ceiling
+    ritualChamber.lightLevel = 90; // Dark and ominous
+    ritualChamber.tag = "ritual_chamber";
+    
+    // Pulsing light effect
+    ritualChamber.type = SectorType::SPECIAL;
+    
+    // Walls for ritual chamber
+    ritualChamber.walls.push_back(Wall(Line(Vertex(0.0f, 45.0f), Vertex(20.0f, 45.0f)), 4, 2, 115)); // North wall - portal to main chamber
+    ritualChamber.walls.push_back(Wall(Line(Vertex(20.0f, 45.0f), Vertex(20.0f, 60.0f)), 4, -1, 125)); // East wall
+    ritualChamber.walls.push_back(Wall(Line(Vertex(20.0f, 60.0f), Vertex(0.0f, 60.0f)), 4, -1, 126)); // South wall
+    ritualChamber.walls.push_back(Wall(Line(Vertex(0.0f, 60.0f), Vertex(0.0f, 45.0f)), 4, -1, 127)); // West wall
+    
+    // 6. SECRET AREA - Hidden room with valuable items
+    Sector secretArea;
+    secretArea.floorHeight = -1.5f; // Slightly higher than main chamber
+    secretArea.ceilingHeight = 2.5f; // Lower ceiling for cramped feel
+    secretArea.floorTextureId = 128; // Treasure floor
+    secretArea.ceilingTextureId = 129; // Low detailed ceiling
+    secretArea.lightLevel = 70; // Very dark
+    secretArea.tag = "secret_area";
+    
+    // Walls for secret area
+    secretArea.walls.push_back(Wall(Line(Vertex(-10.0f, 35.0f), Vertex(0.0f, 25.0f)), 5, 2, 117)); // East wall - portal to main chamber
+    secretArea.walls.push_back(Wall(Line(Vertex(-20.0f, 35.0f), Vertex(-10.0f, 35.0f)), 5, -1, 130)); // North wall
+    secretArea.walls.push_back(Wall(Line(Vertex(-20.0f, 45.0f), Vertex(-20.0f, 35.0f)), 5, -1, 131)); // West wall
+    secretArea.walls.push_back(Wall(Line(Vertex(-10.0f, 45.0f), Vertex(-20.0f, 45.0f)), 5, -1, 132)); // South wall
+    secretArea.walls.push_back(Wall(Line(Vertex(0.0f, 35.0f), Vertex(-10.0f, 45.0f)), 5, -1, 133)); // Southeast wall
+    
+    // Add all sectors to the vector
+    sectors.push_back(entranceHall);
+    sectors.push_back(stairway);
+    sectors.push_back(mainChamber);
+    sectors.push_back(sludgeRoom);
+    sectors.push_back(ritualChamber);
+    sectors.push_back(secretArea);
+    
+    return sectors;
+}
+
 // Test enhanced collision detection
 void testEnhancedCollision(const BSPTree& bsp) {
     std::cout << "\n--- Enhanced Collision Test ---\n";
@@ -1011,10 +1135,10 @@ int main() {
     std::cout << "- Distance-based fog and lighting effects\n";
     std::cout << "- CUDA GPU acceleration for performance-intensive operations\n\n";
     
-    // Create enhanced test map
-    std::vector<Sector> testMap = createEnhancedTestMap();
+    // Create DOOM-style dungeon map
+    std::vector<Sector> testMap = createDoomDungeon();
     
-    std::cout << "Test map created with " << testMap.size() << " sectors:\n";
+    std::cout << "DOOM Dungeon created with " << testMap.size() << " sectors:\n";
     for (size_t i = 0; i < testMap.size(); ++i) {
         const Sector& sector = testMap[i];
         std::cout << "Sector " << i << " (Tag: '" << sector.tag << "'): "

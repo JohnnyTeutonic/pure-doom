@@ -12,6 +12,7 @@ namespace PureDoom {
 
 // Forward declare Texture class
 class Texture;
+class Renderer;
 
 class TextureLoader {
 public:
@@ -33,6 +34,13 @@ public:
     // Create a procedural texture
     static std::shared_ptr<Texture> createProceduralTexture(int width, int height, 
                                                            const std::string& type);
+    
+    // Create DOOM-style textures for the dungeon
+    static void createDoomTextures();
+    
+    // Register DOOM-style textures with the renderer (ensures texture IDs match)
+    static void registerDoomTexturesWithRenderer(Renderer* renderer);
+    
 private:
     // Map of loaded textures
     static std::unordered_map<std::string, std::shared_ptr<Texture>> s_textureCache;
