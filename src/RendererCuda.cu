@@ -601,10 +601,22 @@ __global__ void spriteRenderKernel(
     }
 }
 
+// Add a new CUDA kernel for clearing the Z-buffer
+__global__ void clearZBufferKernel(float* zBuffer, int width, int height, float clearValue) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    if (x < width && y < height) {
+        int idx = y * width + x;
+        zBuffer[idx] = clearValue;
+    }
+}
+
 // Host code for RendererCuda implementation
 
 RendererCuda::RendererCuda(int width, int height) 
-    : m_width(width), m_height(height), m_cudaAvailable(false), m_initialized(false), m_cudaData(nullptr) {
+    : m_width(width), m_height(height), m_cudaAvailable(false), m_initialized(false), 
+      m_buffersAllocated(false), m_texturesUploaded(false), m_cudaData(nullptr) {
     // Initialize skybox with default values
     m_skybox.maxViewDistance = 30.0f; // Default max view distance
 }
@@ -648,14 +660,72 @@ bool RendererCuda::initialize() {
     return true;
 }
 
-void RendererCuda::allocateCudaMemory() {
-    if (!m_cudaAvailable || !m_cudaData) return;
+void RendererCuda::allocateBuffers() {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData || m_buffersAllocated) {
+        return;  // Already allocated or can't allocate
+    }
     
     // Allocate device memory for frame buffer
     CUDA_CHECK(cudaMalloc(&m_cudaData->d_frameBuffer, m_width * m_height * sizeof(Color)));
     
     // Allocate device memory for Z-buffer
     CUDA_CHECK(cudaMalloc(&m_cudaData->d_zBuffer, m_width * m_height * sizeof(float)));
+    
+    m_buffersAllocated = true;
+    
+    // Clear the newly allocated buffers
+    clearBuffers();
+}
+
+void RendererCuda::freeBuffers() {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData || !m_buffersAllocated) {
+        return;  // Not allocated or can't free
+    }
+    
+    // Free device memory for frame buffer
+    if (m_cudaData->d_frameBuffer) {
+        CUDA_CHECK(cudaFree(m_cudaData->d_frameBuffer));
+        m_cudaData->d_frameBuffer = nullptr;
+    }
+    
+    // Free device memory for Z-buffer
+    if (m_cudaData->d_zBuffer) {
+        CUDA_CHECK(cudaFree(m_cudaData->d_zBuffer));
+        m_cudaData->d_zBuffer = nullptr;
+    }
+    
+    m_buffersAllocated = false;
+}
+
+void RendererCuda::clearBuffers() {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData || !m_buffersAllocated) {
+        return;  // Not allocated or can't clear
+    }
+    
+    // Clear frame buffer to black
+    CUDA_CHECK(cudaMemset(m_cudaData->d_frameBuffer, 0, m_width * m_height * sizeof(Color)));
+    
+    // Set Z-buffer to far distance (1.0f) using a kernel
+    dim3 blockSize(16, 16);
+    dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x,
+                 (m_height + blockSize.y - 1) / blockSize.y);
+    
+    clearZBufferKernel<<<gridSize, blockSize>>>(
+        m_cudaData->d_zBuffer,
+        m_width,
+        m_height,
+        1.0f  // Far distance
+    );
+    
+    // Check for errors
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void RendererCuda::allocateCudaMemory() {
+    if (!m_cudaAvailable || !m_cudaData) return;
+    
+    // Allocate initial buffers
+    allocateBuffers();
     
     // Initialize texture data array
     m_cudaData->numTextures = 0;
@@ -665,16 +735,8 @@ void RendererCuda::allocateCudaMemory() {
 void RendererCuda::freeCudaMemory() {
     if (!m_cudaAvailable || !m_cudaData) return;
     
-    // Free device memory
-    if (m_cudaData->d_frameBuffer) {
-        CUDA_CHECK(cudaFree(m_cudaData->d_frameBuffer));
-        m_cudaData->d_frameBuffer = nullptr;
-    }
-    
-    if (m_cudaData->d_zBuffer) {
-        CUDA_CHECK(cudaFree(m_cudaData->d_zBuffer));
-        m_cudaData->d_zBuffer = nullptr;
-    }
+    // Free buffer memory
+    freeBuffers();
     
     // Free texture data
     if (m_cudaData->d_textures) {
@@ -689,31 +751,29 @@ void RendererCuda::freeCudaMemory() {
         CUDA_CHECK(cudaFree(m_cudaData->d_textures));
         m_cudaData->d_textures = nullptr;
         m_cudaData->numTextures = 0;
+        m_texturesUploaded = false;
     }
 }
 
-void RendererCuda::prepareForRendering(const std::vector<Color>& frameBuffer, const std::vector<float>& zBuffer) {
+void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
+                            const std::vector<Sprite>& sprites, float deltaTime) {
     if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
     
-    // Copy frame buffer data to device
-    CUDA_CHECK(cudaMemcpy(m_cudaData->d_frameBuffer, frameBuffer.data(), 
-                        m_width * m_height * sizeof(Color), cudaMemcpyHostToDevice));
+    // Make sure buffers are allocated
+    if (!m_buffersAllocated) {
+        allocateBuffers();
+    }
     
-    // Copy Z-buffer data to device
-    CUDA_CHECK(cudaMemcpy(m_cudaData->d_zBuffer, zBuffer.data(), 
-                        m_width * m_height * sizeof(float), cudaMemcpyHostToDevice));
-}
-
-void RendererCuda::retrieveRenderingResults(std::vector<Color>& frameBuffer, std::vector<float>& zBuffer) {
-    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
+    // Clear buffers for new frame
+    clearBuffers();
     
-    // Copy frame buffer data back to host
-    CUDA_CHECK(cudaMemcpy(frameBuffer.data(), m_cudaData->d_frameBuffer, 
-                        m_width * m_height * sizeof(Color), cudaMemcpyDeviceToHost));
+    // Render all components directly on the GPU
+    renderSkyboxCuda(view, deltaTime, m_skybox);
+    renderBSPCuda(bsp, view, m_skybox.maxViewDistance);
+    renderFloorAndCeilingCuda(bsp, view);
+    renderSpritesCuda(bsp, view, sprites);
     
-    // Copy Z-buffer data back to host
-    CUDA_CHECK(cudaMemcpy(zBuffer.data(), m_cudaData->d_zBuffer, 
-                        m_width * m_height * sizeof(float), cudaMemcpyDeviceToHost));
+    // No need to synchronize - retrieveRenderingResults will wait for kernels to finish
 }
 
 void RendererCuda::renderSkyboxCuda(const ViewPosition& view, float deltaTime, const Skybox& skybox) {
@@ -998,8 +1058,8 @@ void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& vie
 void RendererCuda::uploadTextures(const std::vector<Texture>& textures) {
     if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
     
-    // Free old texture data if it exists
-    if (m_cudaData->d_textures) {
+    // If textures are already uploaded, free existing memory first
+    if (m_texturesUploaded && m_cudaData->d_textures) {
         // Free each texture's pixel data
         for (int i = 0; i < m_cudaData->numTextures; ++i) {
             if (m_cudaData->d_textures[i].pixels) {
@@ -1009,6 +1069,7 @@ void RendererCuda::uploadTextures(const std::vector<Texture>& textures) {
         
         // Free the texture array
         CUDA_CHECK(cudaFree(m_cudaData->d_textures));
+        m_cudaData->d_textures = nullptr;
     }
     
     // Allocate new texture array
@@ -1045,7 +1106,40 @@ void RendererCuda::uploadTextures(const std::vector<Texture>& textures) {
         
         // Free host-side array
         delete[] hostTextures;
+        
+        m_texturesUploaded = true;
     }
+}
+
+// Add these methods after the renderFrame method
+
+void RendererCuda::prepareForRendering(const std::vector<Color>& frameBuffer, const std::vector<float>& zBuffer) {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
+
+    // Make sure buffers are allocated
+    if (!m_buffersAllocated) {
+        allocateBuffers();
+    } else {
+        // Copy frame buffer data to device
+        CUDA_CHECK(cudaMemcpy(m_cudaData->d_frameBuffer, frameBuffer.data(), 
+                          m_width * m_height * sizeof(Color), cudaMemcpyHostToDevice));
+        
+        // Copy Z-buffer data to device
+        CUDA_CHECK(cudaMemcpy(m_cudaData->d_zBuffer, zBuffer.data(), 
+                          m_width * m_height * sizeof(float), cudaMemcpyHostToDevice));
+    }
+}
+
+void RendererCuda::retrieveRenderingResults(std::vector<Color>& frameBuffer, std::vector<float>& zBuffer) {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData || !m_buffersAllocated) return;
+    
+    // Copy frame buffer data back to host
+    CUDA_CHECK(cudaMemcpy(frameBuffer.data(), m_cudaData->d_frameBuffer, 
+                       m_width * m_height * sizeof(Color), cudaMemcpyDeviceToHost));
+    
+    // Copy Z-buffer data back to host
+    CUDA_CHECK(cudaMemcpy(zBuffer.data(), m_cudaData->d_zBuffer, 
+                       m_width * m_height * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
 } // namespace PureDoom 

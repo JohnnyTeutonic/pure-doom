@@ -476,6 +476,12 @@ void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const s
         // Pass skybox reference to CUDA renderer
         m_cudaRenderer->setSkybox(m_skybox);
         
+        // Option 1: Optimized approach - render everything on the GPU and retrieve results
+        m_cudaRenderer->renderFrame(bsp, view, sprites, deltaTime);
+        m_cudaRenderer->retrieveRenderingResults(m_frameBuffer, m_zBuffer);
+        
+        /* 
+        // Option 2: Less efficient approach with more copying (kept for reference)
         // Copy buffers to GPU
         m_cudaRenderer->prepareForRendering(m_frameBuffer, m_zBuffer);
         
@@ -487,6 +493,7 @@ void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const s
         
         // Copy results back from GPU
         m_cudaRenderer->retrieveRenderingResults(m_frameBuffer, m_zBuffer);
+        */
     } else {
         // Full CPU rendering pipeline
         renderSkybox(view, deltaTime);

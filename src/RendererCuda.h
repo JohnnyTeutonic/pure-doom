@@ -24,6 +24,11 @@ public:
     // Initialize the CUDA renderer
     bool initialize();
     
+    // Memory management functions
+    void allocateBuffers();  // Allocate GPU buffers if not already allocated
+    void freeBuffers();      // Free GPU buffers
+    void clearBuffers();     // Clear frameBuffer and zBuffer on GPU
+    
     // Copy data from host to device for rendering
     void prepareForRendering(const std::vector<Color>& frameBuffer, const std::vector<float>& zBuffer);
     
@@ -35,6 +40,10 @@ public:
     
     // Set the reference to the skybox (needed for maxViewDistance)
     void setSkybox(const Skybox& skybox) { m_skybox = skybox; }
+    
+    // Render a complete frame on the GPU
+    void renderFrame(const BSPTree& bsp, const ViewPosition& view, 
+                    const std::vector<Sprite>& sprites, float deltaTime);
     
     // CUDA accelerated rendering functions
     void renderSkyboxCuda(const ViewPosition& view, float deltaTime, const Skybox& skybox);
@@ -59,6 +68,8 @@ private:
     int m_height;
     bool m_cudaAvailable;
     bool m_initialized;
+    bool m_buffersAllocated;  // Track if GPU buffers are allocated
+    bool m_texturesUploaded;  // Track if textures are uploaded
     CudaDeviceInfo m_deviceInfo;
     Skybox m_skybox;  // Store a copy of the skybox for reference
     
