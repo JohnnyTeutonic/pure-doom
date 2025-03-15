@@ -5,6 +5,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <limits>
+#include <chrono>
 
 namespace PureDoom {
 
@@ -345,6 +346,16 @@ void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const s
     
     // Clear visplanes
     m_visplanes.clear();
+    
+    // Calculate delta time for this frame (using a fixed value for now)
+    // In a real implementation, you would pass this as a parameter
+    static auto lastTime = std::chrono::high_resolution_clock::now();
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
+    lastTime = currentTime;
+    
+    // Render the skybox first (background)
+    renderSkybox(view, deltaTime);
     
     // Render the BSP tree (walls)
     renderBSP(bsp, view);
@@ -1239,6 +1250,112 @@ void Renderer::drawPixelWithDepth(int x, int y, float depth, const Color& color)
         if (isPixelVisible(x, y, depth)) {
             m_frameBuffer[y * m_width + x] = color;
             setDepth(x, y, depth);
+        }
+    }
+}
+
+// New skybox rendering function
+void Renderer::renderSkybox(const ViewPosition& view, float deltaTime) {
+    // Update the skybox state (sun position, colors based on time of day)
+    m_skybox.update(deltaTime);
+    
+    // Calculate the visible angle range
+    float halfFov = view.fov * 0.5f * DEG_TO_RAD;
+    
+    // Render the sky gradient for the upper half of the screen
+    int horizonY = m_height / 2;
+    
+    // Draw the sky gradient from top to horizon
+    for (int y = 0; y < horizonY; y++) {
+        // Calculate interpolation factor (0 at horizon, 1 at top)
+        float t = static_cast<float>(y) / horizonY;
+        t = 1.0f - t;  // Invert to go from top to horizon
+        
+        // Blend between zenith and horizon colors
+        Color skyColor = Color::blend(m_skybox.horizonColor, m_skybox.zenithColor, t);
+        
+        // Draw a horizontal line with this color
+        drawHorizontalLine(y, 0, m_width - 1, skyColor);
+        
+        // Set depth to maximum for the sky
+        for (int x = 0; x < m_width; x++) {
+            setDepth(x, y, std::numeric_limits<float>::max());
+        }
+    }
+    
+    // Prepare to place the sun in the sky
+    // Calculate sun position in screen space
+    float sunScreenAngle = m_skybox.sunAngle - view.angle;
+    
+    // Normalize angle to [-π, π]
+    while (sunScreenAngle > PI) sunScreenAngle -= 2.0f * PI;
+    while (sunScreenAngle < -PI) sunScreenAngle += 2.0f * PI;
+    
+    // Check if sun is potentially visible (within field of view plus some margin)
+    if (std::abs(sunScreenAngle) < halfFov + DEG_TO_RAD * 10.0f) {
+        // Calculate x position based on angle
+        float normalizedAngle = sunScreenAngle / halfFov;  // -1 to 1 range
+        float screenX = m_width / 2 * (1.0f + normalizedAngle);
+        
+        // Calculate y position based on height
+        float sunHeightFactor = m_skybox.sunHeight;  // -1 to 1, where 0 is horizon
+        float screenY = horizonY * (1.0f - sunHeightFactor * 0.8f);  // Scale by 0.8 to keep it in view
+        
+        // Draw the sun glow (halo effect)
+        float glowSize = m_skybox.sunSize * m_skybox.sunGlowSize;
+        drawSun(screenX, screenY, glowSize, m_skybox.sunGlowColor, 0.5f);
+        
+        // Draw the sun itself
+        drawSun(screenX, screenY, m_skybox.sunSize, m_skybox.sunColor, 1.0f);
+    }
+}
+
+// Draw the sun as a glowing circle
+void Renderer::drawSun(float screenX, float screenY, float sizeDegrees, const Color& color, float intensity) {
+    // Convert sun size from degrees to pixels
+    // Assuming FOV is mapped to screen width
+    float sizePixels = (sizeDegrees / 90.0f) * m_width * 0.5f;
+    
+    // Calculate sun boundaries
+    int left = std::max(0, static_cast<int>(screenX - sizePixels));
+    int right = std::min(m_width - 1, static_cast<int>(screenX + sizePixels));
+    int top = std::max(0, static_cast<int>(screenY - sizePixels));
+    int bottom = std::min(m_height - 1, static_cast<int>(screenY + sizePixels));
+    
+    float radiusSquared = sizePixels * sizePixels;
+    
+    // Draw the sun
+    for (int y = top; y <= bottom; y++) {
+        for (int x = left; x <= right; x++) {
+            // Calculate distance from center
+            float dx = x - screenX;
+            float dy = y - screenY;
+            float distanceSquared = dx * dx + dy * dy;
+            
+            if (distanceSquared <= radiusSquared) {
+                // Calculate brightness based on distance from center
+                float dist = std::sqrt(distanceSquared);
+                float brightness = 1.0f - (dist / sizePixels);
+                
+                // Apply intensity
+                brightness *= intensity;
+                
+                // Add to existing color (additive blending)
+                if (brightness > 0.05f) {  // Threshold to avoid faint edges
+                    if (x >= 0 && x < m_width && y >= 0 && y < m_height) {
+                        Color existingColor = m_frameBuffer[y * m_width + x];
+                        
+                        // Blend with existing color (additive for sun effect)
+                        Color blendedColor(
+                            std::min(255, existingColor.r + static_cast<int>(color.r * brightness)),
+                            std::min(255, existingColor.g + static_cast<int>(color.g * brightness)),
+                            std::min(255, existingColor.b + static_cast<int>(color.b * brightness))
+                        );
+                        
+                        m_frameBuffer[y * m_width + x] = blendedColor;
+                    }
+                }
+            }
         }
     }
 }

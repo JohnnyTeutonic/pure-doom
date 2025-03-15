@@ -366,6 +366,9 @@ void renderWithSDL(BSPTree& bsp) {
     // Create test sprites
     std::vector<Sprite> sprites = createTestSprites();
     
+    // Get skybox reference
+    Skybox& skybox = renderer.getSkybox();
+    
     std::cout << "\n--- Created " << sprites.size() << " sprites ---\n";
     for (const auto& sprite : sprites) {
         std::cout << "Sprite: " << sprite.tag 
@@ -390,6 +393,10 @@ void renderWithSDL(BSPTree& bsp) {
     std::cout << "- Transparency support\n";
     std::cout << "- Scaling with distance\n";
     std::cout << "- Animation support (though not animated in this demo)\n\n";
+    std::cout << "New feature: Dynamic skybox with moving sun!\n";
+    std::cout << "- Day/night cycle with changing sky colors\n";
+    std::cout << "- Dynamic sun/moon that moves across the sky\n";
+    std::cout << "- Sunrise and sunset effects\n\n";
     
     // Initial player position and movement variables
     ViewPosition view;
@@ -441,6 +448,12 @@ void renderWithSDL(BSPTree& bsp) {
     std::cout << "\n--- Starting Rendering Loop ---\n";
     std::cout << "Use WASD to move, QE to rotate, or move the mouse to look around.\n";
     std::cout << "Press SPACE to jump, C to crouch, M to toggle mouse control, and ESCAPE to quit.\n";
+    std::cout << "Skybox Controls:\n";
+    std::cout << "  F - Toggle dynamic sky on/off\n";
+    std::cout << "  B - Speed up time of day\n";
+    std::cout << "  N - Slow down time of day\n";
+    std::cout << "  K - Increase sun size\n";
+    std::cout << "  L - Decrease sun size\n";
     
     while (!quit) {
         frameStart = SDL_GetTicks();
@@ -488,6 +501,39 @@ void renderWithSDL(BSPTree& bsp) {
                         // Trigger the door (changed from SPACE to T to avoid conflict with jump)
                         bsp.triggerSector("trigger_door");
                         std::cout << "Door triggered!" << std::endl;
+                        break;
+                    case SDLK_f:
+                        // Toggle dynamic sky
+                        skybox.dynamicSky = !skybox.dynamicSky;
+                        std::cout << "Dynamic sky " << (skybox.dynamicSky ? "enabled" : "disabled") << std::endl;
+                        break;
+                    case SDLK_b:
+                        // Speed up time
+                        skybox.timeOfDay += 0.05f;
+                        if (skybox.timeOfDay >= 1.0f) {
+                            skybox.timeOfDay -= 1.0f;
+                        }
+                        std::cout << "Time of day: " << (skybox.timeOfDay * 24.0f) << " hours" << std::endl;
+                        break;
+                    case SDLK_n:
+                        // Slow down time
+                        skybox.timeOfDay -= 0.05f;
+                        if (skybox.timeOfDay < 0.0f) {
+                            skybox.timeOfDay += 1.0f;
+                        }
+                        std::cout << "Time of day: " << (skybox.timeOfDay * 24.0f) << " hours" << std::endl;
+                        break;
+                    case SDLK_k:
+                        // Increase sun size
+                        skybox.sunSize += 1.0f;
+                        skybox.sunSize = std::min(20.0f, skybox.sunSize);
+                        std::cout << "Sun size: " << skybox.sunSize << " degrees" << std::endl;
+                        break;
+                    case SDLK_l:
+                        // Decrease sun size
+                        skybox.sunSize -= 1.0f;
+                        skybox.sunSize = std::max(1.0f, skybox.sunSize);
+                        std::cout << "Sun size: " << skybox.sunSize << " degrees" << std::endl;
                         break;
                 }
             } else if (e.type == SDL_MOUSEMOTION && mouseControlEnabled) {

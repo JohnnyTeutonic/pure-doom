@@ -130,6 +130,85 @@ private:
     void generateCheckerboard();
 };
 
+// Skybox structure to represent a dynamic skybox
+struct Skybox {
+    Texture texture;            // Sky texture
+    Color zenithColor;          // Color at the top of the sky
+    Color horizonColor;         // Color at the horizon
+    float sunSize;              // Size of the sun in degrees
+    float sunAngle;             // Sun angle in radians (0 = East, counter-clockwise)
+    float sunHeight;            // Sun height (-1 to 1, where 0 is at horizon)
+    Color sunColor;             // Color of the sun
+    Color sunGlowColor;         // Color of the sun's glow
+    float sunGlowSize;          // Size of the sun's glow (multiplier of sun size)
+    float timeOfDay;            // Time of day (0-1, where 0 = midnight, 0.5 = noon)
+    bool dynamicSky;            // Whether to animate the sky
+    
+    Skybox() : 
+        zenithColor(100, 150, 255),    // Blue sky at top
+        horizonColor(220, 230, 255),   // Lighter blue at horizon
+        sunSize(5.0f),                 // 5 degrees sun size
+        sunAngle(0.0f),                // Starts at east
+        sunHeight(0.2f),               // Just above horizon
+        sunColor(255, 253, 230),       // Yellowish sun
+        sunGlowColor(255, 200, 150),   // Orange-ish glow
+        sunGlowSize(3.0f),             // 3x sun size for glow
+        timeOfDay(0.3f),               // Morning
+        dynamicSky(true) {}
+        
+    // Update the sun position based on time
+    void update(float deltaTime) {
+        if (dynamicSky) {
+            // Move time forward (completes a full cycle in 5 minutes of real time)
+            timeOfDay += deltaTime / 300.0f;
+            if (timeOfDay >= 1.0f) {
+                timeOfDay -= 1.0f;
+            }
+            
+            // Update sun position based on time of day
+            sunAngle = timeOfDay * 2.0f * PI;
+            
+            // Sun height follows a sine curve (highest at noon, lowest at midnight)
+            sunHeight = std::sin((timeOfDay - 0.25f) * 2.0f * PI) * 0.8f;
+            
+            // Adjust colors based on time of day
+            if (timeOfDay < 0.25f || timeOfDay > 0.75f) {
+                // Night - darker sky
+                float nightFactor = (timeOfDay < 0.25f) ? 
+                    1.0f - (timeOfDay / 0.25f) : 
+                    (timeOfDay - 0.75f) / 0.25f;
+                
+                zenithColor = Color::blend(
+                    Color(100, 150, 255),  // Day blue
+                    Color(10, 20, 80),     // Night blue
+                    nightFactor
+                );
+                
+                horizonColor = Color::blend(
+                    Color(220, 230, 255),  // Day horizon
+                    Color(50, 40, 100),    // Night horizon
+                    nightFactor
+                );
+                
+                // Adjust sun color for sunset/sunrise
+                if (timeOfDay > 0.75f || timeOfDay < 0.05f || (timeOfDay > 0.45f && timeOfDay < 0.55f)) {
+                    sunColor = Color(255, 150, 80);      // Orange sun at sunset/sunrise
+                    sunGlowColor = Color(255, 100, 50);  // Red-orange glow
+                } else {
+                    sunColor = Color(200, 200, 255);     // Blue-white moon at night
+                    sunGlowColor = Color(150, 150, 255); // Blue glow
+                }
+            } else {
+                // Day - normal blue sky
+                zenithColor = Color(100, 150, 255);  // Blue sky at top
+                horizonColor = Color(220, 230, 255); // Lighter blue at horizon
+                sunColor = Color(255, 253, 230);     // Yellowish sun
+                sunGlowColor = Color(255, 200, 150); // Orange-ish glow
+            }
+        }
+    }
+};
+
 // Main renderer class
 class Renderer {
 public:
@@ -155,6 +234,9 @@ public:
     // Clear all sprites
     void clearSprites();
     
+    // Get the skybox
+    Skybox& getSkybox() { return m_skybox; }
+    
 private:
     int m_width;
     int m_height;
@@ -162,6 +244,7 @@ private:
     std::vector<float> m_zBuffer;            // Depth buffer for each pixel
     std::vector<Texture> m_textures;         // Loaded textures
     std::vector<Sprite> m_sprites;           // Sprites to render
+    Skybox m_skybox;                         // Skybox for background
     
     // Wall Y coordinates for each column
     struct WallExtent {
@@ -177,6 +260,10 @@ private:
     void clearBuffers();
     void renderBSP(const BSPTree& bsp, const ViewPosition& view);
     void renderWallSlice(const WallSlice& slice, const ViewPosition& view);
+    
+    // Skybox rendering
+    void renderSkybox(const ViewPosition& view, float deltaTime);
+    void drawSun(float screenX, float screenY, float size, const Color& color, float intensity);
     
     // Span-based floor and ceiling rendering (DOOM style)
     void renderFloorAndCeilingSpans(const BSPTree& bsp, const ViewPosition& view);
