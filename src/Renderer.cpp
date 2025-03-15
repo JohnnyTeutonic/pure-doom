@@ -897,26 +897,64 @@ void Renderer::renderVisplane(const Visplane& visplane, const ViewPosition& view
         // Skip if y is out of screen bounds
         if (y < 0 || y >= m_height) continue;
         
-        // Calculate the world z at this scanline with special handling around the horizon
+        // Calculate the world z at this scanline with improved horizon handling
+        
+        // Distance from horizon in pixels
+        float pixelDistFromHorizon = static_cast<float>(y - horizonY);
+        
+        // Calculate a safe offset that never approaches zero
+        // Use a smooth transition near the horizon to prevent visual artifacts
         float yOffset;
         
-        // Handle pixels close to the horizon specially to prevent flickering
-        if (std::abs(y - horizonY) < 2.0f) {
-            // Use a fixed safe value near the horizon
-            yOffset = (y < horizonY) ? -2.0f : 2.0f;
+        // Define a "safe zone" around the horizon
+        const float HORIZON_SAFE_ZONE = 4.0f;
+        
+        if (std::abs(pixelDistFromHorizon) < HORIZON_SAFE_ZONE) {
+            // For pixels very close to the horizon, use a smoothly interpolated offset
+            // that never gets too close to zero
+            float t = pixelDistFromHorizon / HORIZON_SAFE_ZONE; // -1 to 1 range
+            
+            // Apply sigmoid-like function to create smooth transition at horizon
+            // This ensures the offset never gets too close to zero
+            float sign = (pixelDistFromHorizon < 0.0f) ? -1.0f : 1.0f;
+            yOffset = sign * (HORIZON_SAFE_ZONE * 0.5f * (1.0f + std::abs(t)));
         } else {
-            yOffset = static_cast<float>(y - horizonY);
+            // For pixels far from the horizon, use the actual pixel offset
+            yOffset = pixelDistFromHorizon;
         }
         
+        // Ensure we never divide by something too close to zero
+        if (std::abs(yOffset) < 0.1f) {
+            yOffset = (yOffset < 0.0f) ? -0.1f : 0.1f;
+        }
+        
+        // Improved distance calculation to prevent extreme values
+        float heightDifference = view.height - visplane.height;
+        float z;
+        
+        // Determine if we're looking up or down based on height difference and floor/ceiling
+        bool lookingDown = (visplane.isFloor && heightDifference > 0.0f) || 
+                           (!visplane.isFloor && heightDifference < 0.0f);
+        
         // Calculate z with stabilized offset
-        float z = DISTANCE_MULTIPLIER * (view.height - visplane.height) / 
-                  (visplane.isFloor ? yOffset : -yOffset);
+        if (lookingDown) {
+            z = DISTANCE_MULTIPLIER * std::abs(heightDifference) / std::abs(yOffset);
+        } else {
+            z = DISTANCE_MULTIPLIER * std::abs(heightDifference) / std::abs(yOffset);
+        }
         
-        // Skip if too close or too far
-        if (z < 0.1f || z > 100.0f) continue;
+        // Apply the sign adjustment based on floor/ceiling
+        if (visplane.isFloor) {
+            z = (yOffset > 0.0f) ? z : -z;
+        } else {
+            z = (yOffset < 0.0f) ? z : -z;
+        }
         
-        // Apply different depth biases based on plane type and distance from walls
-        float depthBias = visplane.isFloor ? 0.1f : -0.1f;
+        // Clamp z to a reasonable range to prevent rendering artifacts
+        z = std::max(0.1f, std::min(z, 100.0f));
+        
+        // Apply different depth biases based on plane type
+        float depthBias = visplane.isFloor ? 0.05f : -0.05f;
         z += depthBias;
         
         // Process spans for this scanline
@@ -971,9 +1009,6 @@ void Renderer::renderVisplane(const Visplane& visplane, const ViewPosition& view
                 // Wrap to [0,1]
                 texU = texU - std::floor(texU);
                 texV = texV - std::floor(texV);
-                
-                // Calculate perspective correction values
-                float invZ = 1.0f / std::max(0.1f, std::abs(z));
                 
                 if (spanStart == -1) {
                     // Start a new span
@@ -1606,13 +1641,13 @@ Vec2 Renderer::worldToMinimap(const Vec2& worldPos) const {
     float minimapCenterY = m_minimapY + m_minimapSize / 2.0f;
     
     // Scale and translate the world position to minimap position
-    // Use fixed view of the world - don't center on player for debugging
-    // This will show ALL walls regardless of player position
-    float scale = m_minimapScale * 0.4f; // Further reduce scale to show more of the map (was 0.6f)
+    // Center the map on the player's position rather than a hardcoded point
+    float scale = m_minimapScale * 0.4f; // Scale factor to show more of the map
     
-    // Center the map view at position (12.5,12.5) which is the center of the main room in the larger map
-    float minimapX = minimapCenterX + (worldPos.x - 12.5f) * scale;
-    float minimapY = minimapCenterY + (worldPos.y - 12.5f) * scale;
+    // Use the player's current position (stored during renderMinimap call)
+    // This makes the minimap follow the player, showing relevant surroundings
+    float minimapX = minimapCenterX + (worldPos.x - m_playerPos.x) * scale;
+    float minimapY = minimapCenterY + (worldPos.y - m_playerPos.y) * scale;
     
     return Vec2(minimapX, minimapY);
 }
@@ -1759,8 +1794,9 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
     // Restore original scale
     m_minimapScale = originalScale;
     
-    // Draw player position and direction
+    // Draw player position and direction - should be centered on the minimap
     Vec2 playerPos = worldToMinimap(view.position);
+    // The player should always be at the center now
     drawMinimapPlayer(
         static_cast<int>(playerPos.x),
         static_cast<int>(playerPos.y),
