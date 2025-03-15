@@ -319,16 +319,22 @@ void renderWithSDL(BSPTree& bsp) {
         return;
     }
     
-    // Screen dimensions
-    const int SCREEN_WIDTH = 640;
-    const int SCREEN_HEIGHT = 480;
+    // Window dimensions (display size)
+    const int WINDOW_WIDTH = 1280;
+    const int WINDOW_HEIGHT = 960;
+    
+    // Render dimensions (actual rendering resolution, can be adjusted at runtime)
+    // Using variable instead of const for resolution scaling to allow runtime changes
+    float scalingFactor = 0.5f; // Start at half resolution for much better performance
+    int renderWidth = static_cast<int>(WINDOW_WIDTH * scalingFactor);
+    int renderHeight = static_cast<int>(WINDOW_HEIGHT * scalingFactor);
     
     // Create SDL window
     SDL_Window* window = SDL_CreateWindow("PureDoom Renderer with Sprites", 
                                           SDL_WINDOWPOS_UNDEFINED, 
                                           SDL_WINDOWPOS_UNDEFINED, 
-                                          SCREEN_WIDTH, 
-                                          SCREEN_HEIGHT, 
+                                          WINDOW_WIDTH, 
+                                          WINDOW_HEIGHT, 
                                           SDL_WINDOW_SHOWN);
     if (!window) {
         std::cerr << "Window creation failed: " << SDL_GetError() << std::endl;
@@ -336,7 +342,7 @@ void renderWithSDL(BSPTree& bsp) {
         return;
     }
     
-    // Create SDL renderer
+    // Create SDL renderer with hardware acceleration
     SDL_Renderer* sdlRenderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (!sdlRenderer) {
         std::cerr << "Renderer creation failed: " << SDL_GetError() << std::endl;
@@ -345,29 +351,54 @@ void renderWithSDL(BSPTree& bsp) {
         return;
     }
     
-    // Create SDL texture to display the frame buffer
-    SDL_Texture* texture = SDL_CreateTexture(sdlRenderer, 
-                                            SDL_PIXELFORMAT_RGBA8888, 
-                                            SDL_TEXTUREACCESS_STREAMING, 
-                                            SCREEN_WIDTH, 
-                                            SCREEN_HEIGHT);
-    if (!texture) {
-        std::cerr << "Texture creation failed: " << SDL_GetError() << std::endl;
+    // Enable linear scaling for smoother appearance when upscaling
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+    
+    // Create render texture
+    SDL_Texture* renderTexture = SDL_CreateTexture(sdlRenderer, 
+                                                SDL_PIXELFORMAT_RGBA8888, 
+                                                SDL_TEXTUREACCESS_STREAMING, 
+                                                renderWidth, 
+                                                renderHeight);
+    
+    if (!renderTexture) {
+        std::cerr << "Render texture creation failed: " << SDL_GetError() << std::endl;
         SDL_DestroyRenderer(sdlRenderer);
         SDL_DestroyWindow(window);
         SDL_Quit();
         return;
     }
     
-    // Create our DOOM-style renderer
-    Renderer renderer(SCREEN_WIDTH, SCREEN_HEIGHT);
+    // Create our DOOM-style renderer with the render resolution
+    Renderer renderer(renderWidth, renderHeight);
     renderer.initialize();
+    
+    // Performance variables
+    bool showFPS = true;
+    int frameCount = 0;
+    float fpsTimer = 0.0f;
+    float currentFPS = 0.0f;
+    
+    // Key state tracking for toggling options
+    bool keyPressedP = false; // Performance mode
+    bool keyPressedO = false; // FPS display
+    bool keyPressedLeftBracket = false; // Decrease resolution
+    bool keyPressedRightBracket = false; // Increase resolution
+    bool keyPressedF = false; // Dynamic sky
+    bool keyPressedB = false; // Speed up time
+    bool keyPressedN = false; // Slow down time
+    bool keyPressedK = false; // Increase sun size
+    bool keyPressedL = false; // Decrease sun size
     
     // Create test sprites
     std::vector<Sprite> sprites = createTestSprites();
     
     // Get skybox reference
     Skybox& skybox = renderer.getSkybox();
+    
+    // Create a performance mode flag that can be toggled
+    bool performanceMode = true;
+    float maxViewDistance = performanceMode ? 15.0f : 30.0f; // Reduced view distance in performance mode
     
     std::cout << "\n--- Created " << sprites.size() << " sprites ---\n";
     for (const auto& sprite : sprites) {
@@ -381,22 +412,25 @@ void renderWithSDL(BSPTree& bsp) {
     }
     std::cout << "-----------------------------\n\n";
     
-    std::cout << "\n--- DOOM-style Rendering with Sprites ---\n";
-    std::cout << "This implementation uses three different rendering approaches:\n";
-    std::cout << "1. Column-based rendering for walls (raycasting)\n";
-    std::cout << "2. Span-based rendering for floors and ceilings\n";
-    std::cout << "3. Billboarded rendering for sprites\n\n";
-    std::cout << "Sprite rendering features:\n";
-    std::cout << "- Billboarding (sprites always face the camera)\n";
-    std::cout << "- Z-buffer integration (sprites correctly occluded by walls)\n";
-    std::cout << "- Depth sorting (sprites rendered from back to front)\n";
-    std::cout << "- Transparency support\n";
-    std::cout << "- Scaling with distance\n";
-    std::cout << "- Animation support (though not animated in this demo)\n\n";
-    std::cout << "New feature: Dynamic skybox with moving sun!\n";
-    std::cout << "- Day/night cycle with changing sky colors\n";
-    std::cout << "- Dynamic sun/moon that moves across the sky\n";
-    std::cout << "- Sunrise and sunset effects\n\n";
+    std::cout << "\n--- Performance Settings ---\n";
+    std::cout << "Window size: " << WINDOW_WIDTH << "x" << WINDOW_HEIGHT << "\n";
+    std::cout << "Render resolution: " << renderWidth << "x" << renderHeight << " (scaling factor: " << scalingFactor << ")\n";
+    std::cout << "Performance mode: " << (performanceMode ? "ON" : "OFF") << "\n";
+    std::cout << "Max view distance: " << maxViewDistance << " units\n";
+    std::cout << "Press P to toggle performance mode\n";
+    std::cout << "Press O to toggle FPS display\n";
+    std::cout << "Press [ to decrease rendering resolution\n";
+    std::cout << "Press ] to increase rendering resolution\n\n";
+    
+    std::cout << "\n--- Starting Rendering Loop ---\n";
+    std::cout << "Use WASD to move, QE to rotate, or move the mouse to look around.\n";
+    std::cout << "Press SPACE to jump, C to crouch, M to toggle mouse control, and ESCAPE to quit.\n";
+    std::cout << "Skybox Controls:\n";
+    std::cout << "  F - Toggle dynamic sky on/off\n";
+    std::cout << "  B - Speed up time of day\n";
+    std::cout << "  N - Slow down time of day\n";
+    std::cout << "  K - Increase sun size\n";
+    std::cout << "  L - Decrease sun size\n";
     
     // Initial player position and movement variables
     ViewPosition view;
@@ -420,8 +454,8 @@ void renderWithSDL(BSPTree& bsp) {
     // Mouse control variables
     bool mouseControlEnabled = true;
     const float mouseSensitivity = 0.003f;
-    int mouseX = SCREEN_WIDTH / 2;
-    int mouseY = SCREEN_HEIGHT / 2;
+    int mouseX = renderWidth / 2;
+    int mouseY = renderHeight / 2;
     
     // Hide cursor and enable relative mouse mode when mouse control is active
     if (mouseControlEnabled) {
@@ -445,15 +479,8 @@ void renderWithSDL(BSPTree& bsp) {
     float spriteAnimTimer = 0.0f;
     const float spriteAnimRate = 1.0f;  // Animation speed in seconds
     
-    std::cout << "\n--- Starting Rendering Loop ---\n";
-    std::cout << "Use WASD to move, QE to rotate, or move the mouse to look around.\n";
-    std::cout << "Press SPACE to jump, C to crouch, M to toggle mouse control, and ESCAPE to quit.\n";
-    std::cout << "Skybox Controls:\n";
-    std::cout << "  F - Toggle dynamic sky on/off\n";
-    std::cout << "  B - Speed up time of day\n";
-    std::cout << "  N - Slow down time of day\n";
-    std::cout << "  K - Increase sun size\n";
-    std::cout << "  L - Decrease sun size\n";
+    // Flag to indicate if renderer needs to be recreated
+    bool recreateRenderer = false;
     
     while (!quit) {
         frameStart = SDL_GetTicks();
@@ -462,6 +489,18 @@ void renderWithSDL(BSPTree& bsp) {
         auto currentTime = std::chrono::high_resolution_clock::now();
         float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
         lastTime = currentTime;
+        
+        // Update FPS counter
+        frameCount++;
+        fpsTimer += deltaTime;
+        if (fpsTimer >= 1.0f) {
+            currentFPS = frameCount / fpsTimer;
+            frameCount = 0;
+            fpsTimer = 0.0f;
+            if (showFPS) {
+                std::cout << "FPS: " << currentFPS << std::endl;
+            }
+        }
         
         // Handle events
         while (SDL_PollEvent(&e) != 0) {
@@ -502,39 +541,6 @@ void renderWithSDL(BSPTree& bsp) {
                         bsp.triggerSector("trigger_door");
                         std::cout << "Door triggered!" << std::endl;
                         break;
-                    case SDLK_f:
-                        // Toggle dynamic sky
-                        skybox.dynamicSky = !skybox.dynamicSky;
-                        std::cout << "Dynamic sky " << (skybox.dynamicSky ? "enabled" : "disabled") << std::endl;
-                        break;
-                    case SDLK_b:
-                        // Speed up time
-                        skybox.timeOfDay += 0.05f;
-                        if (skybox.timeOfDay >= 1.0f) {
-                            skybox.timeOfDay -= 1.0f;
-                        }
-                        std::cout << "Time of day: " << (skybox.timeOfDay * 24.0f) << " hours" << std::endl;
-                        break;
-                    case SDLK_n:
-                        // Slow down time
-                        skybox.timeOfDay -= 0.05f;
-                        if (skybox.timeOfDay < 0.0f) {
-                            skybox.timeOfDay += 1.0f;
-                        }
-                        std::cout << "Time of day: " << (skybox.timeOfDay * 24.0f) << " hours" << std::endl;
-                        break;
-                    case SDLK_k:
-                        // Increase sun size
-                        skybox.sunSize += 1.0f;
-                        skybox.sunSize = std::min(20.0f, skybox.sunSize);
-                        std::cout << "Sun size: " << skybox.sunSize << " degrees" << std::endl;
-                        break;
-                    case SDLK_l:
-                        // Decrease sun size
-                        skybox.sunSize -= 1.0f;
-                        skybox.sunSize = std::max(1.0f, skybox.sunSize);
-                        std::cout << "Sun size: " << skybox.sunSize << " degrees" << std::endl;
-                        break;
                 }
             } else if (e.type == SDL_MOUSEMOTION && mouseControlEnabled) {
                 // Apply mouse movement to camera rotation
@@ -555,6 +561,133 @@ void renderWithSDL(BSPTree& bsp) {
                     bsp.triggerSector("trigger_door");
                 }
             }
+        }
+        
+        // Direct key state handling for performance controls
+        const Uint8* keystates = SDL_GetKeyboardState(NULL);
+        
+        // Toggle performance mode (P key)
+        if (keystates[SDL_SCANCODE_P] && !keyPressedP) {
+            keyPressedP = true;
+            performanceMode = !performanceMode;
+            maxViewDistance = performanceMode ? 15.0f : 30.0f;
+            skybox.dynamicSky = !performanceMode; // Disable dynamic sky in performance mode
+            std::cout << "Performance mode: " << (performanceMode ? "ON" : "OFF") << std::endl;
+            std::cout << "Max view distance: " << maxViewDistance << " units" << std::endl;
+        } else if (!keystates[SDL_SCANCODE_P]) {
+            keyPressedP = false;
+        }
+        
+        // Toggle FPS display (O key)
+        if (keystates[SDL_SCANCODE_O] && !keyPressedO) {
+            keyPressedO = true;
+            showFPS = !showFPS;
+            std::cout << "FPS display: " << (showFPS ? "ON" : "OFF") << std::endl;
+        } else if (!keystates[SDL_SCANCODE_O]) {
+            keyPressedO = false;
+        }
+        
+        // Decrease rendering resolution ([ key)
+        if (keystates[SDL_SCANCODE_LEFTBRACKET] && !keyPressedLeftBracket) {
+            keyPressedLeftBracket = true;
+            if (scalingFactor > 0.3f) {
+                scalingFactor -= 0.1f;
+                renderWidth = static_cast<int>(WINDOW_WIDTH * scalingFactor);
+                renderHeight = static_cast<int>(WINDOW_HEIGHT * scalingFactor);
+                recreateRenderer = true;
+                std::cout << "Decreasing rendering resolution to " << renderWidth << "x" << renderHeight 
+                          << " (scale: " << scalingFactor << ")" << std::endl;
+            }
+        } else if (!keystates[SDL_SCANCODE_LEFTBRACKET]) {
+            keyPressedLeftBracket = false;
+        }
+        
+        // Increase rendering resolution (] key)
+        if (keystates[SDL_SCANCODE_RIGHTBRACKET] && !keyPressedRightBracket) {
+            keyPressedRightBracket = true;
+            if (scalingFactor < 1.0f) {
+                scalingFactor += 0.1f;
+                renderWidth = static_cast<int>(WINDOW_WIDTH * scalingFactor);
+                renderHeight = static_cast<int>(WINDOW_HEIGHT * scalingFactor);
+                recreateRenderer = true;
+                std::cout << "Increasing rendering resolution to " << renderWidth << "x" << renderHeight 
+                          << " (scale: " << scalingFactor << ")" << std::endl;
+            }
+        } else if (!keystates[SDL_SCANCODE_RIGHTBRACKET]) {
+            keyPressedRightBracket = false;
+        }
+        
+        // Toggle dynamic sky (F key)
+        if (keystates[SDL_SCANCODE_F] && !keyPressedF) {
+            keyPressedF = true;
+            skybox.dynamicSky = !skybox.dynamicSky;
+            std::cout << "Dynamic sky " << (skybox.dynamicSky ? "enabled" : "disabled") << std::endl;
+        } else if (!keystates[SDL_SCANCODE_F]) {
+            keyPressedF = false;
+        }
+        
+        // Speed up time (B key)
+        if (keystates[SDL_SCANCODE_B] && !keyPressedB) {
+            keyPressedB = true;
+            skybox.timeOfDay += 0.05f;
+            if (skybox.timeOfDay >= 1.0f) {
+                skybox.timeOfDay -= 1.0f;
+            }
+            std::cout << "Time of day: " << (skybox.timeOfDay * 24.0f) << " hours" << std::endl;
+        } else if (!keystates[SDL_SCANCODE_B]) {
+            keyPressedB = false;
+        }
+        
+        // Slow down time (N key)
+        if (keystates[SDL_SCANCODE_N] && !keyPressedN) {
+            keyPressedN = true;
+            skybox.timeOfDay -= 0.05f;
+            if (skybox.timeOfDay < 0.0f) {
+                skybox.timeOfDay += 1.0f;
+            }
+            std::cout << "Time of day: " << (skybox.timeOfDay * 24.0f) << " hours" << std::endl;
+        } else if (!keystates[SDL_SCANCODE_N]) {
+            keyPressedN = false;
+        }
+        
+        // Increase sun size (K key)
+        if (keystates[SDL_SCANCODE_K] && !keyPressedK) {
+            keyPressedK = true;
+            skybox.sunSize += 1.0f;
+            skybox.sunSize = std::min(20.0f, skybox.sunSize);
+            std::cout << "Sun size: " << skybox.sunSize << " degrees" << std::endl;
+        } else if (!keystates[SDL_SCANCODE_K]) {
+            keyPressedK = false;
+        }
+        
+        // Decrease sun size (L key)
+        if (keystates[SDL_SCANCODE_L] && !keyPressedL) {
+            keyPressedL = true;
+            skybox.sunSize -= 1.0f;
+            skybox.sunSize = std::max(1.0f, skybox.sunSize);
+            std::cout << "Sun size: " << skybox.sunSize << " degrees" << std::endl;
+        } else if (!keystates[SDL_SCANCODE_L]) {
+            keyPressedL = false;
+        }
+        
+        // Recreate renderer if needed (resolution change)
+        if (recreateRenderer) {
+            // Destroy old texture
+            SDL_DestroyTexture(renderTexture);
+            
+            // Create new texture with updated dimensions
+            renderTexture = SDL_CreateTexture(sdlRenderer, 
+                                             SDL_PIXELFORMAT_RGBA8888, 
+                                             SDL_TEXTUREACCESS_STREAMING, 
+                                             renderWidth, 
+                                             renderHeight);
+            
+            // Create new renderer
+            renderer = Renderer(renderWidth, renderHeight);
+            renderer.initialize();
+            
+            // Reset flag
+            recreateRenderer = false;
         }
         
         // Update player height based on crouch state (with smooth transition)
@@ -582,8 +715,6 @@ void renderWithSDL(BSPTree& bsp) {
         }
         
         // Handle keyboard state for movement
-        const Uint8* keystates = SDL_GetKeyboardState(NULL);
-        
         // Calculate forward and right vectors based on view angle
         Vec2 forward(std::cos(view.angle), std::sin(view.angle));
         Vec2 right(std::cos(view.angle + PI/2), std::sin(view.angle + PI/2));
@@ -646,15 +777,20 @@ void renderWithSDL(BSPTree& bsp) {
             }
         }
         
+        // Pass max view distance to renderer through skybox (since we already have a reference)
+        skybox.maxViewDistance = maxViewDistance;
+        
         // Render the frame with sprites
         renderer.renderFrame(bsp, view, sprites);
         
         // Update the SDL texture with our frame buffer
-        SDL_UpdateTexture(texture, NULL, renderer.getFrameBuffer(), SCREEN_WIDTH * 4);
+        SDL_UpdateTexture(renderTexture, NULL, renderer.getFrameBuffer(), renderWidth * 4);
         
-        // Clear the SDL renderer and render the texture
+        // Clear the SDL renderer and render the texture with scaling to fit the window
         SDL_RenderClear(sdlRenderer);
-        SDL_RenderCopy(sdlRenderer, texture, NULL, NULL);
+        SDL_RenderCopy(sdlRenderer, renderTexture, NULL, NULL);
+        
+        // Display the rendered frame
         SDL_RenderPresent(sdlRenderer);
         
         // Cap the frame rate
@@ -666,7 +802,7 @@ void renderWithSDL(BSPTree& bsp) {
     
     // Clean up SDL resources
     SDL_SetRelativeMouseMode(SDL_FALSE);  // Ensure mouse is visible when exiting
-    SDL_DestroyTexture(texture);
+    SDL_DestroyTexture(renderTexture);
     SDL_DestroyRenderer(sdlRenderer);
     SDL_DestroyWindow(window);
     SDL_Quit();

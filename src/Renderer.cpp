@@ -372,6 +372,9 @@ void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
     float halfFov = view.fov * 0.5f * DEG_TO_RAD;
     float angleStep = view.fov * DEG_TO_RAD / m_width;
     
+    // Use the max view distance from skybox for distance culling
+    float maxDistance = m_skybox.maxViewDistance;
+    
     // Calculate reference horizontal plane at player's feet
     // This ensures walls don't distort when player height changes
     float floorLevel = 0.0f; // Assume ground level is 0
@@ -395,8 +398,8 @@ void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
         // Create ray direction vector
         Vec2 rayDir(std::cos(rayAngle), std::sin(rayAngle));
         
-        // Cast ray and get collision info
-        CollisionInfo collision = bsp.castRay(view.position, rayDir, 100.0f);
+        // Cast ray and get collision info - use maxDistance for performance
+        CollisionInfo collision = bsp.castRay(view.position, rayDir, maxDistance);
         
         if (collision.collision) {
             // Find which sector the wall belongs to
@@ -1265,8 +1268,12 @@ void Renderer::renderSkybox(const ViewPosition& view, float deltaTime) {
     // Render the sky gradient for the upper half of the screen
     int horizonY = m_height / 2;
     
+    // Performance optimization for sky gradient
+    bool performanceMode = (m_skybox.maxViewDistance < 20.0f);
+    int lineStep = performanceMode ? 2 : 1; // Draw every other line in performance mode
+    
     // Draw the sky gradient from top to horizon
-    for (int y = 0; y < horizonY; y++) {
+    for (int y = 0; y < horizonY; y += lineStep) {
         // Calculate interpolation factor (0 at horizon, 1 at top)
         float t = static_cast<float>(y) / horizonY;
         t = 1.0f - t;  // Invert to go from top to horizon
@@ -1277,10 +1284,25 @@ void Renderer::renderSkybox(const ViewPosition& view, float deltaTime) {
         // Draw a horizontal line with this color
         drawHorizontalLine(y, 0, m_width - 1, skyColor);
         
-        // Set depth to maximum for the sky
-        for (int x = 0; x < m_width; x++) {
-            setDepth(x, y, std::numeric_limits<float>::max());
+        // In performance mode, also fill the next line to maintain smoothness
+        if (performanceMode && y + 1 < horizonY) {
+            drawHorizontalLine(y + 1, 0, m_width - 1, skyColor);
         }
+        
+        // Set depth to maximum for the sky (use step for efficiency)
+        for (int x = 0; x < m_width; x += 4) {  // Process in blocks of 4 for efficiency
+            for (int i = 0; i < 4 && x + i < m_width; i++) {
+                setDepth(x + i, y, std::numeric_limits<float>::max());
+                if (performanceMode && y + 1 < horizonY) {
+                    setDepth(x + i, y + 1, std::numeric_limits<float>::max());
+                }
+            }
+        }
+    }
+    
+    // If in performance mode and dynamic sky is off, skip sun rendering
+    if (performanceMode && !m_skybox.dynamicSky) {
+        return;
     }
     
     // Prepare to place the sun in the sky
@@ -1301,9 +1323,12 @@ void Renderer::renderSkybox(const ViewPosition& view, float deltaTime) {
         float sunHeightFactor = m_skybox.sunHeight;  // -1 to 1, where 0 is horizon
         float screenY = horizonY * (1.0f - sunHeightFactor * 0.8f);  // Scale by 0.8 to keep it in view
         
-        // Draw the sun glow (halo effect)
-        float glowSize = m_skybox.sunSize * m_skybox.sunGlowSize;
-        drawSun(screenX, screenY, glowSize, m_skybox.sunGlowColor, 0.5f);
+        // Only draw glow in high quality mode
+        if (!performanceMode) {
+            // Draw the sun glow (halo effect)
+            float glowSize = m_skybox.sunSize * m_skybox.sunGlowSize;
+            drawSun(screenX, screenY, glowSize, m_skybox.sunGlowColor, 0.5f);
+        }
         
         // Draw the sun itself
         drawSun(screenX, screenY, m_skybox.sunSize, m_skybox.sunColor, 1.0f);
@@ -1324,9 +1349,12 @@ void Renderer::drawSun(float screenX, float screenY, float sizeDegrees, const Co
     
     float radiusSquared = sizePixels * sizePixels;
     
+    // Performance optimization: Draw with larger step size when in performance mode
+    int step = (m_skybox.maxViewDistance < 20.0f) ? 2 : 1; // Skip pixels in performance mode
+    
     // Draw the sun
-    for (int y = top; y <= bottom; y++) {
-        for (int x = left; x <= right; x++) {
+    for (int y = top; y <= bottom; y += step) {
+        for (int x = left; x <= right; x += step) {
             // Calculate distance from center
             float dx = x - screenX;
             float dy = y - screenY;
@@ -1353,6 +1381,16 @@ void Renderer::drawSun(float screenX, float screenY, float sizeDegrees, const Co
                         );
                         
                         m_frameBuffer[y * m_width + x] = blendedColor;
+                        
+                        // In performance mode with step > 1, also fill adjacent pixels to reduce pixelation
+                        if (step > 1) {
+                            // Fill adjacent pixels in a 2x2 block
+                            if (x + 1 < m_width && y + 1 < m_height) {
+                                m_frameBuffer[(y) * m_width + (x+1)] = blendedColor;
+                                m_frameBuffer[(y+1) * m_width + (x)] = blendedColor;
+                                m_frameBuffer[(y+1) * m_width + (x+1)] = blendedColor;
+                            }
+                        }
                     }
                 }
             }

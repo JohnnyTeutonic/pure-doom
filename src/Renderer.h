@@ -143,6 +143,7 @@ struct Skybox {
     float sunGlowSize;          // Size of the sun's glow (multiplier of sun size)
     float timeOfDay;            // Time of day (0-1, where 0 = midnight, 0.5 = noon)
     bool dynamicSky;            // Whether to animate the sky
+    float maxViewDistance;      // Maximum rendering distance for performance optimization
     
     Skybox() : 
         zenithColor(100, 150, 255),    // Blue sky at top
@@ -154,7 +155,8 @@ struct Skybox {
         sunGlowColor(255, 200, 150),   // Orange-ish glow
         sunGlowSize(3.0f),             // 3x sun size for glow
         timeOfDay(0.3f),               // Morning
-        dynamicSky(true) {}
+        dynamicSky(true),
+        maxViewDistance(30.0f) {}      // Default max view distance
         
     // Update the sun position based on time
     void update(float deltaTime) {
