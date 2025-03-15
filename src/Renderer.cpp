@@ -1445,31 +1445,24 @@ void Renderer::setDepth(int x, int y, float depth) {
 }
 
 bool Renderer::isPixelVisible(int x, int y, float depth) const {
-    // Add a larger epsilon value for z-fighting prevention
-    const float DEPTH_EPSILON = 0.005f;
-    
     // Get current z-buffer depth
     float currentDepth = getDepth(x, y);
     
-    // If depths are very close (potential z-fighting), use additional criteria
+    // Use a consistent depth comparison with a single bias value.
+    // This prevents z-fighting without creating visual artifacts.
+    // The bias is small enough to prevent visual issues but large enough to resolve z-fighting.
+    const float DEPTH_BIAS = 0.001f;
+    
+    // For very close surfaces, we need a definitive rule that is NOT position-dependent
     if (std::abs(depth - currentDepth) < 0.02f) {
-        // Prefer the depth that gives a more stable pattern
-        // Use a checkerboard pattern for stability near portals
-        bool isEvenX = (x % 2) == 0;
-        bool isEvenY = (y % 2) == 0;
-        
-        // If we're in a z-fighting situation, use the checkerboard to select
-        if (isEvenX == isEvenY) {
-            // For even pattern squares, prefer the greater depth (further back)
-            return depth < (currentDepth - DEPTH_EPSILON * 2.0f);
-        } else {
-            // For odd pattern squares, prefer the lesser depth (closer)
-            return depth < (currentDepth - DEPTH_EPSILON * 0.5f);
-        }
+        // If depths are very close (potential z-fighting)
+        // Always prefer the closer surface (smaller depth value) with a small bias
+        // This maintains visual consistency across the entire surface
+        return depth < (currentDepth - DEPTH_BIAS);
     }
     
-    // Normal case: use standard depth test with epsilon
-    return depth < (currentDepth - DEPTH_EPSILON);
+    // For normal cases with clearly different depths
+    return depth < currentDepth;
 }
 
 void Renderer::drawPixelWithDepth(int x, int y, float depth, const Color& color) {
