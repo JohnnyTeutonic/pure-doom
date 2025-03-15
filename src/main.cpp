@@ -750,20 +750,71 @@ void renderWithSDL(BSPTree& bsp) {
             currentMoveSpeed *= 0.5f; // Move slower when crouched
         }
         
-        // Move forward/backward
+        // Define player collision radius
+        const float PLAYER_RADIUS = 0.25f;
+        
+        // Initialize movement vector
+        Vec2 movementVector(0.0f, 0.0f);
+        
+        // Calculate movement vector based on input
         if (keystates[SDL_SCANCODE_W]) {
-            view.position = view.position + forward * currentMoveSpeed;
+            movementVector = movementVector + forward * currentMoveSpeed;
         }
         if (keystates[SDL_SCANCODE_S]) {
-            view.position = view.position - forward * currentMoveSpeed;
+            movementVector = movementVector - forward * currentMoveSpeed;
         }
-        
-        // Strafe left/right
         if (keystates[SDL_SCANCODE_D]) {
-            view.position = view.position + right * currentMoveSpeed;
+            movementVector = movementVector + right * currentMoveSpeed;
         }
         if (keystates[SDL_SCANCODE_A]) {
-            view.position = view.position - right * currentMoveSpeed;
+            movementVector = movementVector - right * currentMoveSpeed;
+        }
+        
+        // Only attempt movement if the player is trying to move
+        if (movementVector.lengthSquared() > 0.001f) {
+            // Check for collisions
+            CollisionInfo collision = bsp.checkCollision(view.position, PLAYER_RADIUS, movementVector);
+            
+            if (collision.collision) {
+                // If we're about to hit a wall
+                if (collision.distance < 1.0f) {
+                    // Move as far as we can before hitting the wall
+                    Vec2 safeMovement = movementVector * collision.distance;
+                    
+                    // Apply a tiny offset to avoid floating point precision issues
+                    const float SAFE_OFFSET = 0.001f;
+                    safeMovement = safeMovement - collision.normal * SAFE_OFFSET;
+                    
+                    // Move up to the collision point
+                    view.position = view.position + safeMovement;
+                    
+                    // Calculate the remaining movement vector that needs to be redirected
+                    Vec2 remainingMovement = movementVector * (1.0f - collision.distance);
+                    
+                    // Slide along the wall (project the remaining movement onto the wall plane)
+                    Vec2 slideVector = remainingMovement - 
+                                    collision.normal * remainingMovement.dotProduct(collision.normal);
+                    
+                    // Apply the slide movement, but check for a second collision
+                    if (slideVector.lengthSquared() > 0.001f) {
+                        CollisionInfo slideCollision = bsp.checkCollision(view.position, PLAYER_RADIUS, slideVector);
+                        
+                        if (slideCollision.collision && slideCollision.distance < 1.0f) {
+                            // If we'd hit another wall while sliding, move safely along the slide vector
+                            view.position = view.position + slideVector * slideCollision.distance * 0.9f;
+                        } else {
+                            // No collision with the slide vector, apply it fully
+                            view.position = view.position + slideVector;
+                        }
+                    }
+                } else {
+                    // Collision.distance >= 1.0 means no collision during this move
+                    view.position = view.position + movementVector;
+                }
+            } else {
+                // No collision, safe to move
+                view.position = view.position + movementVector;
+            }
         }
         
         // Rotate view with keyboard (only if mouse control is disabled or if keys are pressed)
