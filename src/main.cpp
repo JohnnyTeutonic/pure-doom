@@ -410,6 +410,17 @@ void renderWithSDL(BSPTree& bsp) {
     bool isJumping = false;
     bool isCrouching = false;
     
+    // Mouse control variables
+    bool mouseControlEnabled = true;
+    const float mouseSensitivity = 0.003f;
+    int mouseX = SCREEN_WIDTH / 2;
+    int mouseY = SCREEN_HEIGHT / 2;
+    
+    // Hide cursor and enable relative mouse mode when mouse control is active
+    if (mouseControlEnabled) {
+        SDL_SetRelativeMouseMode(SDL_TRUE);
+    }
+    
     // Main loop
     bool quit = false;
     SDL_Event e;
@@ -428,8 +439,8 @@ void renderWithSDL(BSPTree& bsp) {
     const float spriteAnimRate = 1.0f;  // Animation speed in seconds
     
     std::cout << "\n--- Starting Rendering Loop ---\n";
-    std::cout << "Use WASD to move, QE to rotate.\n";
-    std::cout << "Press SPACE to jump, C to crouch, and ESCAPE to quit.\n";
+    std::cout << "Use WASD to move, QE to rotate, or move the mouse to look around.\n";
+    std::cout << "Press SPACE to jump, C to crouch, M to toggle mouse control, and ESCAPE to quit.\n";
     
     while (!quit) {
         frameStart = SDL_GetTicks();
@@ -467,11 +478,35 @@ void renderWithSDL(BSPTree& bsp) {
                             }
                         }
                         break;
+                    case SDLK_m:
+                        // Toggle mouse control
+                        mouseControlEnabled = !mouseControlEnabled;
+                        SDL_SetRelativeMouseMode(mouseControlEnabled ? SDL_TRUE : SDL_FALSE);
+                        std::cout << "Mouse control " << (mouseControlEnabled ? "enabled" : "disabled") << std::endl;
+                        break;
                     case SDLK_t:
                         // Trigger the door (changed from SPACE to T to avoid conflict with jump)
                         bsp.triggerSector("trigger_door");
                         std::cout << "Door triggered!" << std::endl;
                         break;
+                }
+            } else if (e.type == SDL_MOUSEMOTION && mouseControlEnabled) {
+                // Apply mouse movement to camera rotation
+                view.angle += e.motion.xrel * mouseSensitivity;
+                
+                // Optional: Implement vertical look (requires additional view pitch variable)
+                // verticalLook += e.motion.yrel * mouseSensitivity;
+                // verticalLook = std::max(-1.0f, std::min(1.0f, verticalLook)); // Clamp between -1 and 1
+            } else if (e.type == SDL_MOUSEBUTTONDOWN && mouseControlEnabled) {
+                if (e.button.button == SDL_BUTTON_LEFT) {
+                    // Left mouse button - could be used for shooting or interaction
+                    std::cout << "Left mouse button pressed" << std::endl;
+                } else if (e.button.button == SDL_BUTTON_RIGHT) {
+                    // Right mouse button - could be used for alt fire or secondary action
+                    std::cout << "Right mouse button pressed" << std::endl;
+                    
+                    // Example: Trigger the door with right click
+                    bsp.triggerSector("trigger_door");
                 }
             }
         }
@@ -529,11 +564,11 @@ void renderWithSDL(BSPTree& bsp) {
             view.position = view.position - right * currentMoveSpeed;
         }
         
-        // Rotate view
-        if (keystates[SDL_SCANCODE_Q]) {
+        // Rotate view with keyboard (only if mouse control is disabled or if keys are pressed)
+        if (!mouseControlEnabled || keystates[SDL_SCANCODE_Q]) {
             view.angle -= rotateSpeed;
         }
-        if (keystates[SDL_SCANCODE_E]) {
+        if (!mouseControlEnabled || keystates[SDL_SCANCODE_E]) {
             view.angle += rotateSpeed;
         }
         
@@ -584,6 +619,7 @@ void renderWithSDL(BSPTree& bsp) {
     }
     
     // Clean up SDL resources
+    SDL_SetRelativeMouseMode(SDL_FALSE);  // Ensure mouse is visible when exiting
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(sdlRenderer);
     SDL_DestroyWindow(window);
