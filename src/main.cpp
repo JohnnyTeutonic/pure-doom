@@ -401,6 +401,15 @@ void renderWithSDL(BSPTree& bsp) {
     float moveSpeed = 0.05f;
     float rotateSpeed = 0.02f;
     
+    // Jump physics variables
+    const float PLAYER_DEFAULT_HEIGHT = 0.8f;
+    const float PLAYER_CROUCH_HEIGHT = 0.4f;
+    const float JUMP_INITIAL_VELOCITY = 0.08f;
+    const float GRAVITY = 0.004f;
+    float verticalVelocity = 0.0f;
+    bool isJumping = false;
+    bool isCrouching = false;
+    
     // Main loop
     bool quit = false;
     SDL_Event e;
@@ -420,7 +429,7 @@ void renderWithSDL(BSPTree& bsp) {
     
     std::cout << "\n--- Starting Rendering Loop ---\n";
     std::cout << "Use WASD to move, QE to rotate.\n";
-    std::cout << "Press SPACE to trigger the door, ESC to quit.\n";
+    std::cout << "Press SPACE to jump, C to crouch, and ESCAPE to quit.\n";
     
     while (!quit) {
         frameStart = SDL_GetTicks();
@@ -440,11 +449,54 @@ void renderWithSDL(BSPTree& bsp) {
                         quit = true;
                         break;
                     case SDLK_SPACE:
-                        // Trigger the door
+                        // Jump if on the ground
+                        if (!isJumping && !isCrouching) {
+                            isJumping = true;
+                            verticalVelocity = JUMP_INITIAL_VELOCITY;
+                            std::cout << "Player jumped!" << std::endl;
+                        }
+                        break;
+                    case SDLK_c:
+                        // Toggle crouch
+                        if (!isJumping) {
+                            isCrouching = !isCrouching;
+                            if (isCrouching) {
+                                std::cout << "Player crouched" << std::endl;
+                            } else {
+                                std::cout << "Player stood up" << std::endl;
+                            }
+                        }
+                        break;
+                    case SDLK_t:
+                        // Trigger the door (changed from SPACE to T to avoid conflict with jump)
                         bsp.triggerSector("trigger_door");
                         std::cout << "Door triggered!" << std::endl;
                         break;
                 }
+            }
+        }
+        
+        // Update player height based on crouch state (with smooth transition)
+        float targetHeight = isCrouching ? PLAYER_CROUCH_HEIGHT : PLAYER_DEFAULT_HEIGHT;
+        if (!isJumping) {
+            // Smoothly interpolate to target height when not jumping
+            view.height = view.height + (targetHeight - view.height) * deltaTime * 5.0f;
+        }
+        
+        // Apply jumping physics
+        if (isJumping) {
+            // Update height based on vertical velocity
+            view.height += verticalVelocity;
+            
+            // Apply gravity
+            verticalVelocity -= GRAVITY;
+            
+            // Check if landing
+            if (view.height <= targetHeight) {
+                view.height = targetHeight;
+                verticalVelocity = 0.0f;
+                isJumping = false;
+                std::cout << "Player landed" << std::endl;
             }
         }
         
@@ -455,20 +507,26 @@ void renderWithSDL(BSPTree& bsp) {
         Vec2 forward(std::cos(view.angle), std::sin(view.angle));
         Vec2 right(std::cos(view.angle + PI/2), std::sin(view.angle + PI/2));
         
+        // Movement speed affected by crouch state
+        float currentMoveSpeed = moveSpeed;
+        if (isCrouching) {
+            currentMoveSpeed *= 0.5f; // Move slower when crouched
+        }
+        
         // Move forward/backward
         if (keystates[SDL_SCANCODE_W]) {
-            view.position = view.position + forward * moveSpeed;
+            view.position = view.position + forward * currentMoveSpeed;
         }
         if (keystates[SDL_SCANCODE_S]) {
-            view.position = view.position - forward * moveSpeed;
+            view.position = view.position - forward * currentMoveSpeed;
         }
         
         // Strafe left/right
         if (keystates[SDL_SCANCODE_D]) {
-            view.position = view.position + right * moveSpeed;
+            view.position = view.position + right * currentMoveSpeed;
         }
         if (keystates[SDL_SCANCODE_A]) {
-            view.position = view.position - right * moveSpeed;
+            view.position = view.position - right * currentMoveSpeed;
         }
         
         // Rotate view

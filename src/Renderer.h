@@ -58,9 +58,12 @@ struct WallSlice {
     int textureId;    // Texture to use
     int lightLevel;   // Light level
     bool isPortal;    // Is this a portal wall?
+    float floorHeight;   // Floor height of sector
+    float ceilingHeight; // Ceiling height of sector
     
     WallSlice() : x(0), distance(0.0f), height(0.0f), texCoordU(0.0f),
-                 textureId(-1), lightLevel(0), isPortal(false) {}
+                 textureId(-1), lightLevel(0), isPortal(false),
+                 floorHeight(0.0f), ceilingHeight(0.0f) {}
 };
 
 // Span for floor/ceiling rendering
@@ -92,20 +95,23 @@ struct Span {
              textureId(-1), lightLevel(0), isFloor(true) {}
 };
 
+// Visplane column structure
+struct VisplaneColumn {
+    int yStart;   // Start y-coordinate for this column
+    int yEnd;     // End y-coordinate for this column
+    
+    VisplaneColumn() : yStart(-1), yEnd(-1) {}
+};
+
 // Visplane for floor/ceiling
 struct Visplane {
-    int minX;          // Leftmost x coordinate where this plane is visible
-    int maxX;          // Rightmost x coordinate where this plane is visible
-    std::vector<int> top;      // Top of visible area for each column
-    std::vector<int> bottom;   // Bottom of visible area for each column
+    std::vector<VisplaneColumn> columns; // Columns of this visplane
     float height;      // Height of this plane in world units
     int textureId;     // Texture id
     int lightLevel;    // Light level
     bool isFloor;      // Is this a floor plane (vs ceiling)?
     
-    Visplane(int width, float h, int tex, int light, bool floor)
-        : minX(width), maxX(0), top(width, -1), bottom(width, -1),
-          height(h), textureId(tex), lightLevel(light), isFloor(floor) {}
+    Visplane() : height(0.0f), textureId(0), lightLevel(255), isFloor(true) {}
 };
 
 // Simple texture class
@@ -175,7 +181,7 @@ private:
     // DOOM-style rendering methods
     void clearBuffers();
     void renderBSP(const BSPTree& bsp, const ViewPosition& view);
-    void renderWallSlice(const WallSlice& slice);
+    void renderWallSlice(const WallSlice& slice, const ViewPosition& view);
     
     // Span-based floor and ceiling rendering (DOOM style)
     void renderFloorAndCeilingSpans(const BSPTree& bsp, const ViewPosition& view);

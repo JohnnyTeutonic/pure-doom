@@ -277,6 +277,17 @@ void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
     float halfFov = view.fov * 0.5f * DEG_TO_RAD;
     float angleStep = view.fov * DEG_TO_RAD / m_width;
     
+    // Calculate reference horizontal plane at player's feet
+    // This ensures walls don't distort when player height changes
+    float floorLevel = 0.0f; // Assume ground level is 0
+    float ceilingLevel = 0.0f;
+    int playerSectorId = bsp.findSector(view.position);
+    if (playerSectorId >= 0 && playerSectorId < static_cast<int>(bsp.getSectors().size())) {
+        const Sector& playerSector = bsp.getSectors()[playerSectorId];
+        floorLevel = playerSector.floorHeight;
+        ceilingLevel = playerSector.ceilingHeight;
+    }
+    
     // Cast a ray for each column of the screen
     for (int x = 0; x < m_width; x++) {
         // Calculate ray angle
@@ -301,13 +312,16 @@ void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
                 // Create a wall slice for rendering
                 WallSlice slice;
                 slice.x = x;
-                slice.distance = collision.distance;
                 
                 // Correct for fisheye effect
                 float correctedDistance = collision.distance * std::cos(rayAngle - view.angle);
                 slice.distance = correctedDistance;
                 
-                // Get wall height and calculate screen height
+                // Set floor and ceiling heights for proper wall rendering
+                slice.floorHeight = sector.floorHeight;
+                slice.ceilingHeight = sector.ceilingHeight;
+                
+                // Calculate perceived wall height with perspective projection
                 float wallHeight = sector.ceilingHeight - sector.floorHeight;
                 slice.height = calculateWallHeight(correctedDistance, wallHeight);
                 
@@ -331,13 +345,22 @@ void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
                 // Apply light level from sector
                 slice.lightLevel = sector.lightLevel;
                 
-                // Render the wall slice
-                renderWallSlice(slice);
+                // Render the wall slice with proper height adjustment
+                renderWallSlice(slice, view);
                 
-                // Update wall extents for this column
+                // Calculate wall extents for floor and ceiling rendering
                 int centerY = m_height / 2;
-                int wallTop = centerY - static_cast<int>(slice.height / 2);
-                int wallBottom = centerY + static_cast<int>(slice.height / 2);
+                
+                // Calculate player's eye height relative to the floor
+                float playerHeightAboveFloor = view.height - slice.floorHeight;
+                float playerHeightBelowCeiling = slice.ceilingHeight - view.height;
+                
+                // Calculate the scaling factor for perspective projection
+                float scale = DISTANCE_MULTIPLIER / slice.distance;
+                
+                // Calculate wall top and bottom pixels based on player height
+                int wallTop = centerY - static_cast<int>(playerHeightBelowCeiling * scale);
+                int wallBottom = centerY + static_cast<int>(playerHeightAboveFloor * scale);
                 
                 // Clamp to screen bounds
                 wallTop = std::max(0, wallTop);
@@ -354,22 +377,24 @@ void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
                         if (plane.isFloor && std::abs(plane.height - sector.floorHeight) < 0.001f &&
                             plane.textureId == sector.floorTextureId) {
                             // Update existing visplane
-                            plane.minX = std::min(plane.minX, x);
-                            plane.maxX = std::max(plane.maxX, x);
-                            plane.top[x] = wallBottom + 1;
-                            plane.bottom[x] = m_height - 1;
+                            plane.columns[x].yStart = wallBottom + 1;
+                            plane.columns[x].yEnd = m_height - 1;
                             found = true;
                             break;
                         }
                     }
+                    
                     if (!found) {
-                        // Create new visplane
-                        Visplane plane(m_width, sector.floorHeight, sector.floorTextureId, sector.lightLevel, true);
-                        plane.minX = x;
-                        plane.maxX = x;
-                        plane.top[x] = wallBottom + 1;
-                        plane.bottom[x] = m_height - 1;
-                        m_visplanes.push_back(plane);
+                        // Create a new visplane
+                        Visplane floorPlane;
+                        floorPlane.isFloor = true;
+                        floorPlane.height = sector.floorHeight;
+                        floorPlane.textureId = sector.floorTextureId;
+                        floorPlane.lightLevel = sector.lightLevel;
+                        floorPlane.columns.resize(m_width);
+                        floorPlane.columns[x].yStart = wallBottom + 1;
+                        floorPlane.columns[x].yEnd = m_height - 1;
+                        m_visplanes.push_back(floorPlane);
                     }
                 }
                 
@@ -380,22 +405,24 @@ void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
                         if (!plane.isFloor && std::abs(plane.height - sector.ceilingHeight) < 0.001f &&
                             plane.textureId == sector.ceilingTextureId) {
                             // Update existing visplane
-                            plane.minX = std::min(plane.minX, x);
-                            plane.maxX = std::max(plane.maxX, x);
-                            plane.top[x] = 0;
-                            plane.bottom[x] = wallTop - 1;
+                            plane.columns[x].yStart = 0;
+                            plane.columns[x].yEnd = wallTop - 1;
                             found = true;
                             break;
                         }
                     }
+                    
                     if (!found) {
-                        // Create new visplane
-                        Visplane plane(m_width, sector.ceilingHeight, sector.ceilingTextureId, sector.lightLevel, false);
-                        plane.minX = x;
-                        plane.maxX = x;
-                        plane.top[x] = 0;
-                        plane.bottom[x] = wallTop - 1;
-                        m_visplanes.push_back(plane);
+                        // Create a new visplane
+                        Visplane ceilingPlane;
+                        ceilingPlane.isFloor = false;
+                        ceilingPlane.height = sector.ceilingHeight;
+                        ceilingPlane.textureId = sector.ceilingTextureId;
+                        ceilingPlane.lightLevel = sector.lightLevel;
+                        ceilingPlane.columns.resize(m_width);
+                        ceilingPlane.columns[x].yStart = 0;
+                        ceilingPlane.columns[x].yEnd = wallTop - 1;
+                        m_visplanes.push_back(ceilingPlane);
                     }
                 }
             }
@@ -403,17 +430,30 @@ void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
     }
 }
 
-void Renderer::renderWallSlice(const WallSlice& slice) {
+void Renderer::renderWallSlice(const WallSlice& slice, const ViewPosition& view) {
     if (slice.x < 0 || slice.x >= m_width) return;
     
-    // Calculate wall top and bottom on screen
+    // Calculate wall top and bottom on screen based on player height relative to floor
     int centerY = m_height / 2;
-    int wallTop = centerY - static_cast<int>(slice.height / 2);
-    int wallBottom = centerY + static_cast<int>(slice.height / 2);
+    
+    // Calculate vertical offsets based on player's eye height relative to the floor
+    float playerHeightAboveFloor = view.height - slice.floorHeight;
+    float playerHeightBelowCeiling = slice.ceilingHeight - view.height;
+    
+    // Calculate how much of the wall should be below and above the horizontal centerline
+    float wallHeight = slice.ceilingHeight - slice.floorHeight;
+    float projectedHeight = calculateWallHeight(slice.distance, wallHeight);
+    
+    // Calculate the scaling factor for perspective projection
+    float scale = DISTANCE_MULTIPLIER / slice.distance;
+    
+    // Determine vertical placement
+    int wallTop = centerY - static_cast<int>(playerHeightBelowCeiling * scale);
+    int wallBottom = centerY + static_cast<int>(playerHeightAboveFloor * scale);
     
     // Clamp to screen bounds
-    wallTop = std::max(0, wallTop);
-    wallBottom = std::min(m_height - 1, wallBottom);
+    int clampedTop = std::max(0, wallTop);
+    int clampedBottom = std::min(m_height - 1, wallBottom);
     
     // Get the texture for this wall
     int texIndex = slice.textureId % m_textures.size();
@@ -427,19 +467,21 @@ void Renderer::renderWallSlice(const WallSlice& slice) {
     float uOverZ = slice.texCoordU * invZ;
     
     // Draw the wall slice
-    for (int y = wallTop; y <= wallBottom; y++) {
-        // Calculate texture coordinate V with perspective correction
-        float yNorm = static_cast<float>(y - wallTop) / (wallBottom - wallTop);
+    for (int y = clampedTop; y <= clampedBottom; y++) {
+        // Calculate vertical position within wall (0 = ceiling, 1 = floor)
+        float normalizedY = 0.0f;
+        if (wallBottom != wallTop) {  // Avoid division by zero
+            normalizedY = static_cast<float>(y - wallTop) / (wallBottom - wallTop);
+        }
         
         // For vertical walls, we only need perspective correction for the horizontal (U) coordinate
-        // since the vertical (V) coordinate is already perspective-correct due to how we're projecting
+        // V coordinate is linearly proportional to height along the wall
         float u = slice.texCoordU;
-        float v = yNorm;
+        float v = normalizedY;
         
-        // Apply subtle perspective effect based on view angle
-        // This gives a slight curve to the wall, making it appear more 3D
-        float distFromCenter = std::abs(yNorm - 0.5f) * 2.0f; // 0 at center, 1 at edges
-        float depthAdjustment = slice.distance * (1.0f + distFromCenter * 0.02f); // Subtle curve effect
+        // Apply subtle perspective effect based on viewing angle
+        float distFromCenter = std::abs(normalizedY - 0.5f) * 2.0f; // 0 at center, 1 at edges
+        float depthAdjustment = slice.distance * (1.0f + distFromCenter * 0.02f); // Subtle curve
         
         Color texColor = tex.sample(u, v);
         
@@ -463,48 +505,31 @@ void Renderer::renderFloorAndCeilingSpans(const BSPTree& bsp, const ViewPosition
 }
 
 void Renderer::renderVisplane(const Visplane& visplane, const ViewPosition& view) {
-    // Current viewer height relative to the plane
-    float planeZ = visplane.isFloor ? 
-                  (visplane.height - view.height) : 
-                  (visplane.height - view.height);
+    // Scan for valid y-coordinates
+    int minY = m_height;
+    int maxY = 0;
     
-    // Skip if the viewer is too close to the plane
-    if (std::abs(planeZ) < 0.001f) return;
+    // Find the min and max valid rows for this visplane
+    for (int x = 0; x < m_width; x++) {
+        const auto& column = visplane.columns[x];
+        if (column.yStart >= 0 && column.yEnd >= 0) {
+            minY = std::min(minY, column.yStart);
+            maxY = std::max(maxY, column.yEnd);
+        }
+    }
     
-    // Get texture
-    int texIndex = visplane.textureId % m_textures.size();
-    const Texture& tex = m_textures[texIndex];
+    // Skip if no valid rows
+    if (minY > maxY) return;
     
-    // Calculate lighting factor (0-1)
-    float lightFactor = std::min(1.0f, std::max(0.0f, visplane.lightLevel / 255.0f));
-    
-    // Screen center Y coordinate
-    int centerY = m_height / 2;
-    
-    // Process each scanline (y-coordinate) of the visplane
-    for (int y = 0; y < m_height; y++) {
-        // Skip if this isn't where we expect the plane to be
-        bool shouldBeFloor = (y >= centerY);
-        if (visplane.isFloor != shouldBeFloor) continue;
+    // Render each scanline
+    for (int y = minY; y <= maxY; y++) {
+        // Skip if y is out of screen bounds
+        if (y < 0 || y >= m_height) continue;
         
-        // Calculate the scale factor for the perspective
-        // (DOOM used a lookup table for this calculation)
-        float yDistFromCenter = static_cast<float>(y - centerY);
-        if (yDistFromCenter == 0.0f) continue; // Skip the center row
-        
-        // DOOM's fixed point math approximated:
-        // The farther a pixel is from the center of the screen,
-        // the greater the z-coordinate in the 3D world
-        float scale = DISTANCE_MULTIPLIER / yDistFromCenter;
-        
-        // Skip horizontal scan if scale is out of range
-        if (scale <= 0.01f) continue;
-        
-        // For floor, scale is negative (below view), for ceiling positive (above view)
-        scale = visplane.isFloor ? -scale : scale;
-        
-        // Calculate the distance to the floor/ceiling for this scanline
-        float z = planeZ * scale;
+        // Calculate the world z at this scanline
+        float yOffset = static_cast<float>(y - m_height / 2);
+        float z = DISTANCE_MULTIPLIER * (view.height - visplane.height) / 
+                  (visplane.isFloor ? yOffset : -yOffset);
         
         // Skip if too close or too far
         if (z < 0.1f || z > 100.0f) continue;
@@ -519,12 +544,13 @@ void Renderer::renderVisplane(const Visplane& visplane, const ViewPosition& view
         float spanStartInvZ = 0.0f;
         
         // Process this scanline from left to right
-        for (int x = visplane.minX; x <= visplane.maxX; x++) {
+        for (int x = 0; x < m_width; x++) {
             // Skip if x is out of screen bounds
             if (x < 0 || x >= m_width) continue;
             
             // Check if this pixel is part of the visplane
-            if (y >= visplane.top[x] && y <= visplane.bottom[x]) {
+            const auto& column = visplane.columns[x];
+            if (y >= column.yStart && y <= column.yEnd) {
                 // Calculate texture coordinates for this pixel
                 // Convert screen coordinate to world coordinate
                 Vec2 worldPos = screenToWorld(x, y, z, view);
@@ -554,8 +580,10 @@ void Renderer::renderVisplane(const Visplane& visplane, const ViewPosition& view
                 }
                 
                 // If we're at the end of the screen or the end of a span, render it
-                if (x == visplane.maxX || x + 1 >= m_width || 
-                    y < visplane.top[x + 1] || y > visplane.bottom[x + 1]) {
+                if (x == m_width - 1 || 
+                    x + 1 >= m_width || 
+                    y < visplane.columns[x + 1].yStart || 
+                    y > visplane.columns[x + 1].yEnd) {
                     // End of span, create and render it
                     Span span;
                     span.y = y;
