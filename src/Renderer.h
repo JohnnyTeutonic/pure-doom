@@ -83,10 +83,21 @@ struct WallSlice {
     bool isProblematicPortal; // Flag for portals that need special handling
     float adjacentSectorHeight; // Height of adjacent sector (for portals)
     
+    // Parameters for variable height walls
+    float adjacentFloorHeight;    // Floor height of adjacent sector for portals
+    float adjacentCeilingHeight;  // Ceiling height of adjacent sector for portals
+    bool hasHeightDifference;     // Flag indicating if there's a height difference between sectors
+    bool renderMiddleSection;     // Flag to render the middle section of a portal wall
+    float upperTexCoordV;         // V coordinate for upper wall section
+    float lowerTexCoordV;         // V coordinate for lower wall section
+    
     WallSlice() : x(0), distance(0.0f), height(0.0f), texCoordU(0.0f),
                  textureId(-1), lightLevel(0), isPortal(false),
                  floorHeight(0.0f), ceilingHeight(0.0f),
-                 isProblematicPortal(false), adjacentSectorHeight(0.0f) {}
+                 isProblematicPortal(false), adjacentSectorHeight(0.0f),
+                 adjacentFloorHeight(0.0f), adjacentCeilingHeight(0.0f),
+                 hasHeightDifference(false), renderMiddleSection(false),
+                 upperTexCoordV(0.0f), lowerTexCoordV(0.0f) {}
 };
 
 // Span for floor/ceiling

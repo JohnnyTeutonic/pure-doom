@@ -573,14 +573,34 @@ void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
                         wall.sectorBack < static_cast<int>(bsp.getSectors().size())) {
                         
                         const Sector& adjacentSector = bsp.getSectors()[wall.sectorBack];
+                        
+                        // Store adjacent sector heights
+                        slice.adjacentCeilingHeight = adjacentSector.ceilingHeight;
+                        slice.adjacentFloorHeight = adjacentSector.floorHeight;
+                        
+                        // Check for height differences between sectors
+                        float ceilingDiff = sector.ceilingHeight - adjacentSector.ceilingHeight;
+                        float floorDiff = adjacentSector.floorHeight - sector.floorHeight;
+                        
+                        // Set flag if there's a significant height difference
+                        if (std::abs(ceilingDiff) > 0.05f || std::abs(floorDiff) > 0.05f) {
+                            slice.hasHeightDifference = true;
+                            
+                            // Set texture coordinate ranges for upper and lower sections
+                            slice.upperTexCoordV = 0.0f;  // Top of texture
+                            slice.lowerTexCoordV = 0.5f;  // Middle of texture
+                        }
+                        
                         adjacentSectorHeight = adjacentSector.ceilingHeight;
                         
                         // Check if the height difference is very small (potential z-fighting cause)
                         float heightDiff = std::abs(sector.ceilingHeight - adjacentSector.ceilingHeight);
-                        float floorDiff = std::abs(sector.floorHeight - adjacentSector.floorHeight);
+                        float floorHeightDiff = std::abs(sector.floorHeight - adjacentSector.floorHeight);
                         
                         // Flag portals with nearly equal heights or narrow portals
-                        if (heightDiff < 0.05f || floorDiff < 0.05f || wallLength < 0.5f) {
+                        if ((heightDiff < 0.05f && heightDiff > 0.001f) || 
+                            (floorHeightDiff < 0.05f && floorHeightDiff > 0.001f) || 
+                            wallLength < 0.5f) {
                             isProblematicPortal = true;
                         }
                     }
@@ -694,16 +714,117 @@ void Renderer::renderWallSlice(const WallSlice& slice, const ViewPosition& view)
     // Calculate wall top and bottom on screen based on player height relative to floor
     int centerY = m_height / 2;
     
-    // Calculate vertical offsets based on player's eye height relative to the floor
+    // Get the texture for this wall
+    int texIndex = slice.textureId % m_textures.size();
+    const Texture& tex = m_textures[texIndex];
+    
+    // Calculate lighting factor (0-1)
+    float lightFactor = std::min(1.0f, std::max(0.0f, slice.lightLevel / 255.0f));
+    
+    // Calculate the scaling factor for perspective projection
+    float scale = DISTANCE_MULTIPLIER / slice.distance;
+    
+    // Apply a depth bias for z-fighting prevention
+    float depthBias = 0.0f;
+    if (slice.isPortal) {
+        depthBias = 0.01f; // Small bias to push portal walls slightly back
+    }
+    
+    // Enhanced bias for problematic portals
+    if (slice.isProblematicPortal) {
+        depthBias = 0.05f;
+        float stableOffset = (slice.textureId * 0.001f) + (slice.x % 2) * 0.0005f; 
+        depthBias += stableOffset;
+    }
+    
+    // Check if this is a portal with height differences
+    if (slice.isPortal && slice.hasHeightDifference) {
+        // Calculate vertical offsets for different wall sections
+        float playerHeightAboveFloor = view.height - slice.floorHeight;
+        float playerHeightBelowCeiling = slice.ceilingHeight - view.height;
+        
+        // 1. Upper section (if adjacent ceiling is lower than current ceiling)
+        if (slice.adjacentCeilingHeight < slice.ceilingHeight) {
+            float upperWallHeight = slice.ceilingHeight - slice.adjacentCeilingHeight;
+            
+            // Upper wall section (from current ceiling to adjacent ceiling)
+            int upperWallTop = centerY - static_cast<int>(playerHeightBelowCeiling * scale);
+            int upperWallBottom = centerY - static_cast<int>((slice.adjacentCeilingHeight - view.height) * scale);
+            
+            // Clamp to screen bounds
+            int clampedUpperTop = std::max(0, upperWallTop);
+            int clampedUpperBottom = std::min(m_height - 1, upperWallBottom);
+            
+            // Draw the upper wall section
+            for (int y = clampedUpperTop; y <= clampedUpperBottom; y++) {
+                // Calculate vertical position within the upper wall section
+                float normalizedY = 0.0f;
+                if (upperWallBottom != upperWallTop) {
+                    normalizedY = static_cast<float>(y - upperWallTop) / (upperWallBottom - upperWallTop);
+                }
+                
+                // For upper sections, map to upper part of texture
+                float v = normalizedY * 0.5f; // Use top half of texture
+                
+                Color texColor = tex.sample(slice.texCoordU, v);
+                Color finalColor = Color::blend(Color(0, 0, 0), texColor, lightFactor);
+                
+                // Apply distance fog
+                float fogFactor = 1.0f - std::min(1.0f, slice.distance / 30.0f);
+                finalColor = Color::blend(Color(0, 0, 0), finalColor, fogFactor);
+                
+                // Draw with depth info
+                drawPixelWithDepth(slice.x, y, slice.distance + depthBias, finalColor);
+            }
+        }
+        
+        // 2. Lower section (if adjacent floor is higher than current floor)
+        if (slice.adjacentFloorHeight > slice.floorHeight) {
+            float lowerWallHeight = slice.adjacentFloorHeight - slice.floorHeight;
+            
+            // Lower wall section (from adjacent floor to current floor)
+            int lowerWallTop = centerY + static_cast<int>((slice.adjacentFloorHeight - view.height) * scale);
+            int lowerWallBottom = centerY + static_cast<int>(playerHeightAboveFloor * scale);
+            
+            // Clamp to screen bounds
+            int clampedLowerTop = std::max(0, lowerWallTop);
+            int clampedLowerBottom = std::min(m_height - 1, lowerWallBottom);
+            
+            // Draw the lower wall section
+            for (int y = clampedLowerTop; y <= clampedLowerBottom; y++) {
+                // Calculate vertical position within the lower wall section
+                float normalizedY = 0.0f;
+                if (lowerWallBottom != lowerWallTop) {
+                    normalizedY = static_cast<float>(y - lowerWallTop) / (lowerWallBottom - lowerWallTop);
+                }
+                
+                // For lower sections, map to lower part of texture
+                float v = 0.5f + normalizedY * 0.5f; // Use bottom half of texture
+                
+                Color texColor = tex.sample(slice.texCoordU, v);
+                Color finalColor = Color::blend(Color(0, 0, 0), texColor, lightFactor);
+                
+                // Apply distance fog
+                float fogFactor = 1.0f - std::min(1.0f, slice.distance / 30.0f);
+                finalColor = Color::blend(Color(0, 0, 0), finalColor, fogFactor);
+                
+                // Draw with depth info
+                drawPixelWithDepth(slice.x, y, slice.distance + depthBias, finalColor);
+            }
+        }
+        
+        // Don't render the middle section for a portal with height differences
+        // as the player will see through it to the adjacent sector
+        return;
+    }
+    
+    // Standard wall rendering for solid walls or portals without height differences
     float playerHeightAboveFloor = view.height - slice.floorHeight;
     float playerHeightBelowCeiling = slice.ceilingHeight - view.height;
     
     // Calculate how much of the wall should be below and above the horizontal centerline
     float wallHeight = slice.ceilingHeight - slice.floorHeight;
     float projectedHeight = calculateWallHeight(slice.distance, wallHeight);
-    
-    // Calculate the scaling factor for perspective projection
-    float scale = DISTANCE_MULTIPLIER / slice.distance;
     
     // Determine vertical placement
     int wallTop = centerY - static_cast<int>(playerHeightBelowCeiling * scale);
@@ -712,39 +833,6 @@ void Renderer::renderWallSlice(const WallSlice& slice, const ViewPosition& view)
     // Clamp to screen bounds
     int clampedTop = std::max(0, wallTop);
     int clampedBottom = std::min(m_height - 1, wallBottom);
-    
-    // Get the texture for this wall
-    int texIndex = slice.textureId % m_textures.size();
-    const Texture& tex = m_textures[texIndex];
-    
-    // Calculate lighting factor (0-1)
-    float lightFactor = std::min(1.0f, std::max(0.0f, slice.lightLevel / 255.0f));
-    
-    // Calculate inverse Z for perspective correction
-    float invZ = 1.0f / std::max(0.1f, slice.distance);
-    float uOverZ = slice.texCoordU * invZ;
-    
-    // Apply a depth bias for z-fighting prevention
-    float depthBias = 0.0f;
-    
-    // Standard portal bias
-    if (slice.isPortal) {
-        depthBias = 0.01f; // Small bias to push portal walls slightly back
-    }
-    
-    // Enhanced bias for problematic portals
-    if (slice.isProblematicPortal) {
-        // Use a larger bias for problematic portals
-        depthBias = 0.05f;
-        
-        // Add some jitter prevention - fix to a specific multiple to ensure stability
-        float distSnapped = std::floor(slice.distance * 100.0f) / 100.0f;
-        
-        // For problematic portals, ensure the depth is consistently the same for this column
-        // by using the portal ID or texture ID to create stable offsets
-        float stableOffset = (slice.textureId * 0.001f) + (slice.x % 2) * 0.0005f; 
-        depthBias += stableOffset;
-    }
     
     // Draw the wall slice
     for (int y = clampedTop; y <= clampedBottom; y++) {
