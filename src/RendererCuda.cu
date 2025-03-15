@@ -351,8 +351,8 @@ __global__ void bspRenderKernel(
     }
 }
 
-// Floor and ceiling rendering kernel
-__global__ void floorCeilingRenderKernel(
+// Floor rendering kernel (ceiling is handled by skybox)
+__global__ void floorRenderKernel(
     Color* frameBuffer,
     float* zBuffer,
     int width,
@@ -373,12 +373,11 @@ __global__ void floorCeilingRenderKernel(
     // Early exit if outside screen bounds
     if (x >= width || y >= height) return;
     
-    // Skip if pixel is in the middle section (already drawn by walls)
+    // Skip if pixel is not in the floor section (below horizon)
     int horizon = height / 2;
-    bool isFloor = y > horizon;
     
-    // Only process floor below horizon and ceiling above horizon
-    if ((isFloor && y <= horizon) || (!isFloor && y >= horizon)) return;
+    // Only process floor below horizon (ceiling is now handled by skybox)
+    if (y <= horizon) return;
     
     // Calculate ray angle for this column
     float halfFov = fov * 0.5f * (PI / 180.0f);
@@ -394,20 +393,14 @@ __global__ void floorCeilingRenderKernel(
     float rayDirY = sinf(rayAngle);
     
     // Calculate the vertical position factor relative to horizon
-    float verticalAngle = 0.0f;
-    if (isFloor) {
-        // Floor rendering - calculate distance based on screen Y
-        verticalAngle = (y - horizon) / (float)(height - horizon);
-    } else {
-        // Ceiling rendering - calculate distance based on screen Y
-        verticalAngle = (horizon - y) / (float)horizon;
-    }
+    // Floor rendering - calculate distance based on screen Y
+    float verticalAngle = (y - horizon) / (float)(height - horizon);
     
     // Avoid division by zero
     verticalAngle = max(0.01f, verticalAngle);
     
-    // Calculate the distance to the point on floor/ceiling
-    float heightDiff = isFloor ? (playerHeight - floorHeight) : (ceilingHeight - playerHeight);
+    // Calculate the distance to the point on floor
+    float heightDiff = playerHeight - floorHeight;
     float distance = heightDiff / verticalAngle * DISTANCE_MULTIPLIER / height;
     
     // If too far, don't render (fog)
@@ -432,13 +425,8 @@ __global__ void floorCeilingRenderKernel(
     // Apply a distance fog effect
     float fogFactor = 1.0f - min(1.0f, distance / maxDistance);
     
-    // Choose color based on floor/ceiling and checker pattern
-    Color baseColor;
-    if (isFloor) {
-        baseColor = isCheckerLight ? Color(80, 80, 80) : Color(40, 40, 40);
-    } else {
-        baseColor = isCheckerLight ? Color(100, 100, 150) : Color(60, 60, 100);
-    }
+    // Choose color based on checker pattern
+    Color baseColor = isCheckerLight ? Color(80, 80, 80) : Color(40, 40, 40);
     
     // Apply fog effect
     Color finalColor = Color(
@@ -750,9 +738,17 @@ void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
     clearBuffers();
     
     // Render all components directly on the GPU
+    
+    // 1. First render the skybox as the background (includes the ceiling)
     renderSkyboxCuda(view, deltaTime, m_skybox);
+    
+    // 2. Then render BSP walls which will properly occlude parts of the skybox
     renderBSPCuda(bsp, view, m_skybox.maxViewDistance);
-    renderFloorAndCeilingCuda(bsp, view);
+    
+    // 3. Render floor (ceiling is now handled by skybox)
+    renderFloorCuda(bsp, view);
+    
+    // 4. Finally render sprites on top
     renderSpritesCuda(bsp, view, sprites);
 }
 
@@ -895,7 +891,7 @@ void RendererCuda::renderBSPCuda(const BSPTree& bsp, const ViewPosition& view, f
     CUDA_CHECK(cudaGetLastError());
 }
 
-void RendererCuda::renderFloorAndCeilingCuda(const BSPTree& bsp, const ViewPosition& view) {
+void RendererCuda::renderFloorCuda(const BSPTree& bsp, const ViewPosition& view) {
     if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
     
     // Get player information
@@ -918,15 +914,15 @@ void RendererCuda::renderFloorAndCeilingCuda(const BSPTree& bsp, const ViewPosit
     // Use the maxViewDistance from skybox
     float maxViewDistance = m_skybox.maxViewDistance;
     
-    // Determine thread block and grid sizes - use 2D grid for floor/ceiling
+    // Determine thread block and grid sizes - use 2D grid for floor
     dim3 blockSize(16, 16);  // 16x16 threads per block
     dim3 gridSize(
         (m_width + blockSize.x - 1) / blockSize.x,
         (m_height + blockSize.y - 1) / blockSize.y
     );
     
-    // Launch the floor and ceiling rendering kernel
-    floorCeilingRenderKernel<<<gridSize, blockSize>>>(
+    // Launch the floor rendering kernel
+    floorRenderKernel<<<gridSize, blockSize>>>(
         m_cudaData->d_frameBuffer,
         m_cudaData->d_zBuffer,
         m_width,

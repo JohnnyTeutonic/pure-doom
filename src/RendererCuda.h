@@ -57,8 +57,8 @@ public:
     // CUDA accelerated BSP rendering
     void renderBSPCuda(const BSPTree& bsp, const ViewPosition& view, float maxViewDistance);
     
-    // CUDA accelerated floor and ceiling rendering
-    void renderFloorAndCeilingCuda(const BSPTree& bsp, const ViewPosition& view);
+    // CUDA accelerated floor rendering (ceiling is now handled by skybox)
+    void renderFloorCuda(const BSPTree& bsp, const ViewPosition& view);
     
     // CUDA accelerated sprite rendering
     void renderSpritesCuda(const BSPTree& bsp, const ViewPosition& view, 
