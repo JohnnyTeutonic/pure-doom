@@ -309,6 +309,7 @@ private:
     int m_minimapX;                         // X position of the minimap
     int m_minimapY;                         // Y position of the minimap
     float m_minimapScale;                   // Scale factor for minimap (world units to pixels)
+    Vec2 m_playerPos;                       // Current player position for minimap centering
     
     // CUDA acceleration
     bool m_gpuAccelerationEnabled;          // Flag for GPU acceleration

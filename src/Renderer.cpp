@@ -151,10 +151,10 @@ Renderer::Renderer(int width, int height) : m_width(width), m_height(height) {
     
     // Set up minimap defaults
     m_minimapEnabled = true;
-    m_minimapSize = std::min(width, height) / 4;  // 1/4 of the smaller dimension
+    m_minimapSize = std::min(width, height) / 3;  // Larger minimap (was 1/4)
     m_minimapX = width - m_minimapSize - 10;     // Right corner
     m_minimapY = 10;                           // Top corner
-    m_minimapScale = 0.1f;                     // Scale factor for world to minimap coordinates
+    m_minimapScale = 0.6f;                     // Much larger scale for better visibility (was 0.2f)
     
     // Load textures
     loadTextures();
@@ -1344,7 +1344,22 @@ void Renderer::drawVerticalLine(int x, int y1, int y2, const Color& color) {
 
 void Renderer::drawPixel(int x, int y, const Color& color) {
     if (x >= 0 && x < m_width && y >= 0 && y < m_height) {
-        m_frameBuffer[y * m_width + x] = color;
+        // If fully opaque, just set the color directly
+        if (color.a == 255) {
+            m_frameBuffer[y * m_width + x] = color;
+            return;
+        }
+        
+        // Handle alpha blending
+        Color& destColor = m_frameBuffer[y * m_width + x];
+        float alpha = color.a / 255.0f;
+        float invAlpha = 1.0f - alpha;
+        
+        // Blend the colors based on alpha
+        destColor.r = static_cast<uint8_t>(color.r * alpha + destColor.r * invAlpha);
+        destColor.g = static_cast<uint8_t>(color.g * alpha + destColor.g * invAlpha);
+        destColor.b = static_cast<uint8_t>(color.b * alpha + destColor.b * invAlpha);
+        destColor.a = 255; // Result is fully opaque
     }
 }
 
@@ -1625,8 +1640,13 @@ Vec2 Renderer::worldToMinimap(const Vec2& worldPos) const {
     float minimapCenterY = m_minimapY + m_minimapSize / 2.0f;
     
     // Scale and translate the world position to minimap position
-    float minimapX = minimapCenterX + worldPos.x * m_minimapScale;
-    float minimapY = minimapCenterY + worldPos.y * m_minimapScale;
+    // Use fixed view of the world - don't center on player for debugging
+    // This will show ALL walls regardless of player position
+    float scale = m_minimapScale * 1.5f; // Increase scale for better visibility
+    
+    // Center the map view at position (10,10) which is the center of the test level
+    float minimapX = minimapCenterX + (worldPos.x - 10.0f) * scale;
+    float minimapY = minimapCenterY + (worldPos.y - 10.0f) * scale;
     
     return Vec2(minimapX, minimapY);
 }
@@ -1682,10 +1702,13 @@ void Renderer::drawMinimapPlayer(int x, int y, float angle, const Color& color) 
 }
 
 void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
+    // Store player position for minimap centering
+    m_playerPos = view.position;
+    
     // Draw minimap background
     for (int y = m_minimapY; y < m_minimapY + m_minimapSize; y++) {
         for (int x = m_minimapX; x < m_minimapX + m_minimapSize; x++) {
-            drawPixel(x, y, Color(0, 0, 0, 180)); // Semi-transparent black background
+            drawPixel(x, y, Color(0, 0, 0, 160)); // Slightly more transparent background
         }
     }
     
@@ -1701,6 +1724,32 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
     
     // Draw all walls from all sectors
     const std::vector<Sector>& sectors = bsp.getSectors();
+    
+    // Debug: Count total walls
+    int totalWalls = 0;
+    for (const auto& sector : sectors) {
+        totalWalls += sector.walls.size();
+    }
+    
+    // Draw a text indicator of the number of walls (crude approximation with pixels)
+    std::string wallCountStr = "Walls: " + std::to_string(totalWalls);
+    int textX = m_minimapX + 5;
+    int textY = m_minimapY + 5;
+    
+    // Draw each letter as a small rectangle
+    for (size_t i = 0; i < wallCountStr.length(); i++) {
+        // Simple 3x5 pixel character (just a placeholder)
+        for (int dy = 0; dy < 5; dy++) {
+            for (int dx = 0; dx < 3; dx++) {
+                drawPixel(textX + i*4 + dx, textY + dy, Color(255, 255, 255));
+            }
+        }
+    }
+    
+    // Try much larger scale
+    float originalScale = m_minimapScale;
+    m_minimapScale = 1.0f; // Make 5x larger to see if walls exist but are very small
+    
     for (size_t i = 0; i < sectors.size(); i++) {
         const Sector& sector = sectors[i];
         
@@ -1712,19 +1761,37 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
             // Choose color based on wall type (solid walls vs portals)
             Color wallColor;
             if (wall.sectorBack == -1) {
-                wallColor = Color(255, 0, 0); // Red for solid walls
+                wallColor = Color(255, 0, 0, 255); // Solid red for solid walls with full opacity
             } else {
-                wallColor = Color(0, 255, 0); // Green for portals/doorways
+                wallColor = Color(0, 255, 0, 255); // Solid green for portals with full opacity
             }
             
-            // Draw the wall on the minimap
+            // Make the walls thicker for better visibility
+            // Draw the main line
             drawMinimapWall(
                 static_cast<int>(start.x), static_cast<int>(start.y),
                 static_cast<int>(end.x), static_cast<int>(end.y),
                 wallColor
             );
+            
+            // Draw additional lines for thickness
+            for (int offset = 1; offset <= 3; offset++) {
+                drawMinimapWall(
+                    static_cast<int>(start.x) - offset, static_cast<int>(start.y) - offset,
+                    static_cast<int>(end.x) - offset, static_cast<int>(end.y) - offset,
+                    wallColor
+                );
+                drawMinimapWall(
+                    static_cast<int>(start.x) + offset, static_cast<int>(start.y) + offset,
+                    static_cast<int>(end.x) + offset, static_cast<int>(end.y) + offset,
+                    wallColor
+                );
+            }
         }
     }
+    
+    // Restore original scale
+    m_minimapScale = originalScale;
     
     // Draw player position and direction
     Vec2 playerPos = worldToMinimap(view.position);
@@ -1732,8 +1799,37 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
         static_cast<int>(playerPos.x),
         static_cast<int>(playerPos.y),
         view.angle,
-        Color(0, 0, 255) // Blue for player
+        Color(255, 255, 255) // White for better visibility
     );
+    
+    // Draw a very obvious test wall (static) to verify minimap drawing works
+    int testX1 = m_minimapX + m_minimapSize / 4;
+    int testY1 = m_minimapY + m_minimapSize / 4;
+    int testX2 = m_minimapX + m_minimapSize * 3 / 4;
+    int testY2 = m_minimapY + m_minimapSize * 3 / 4;
+    drawMinimapWall(testX1, testY1, testX2, testY2, Color(255, 255, 0, 255)); // Yellow test wall
+    
+    // Draw grid lines (every 10 units)
+    Color gridColor(100, 100, 100, 128);
+    for (int grid = -100; grid <= 100; grid += 10) {
+        // Vertical grid line
+        Vec2 gridStart = worldToMinimap(Vec2(grid, -100));
+        Vec2 gridEnd = worldToMinimap(Vec2(grid, 100));
+        drawMinimapWall(
+            static_cast<int>(gridStart.x), static_cast<int>(gridStart.y),
+            static_cast<int>(gridEnd.x), static_cast<int>(gridEnd.y),
+            gridColor
+        );
+        
+        // Horizontal grid line
+        gridStart = worldToMinimap(Vec2(-100, grid));
+        gridEnd = worldToMinimap(Vec2(100, grid));
+        drawMinimapWall(
+            static_cast<int>(gridStart.x), static_cast<int>(gridStart.y),
+            static_cast<int>(gridEnd.x), static_cast<int>(gridEnd.y),
+            gridColor
+        );
+    }
 }
 
 } // namespace PureDoom 
