@@ -905,12 +905,37 @@ void BSPTree::update(float deltaTime) {
         }
     }
     
-    // If any sector moved, we might need to rebuild the BSP tree
-    // However, for efficiency, we only rebuild if there's significant movement
+    // If any sector moved, we need to rebuild the BSP tree
     if (anySectorMoved) {
-        // In a full implementation, you'd need smarter logic to determine
-        // when to rebuild vs. when to just update the walls in place
-        std::cout << "Moving sectors updated. BSP tree needs rebuilding for accuracy." << std::endl;
+        // Rebuild the BSP tree with the updated sectors
+        std::cout << "Moving sectors updated. Rebuilding BSP tree..." << std::endl;
+        
+        // Collect all walls from all sectors
+        std::vector<Wall> allWalls;
+        for (size_t i = 0; i < m_sectors.size(); ++i) {
+            const Sector& sector = m_sectors[i];
+            
+            for (const Wall& wall : sector.walls) {
+                Wall wallCopy = wall;
+                if (wallCopy.sectorFront == -1) {
+                    wallCopy.sectorFront = static_cast<int>(i);
+                }
+                allWalls.push_back(wallCopy);
+            }
+        }
+        
+        // Rebuild the tree
+        try {
+            m_root = buildTree(std::move(allWalls));
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Exception during BSP rebuild: " << e.what() << std::endl;
+            // Continue with the old BSP tree rather than crashing
+        }
+        catch (...) {
+            std::cerr << "Unknown exception during BSP rebuild!" << std::endl;
+            // Continue with the old BSP tree rather than crashing
+        }
     }
 }
 

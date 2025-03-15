@@ -14,7 +14,7 @@ std::vector<Sprite> createTestSprites() {
     std::vector<Sprite> sprites;
     
     // Create a blue circular sprite in the main room
-    Sprite blueSprite(Vec2(5.0f, 5.0f), 0.7f, SpriteType::PROP);
+    Sprite blueSprite(Vec2(12.5f, 12.5f), 0.7f, SpriteType::PROP);
     blueSprite.addFrame(10, 1.0f, 1.0f); // Use a lower texture ID that actually exists
     blueSprite.scale = 0.8f;
     blueSprite.lightLevel = 200;
@@ -22,7 +22,7 @@ std::vector<Sprite> createTestSprites() {
     sprites.push_back(blueSprite);
     
     // Create a green item in the second room
-    Sprite greenItem(Vec2(15.0f, 5.0f), 0.5f, SpriteType::ITEM);
+    Sprite greenItem(Vec2(37.5f, 12.5f), 0.5f, SpriteType::ITEM);
     greenItem.addFrame(11, 0.8f, 0.8f); // Use a lower texture ID that actually exists
     greenItem.scale = 0.6f;
     greenItem.lightLevel = 255;
@@ -30,7 +30,7 @@ std::vector<Sprite> createTestSprites() {
     sprites.push_back(greenItem);
     
     // Create a red enemy near the elevator
-    Sprite redEnemy(Vec2(17.0f, 11.0f), 0.8f, SpriteType::ENEMY);
+    Sprite redEnemy(Vec2(42.5f, 27.5f), 0.8f, SpriteType::ENEMY);
     redEnemy.addFrame(12, 1.0f, 1.5f); // Use a lower texture ID that actually exists
     redEnemy.scale = 1.0f;
     redEnemy.lightLevel = 180;
@@ -39,8 +39,8 @@ std::vector<Sprite> createTestSprites() {
     
     // Add some more items in various locations
     for (int i = 0; i < 4; i++) {
-        float x = 2.0f + i * 2.0f;
-        float y = 2.0f + i * 1.5f;
+        float x = 5.0f + i * 5.0f;
+        float y = 5.0f + i * 3.5f;
         
         Sprite item(Vec2(x, y), 0.5f, SpriteType::ITEM);
         item.addFrame(11, 0.8f, 0.8f); // Use a lower texture ID that actually exists
@@ -51,12 +51,27 @@ std::vector<Sprite> createTestSprites() {
     }
     
     // Add some enemies in the door room
-    Sprite doorEnemy(Vec2(6.0f, 12.0f), 0.8f, SpriteType::ENEMY);
+    Sprite doorEnemy(Vec2(15.0f, 32.5f), 0.8f, SpriteType::ENEMY);
     doorEnemy.addFrame(12, 1.0f, 1.5f); // Use a lower texture ID that actually exists
     doorEnemy.scale = 0.9f;
     doorEnemy.lightLevel = 150;
     doorEnemy.tag = "door_guard";
     sprites.push_back(doorEnemy);
+    
+    // Add sprites to new hallway and side room
+    Sprite hallwaySprite(Vec2(-7.5f, 12.5f), 0.6f, SpriteType::PROP);
+    hallwaySprite.addFrame(10, 1.2f, 1.2f);
+    hallwaySprite.scale = 0.7f;
+    hallwaySprite.lightLevel = 180;
+    hallwaySprite.tag = "hallway_orb";
+    sprites.push_back(hallwaySprite);
+    
+    Sprite sideRoomEnemy(Vec2(-25.0f, 12.5f), 0.8f, SpriteType::ENEMY);
+    sideRoomEnemy.addFrame(12, 1.0f, 1.5f);
+    sideRoomEnemy.scale = 1.1f;
+    sideRoomEnemy.lightLevel = 200;
+    sideRoomEnemy.tag = "side_room_enemy";
+    sprites.push_back(sideRoomEnemy);
     
     std::cout << "Created " << sprites.size() << " test sprites\n";
     return sprites;
@@ -66,37 +81,40 @@ std::vector<Sprite> createTestSprites() {
 std::vector<Sector> createEnhancedTestMap() {
     std::vector<Sector> sectors;
     
+    // Scale factor to make the map larger
+    const float SCALE = 2.5f; // Increase room sizes and distances by 2.5x
+    
     // Create a main room (sector 0)
     Sector mainRoom;
     mainRoom.floorHeight = 0.0f;
-    mainRoom.ceilingHeight = 3.0f;
+    mainRoom.ceilingHeight = 4.0f; // Higher ceiling
     mainRoom.floorTextureId = 1;
     mainRoom.ceilingTextureId = 2;
     mainRoom.lightLevel = 128;
     mainRoom.tag = "main_room";
     
-    // Walls for main room (square room)
-    mainRoom.walls.push_back(Wall(Line(Vertex(0.0f, 0.0f), Vertex(10.0f, 0.0f)), 0, -1, 3));
-    mainRoom.walls.push_back(Wall(Line(Vertex(10.0f, 0.0f), Vertex(10.0f, 10.0f)), 0, -1, 4));
-    mainRoom.walls.push_back(Wall(Line(Vertex(10.0f, 10.0f), Vertex(0.0f, 10.0f)), 0, -1, 5));
-    mainRoom.walls.push_back(Wall(Line(Vertex(0.0f, 10.0f), Vertex(0.0f, 0.0f)), 0, -1, 6));
+    // Walls for main room (square room) - scaled up
+    mainRoom.walls.push_back(Wall(Line(Vertex(0.0f, 0.0f), Vertex(25.0f, 0.0f)), 0, -1, 3));
+    mainRoom.walls.push_back(Wall(Line(Vertex(25.0f, 0.0f), Vertex(25.0f, 25.0f)), 0, -1, 4));
+    mainRoom.walls.push_back(Wall(Line(Vertex(25.0f, 25.0f), Vertex(0.0f, 25.0f)), 0, -1, 5));
+    mainRoom.walls.push_back(Wall(Line(Vertex(0.0f, 25.0f), Vertex(0.0f, 0.0f)), 0, -1, 6));
     
     // Create a second room (sector 1)
     Sector secondRoom;
     secondRoom.floorHeight = 0.0f;
-    secondRoom.ceilingHeight = 3.0f;
+    secondRoom.ceilingHeight = 4.0f; // Higher ceiling
     secondRoom.floorTextureId = 7;
     secondRoom.ceilingTextureId = 8;
     secondRoom.lightLevel = 200;
     secondRoom.tag = "second_room";
     
-    // Walls for second room
-    secondRoom.walls.push_back(Wall(Line(Vertex(10.0f, 0.0f), Vertex(20.0f, 0.0f)), 1, -1, 9));
-    secondRoom.walls.push_back(Wall(Line(Vertex(20.0f, 0.0f), Vertex(20.0f, 10.0f)), 1, -1, 10));
-    secondRoom.walls.push_back(Wall(Line(Vertex(20.0f, 10.0f), Vertex(10.0f, 10.0f)), 1, -1, 11));
+    // Walls for second room - scaled up
+    secondRoom.walls.push_back(Wall(Line(Vertex(25.0f, 0.0f), Vertex(50.0f, 0.0f)), 1, -1, 9));
+    secondRoom.walls.push_back(Wall(Line(Vertex(50.0f, 0.0f), Vertex(50.0f, 25.0f)), 1, -1, 10));
+    secondRoom.walls.push_back(Wall(Line(Vertex(50.0f, 25.0f), Vertex(25.0f, 25.0f)), 1, -1, 11));
     
     // Portal wall connecting rooms (note: two-way portal)
-    Wall portalWall = Wall(Line(Vertex(10.0f, 10.0f), Vertex(10.0f, 0.0f)), 1, 0, 12);
+    Wall portalWall = Wall(Line(Vertex(25.0f, 25.0f), Vertex(25.0f, 0.0f)), 1, 0, 12);
     portalWall.isTransparent = true;  // Can see through this wall
     portalWall.tag = "main_portal";
     secondRoom.walls.push_back(portalWall);
@@ -109,7 +127,7 @@ std::vector<Sector> createEnhancedTestMap() {
     // Create a third room - this will be a moving elevator (sector 2)
     Sector elevatorRoom;
     elevatorRoom.floorHeight = 0.0f;
-    elevatorRoom.ceilingHeight = 3.0f;
+    elevatorRoom.ceilingHeight = 4.0f; // Higher ceiling
     elevatorRoom.floorTextureId = 13;
     elevatorRoom.ceilingTextureId = 14;
     elevatorRoom.lightLevel = 150;
@@ -119,14 +137,14 @@ std::vector<Sector> createEnhancedTestMap() {
     // Configure elevator movement
     elevatorRoom.floorMovement = MovementType::SINE_WAVE;
     elevatorRoom.movementSpeed = 0.5f;        // Speed of movement
-    elevatorRoom.movementDistance = 2.0f;     // Move up/down by 2 units
+    elevatorRoom.movementDistance = 3.0f;     // Move up/down by 3 units (more room to jump)
     elevatorRoom.movementActive = true;       // Start active
     
-    // Walls for elevator room (small room connected to second room)
-    elevatorRoom.walls.push_back(Wall(Line(Vertex(15.0f, 10.0f), Vertex(20.0f, 10.0f)), 2, 1, 15));
-    elevatorRoom.walls.push_back(Wall(Line(Vertex(20.0f, 10.0f), Vertex(20.0f, 12.0f)), 2, -1, 16));
-    elevatorRoom.walls.push_back(Wall(Line(Vertex(20.0f, 12.0f), Vertex(15.0f, 12.0f)), 2, -1, 17));
-    elevatorRoom.walls.push_back(Wall(Line(Vertex(15.0f, 12.0f), Vertex(15.0f, 10.0f)), 2, -1, 18));
+    // Walls for elevator room (small room connected to second room) - scaled up
+    elevatorRoom.walls.push_back(Wall(Line(Vertex(37.5f, 25.0f), Vertex(50.0f, 25.0f)), 2, 1, 15));
+    elevatorRoom.walls.push_back(Wall(Line(Vertex(50.0f, 25.0f), Vertex(50.0f, 35.0f)), 2, -1, 16));
+    elevatorRoom.walls.push_back(Wall(Line(Vertex(50.0f, 35.0f), Vertex(37.5f, 35.0f)), 2, -1, 17));
+    elevatorRoom.walls.push_back(Wall(Line(Vertex(37.5f, 35.0f), Vertex(37.5f, 25.0f)), 2, -1, 18));
     
     // Update the corresponding wall in the second room to be a portal to the elevator
     secondRoom.walls[2].sectorBack = 2;
@@ -136,7 +154,7 @@ std::vector<Sector> createEnhancedTestMap() {
     // Create a fourth room - a door that can be triggered (sector 3)
     Sector doorRoom;
     doorRoom.floorHeight = 0.0f;
-    doorRoom.ceilingHeight = 3.0f;
+    doorRoom.ceilingHeight = 4.0f; // Higher ceiling
     doorRoom.floorTextureId = 19;
     doorRoom.ceilingTextureId = 20;
     doorRoom.lightLevel = 100;
@@ -146,15 +164,15 @@ std::vector<Sector> createEnhancedTestMap() {
     // Configure door movement
     doorRoom.ceilingMovement = MovementType::TRIGGERED_ONCE;
     doorRoom.movementSpeed = 1.0f;          // Speed of door
-    doorRoom.movementDistance = -3.0f;      // Move ceiling down by 3 units (open door)
+    doorRoom.movementDistance = -4.0f;      // Move ceiling down by 4 units (open door)
     doorRoom.movementActive = false;        // Start closed
     doorRoom.triggerTag = "trigger_door";   // Tag to trigger this door
     
-    // Walls for door room (connected to main room)
-    doorRoom.walls.push_back(Wall(Line(Vertex(5.0f, 10.0f), Vertex(7.0f, 10.0f)), 3, 0, 21));
-    doorRoom.walls.push_back(Wall(Line(Vertex(7.0f, 10.0f), Vertex(7.0f, 15.0f)), 3, -1, 22));
-    doorRoom.walls.push_back(Wall(Line(Vertex(7.0f, 15.0f), Vertex(5.0f, 15.0f)), 3, -1, 23));
-    doorRoom.walls.push_back(Wall(Line(Vertex(5.0f, 15.0f), Vertex(5.0f, 10.0f)), 3, -1, 24));
+    // Walls for door room (connected to main room) - scaled up
+    doorRoom.walls.push_back(Wall(Line(Vertex(12.5f, 25.0f), Vertex(17.5f, 25.0f)), 3, 0, 21));
+    doorRoom.walls.push_back(Wall(Line(Vertex(17.5f, 25.0f), Vertex(17.5f, 40.0f)), 3, -1, 22));
+    doorRoom.walls.push_back(Wall(Line(Vertex(17.5f, 40.0f), Vertex(12.5f, 40.0f)), 3, -1, 23));
+    doorRoom.walls.push_back(Wall(Line(Vertex(12.5f, 40.0f), Vertex(12.5f, 25.0f)), 3, -1, 24));
     
     // Update the corresponding wall in the main room to be a portal to the door
     // This is a bit hacky since we don't have proper concave sector support
@@ -163,11 +181,53 @@ std::vector<Sector> createEnhancedTestMap() {
     mainRoom.walls[2].isTransparent = false; // Door is initially closed
     mainRoom.walls[2].tag = "door_entrance";
     
+    // Create a new hallway connecting main room to a new room (sector 4)
+    Sector hallway;
+    hallway.floorHeight = 0.0f;
+    hallway.ceilingHeight = 3.0f;
+    hallway.floorTextureId = 1;
+    hallway.ceilingTextureId = 2;
+    hallway.lightLevel = 100;
+    hallway.tag = "hallway";
+    
+    // Walls for hallway
+    hallway.walls.push_back(Wall(Line(Vertex(-15.0f, 10.0f), Vertex(0.0f, 10.0f)), 4, 0, 25));
+    hallway.walls.push_back(Wall(Line(Vertex(0.0f, 10.0f), Vertex(0.0f, 15.0f)), 4, 0, 26));
+    hallway.walls.push_back(Wall(Line(Vertex(0.0f, 15.0f), Vertex(-15.0f, 15.0f)), 4, -1, 27));
+    hallway.walls.push_back(Wall(Line(Vertex(-15.0f, 15.0f), Vertex(-15.0f, 10.0f)), 4, -1, 28));
+    
+    // Update corresponding wall in main room
+    mainRoom.walls[3].sectorBack = 4;
+    mainRoom.walls[3].isTransparent = true;
+    mainRoom.walls[3].tag = "hallway_entrance";
+    
+    // Create a new side room off the hallway (sector 5)
+    Sector sideRoom;
+    sideRoom.floorHeight = -1.0f; // Slightly lower floor for height difference
+    sideRoom.ceilingHeight = 5.0f; // Higher ceiling
+    sideRoom.floorTextureId = 7;
+    sideRoom.ceilingTextureId = 8;
+    sideRoom.lightLevel = 180;
+    sideRoom.tag = "side_room";
+    
+    // Walls for side room
+    sideRoom.walls.push_back(Wall(Line(Vertex(-40.0f, 5.0f), Vertex(-15.0f, 5.0f)), 5, -1, 29));
+    sideRoom.walls.push_back(Wall(Line(Vertex(-15.0f, 5.0f), Vertex(-15.0f, 20.0f)), 5, 4, 30));
+    sideRoom.walls.push_back(Wall(Line(Vertex(-15.0f, 20.0f), Vertex(-40.0f, 20.0f)), 5, -1, 31));
+    sideRoom.walls.push_back(Wall(Line(Vertex(-40.0f, 20.0f), Vertex(-40.0f, 5.0f)), 5, -1, 32));
+    
+    // Update corresponding wall in hallway
+    hallway.walls[3].sectorBack = 5;
+    hallway.walls[3].isTransparent = true;
+    hallway.walls[3].tag = "side_room_entrance";
+    
     // Add all rooms to the sectors list
     sectors.push_back(mainRoom);
     sectors.push_back(secondRoom);
     sectors.push_back(elevatorRoom);
     sectors.push_back(doorRoom);
+    sectors.push_back(hallway);
+    sectors.push_back(sideRoom);
     
     std::cout << "Created enhanced test map with " << sectors.size() << " sectors\n";
     return sectors;
@@ -440,13 +500,13 @@ void renderWithSDL(BSPTree& bsp) {
     
     // Initial player position and movement variables
     ViewPosition view;
-    view.position = Vec2(5.0f, 5.0f); // Start in the center of the first room
+    view.position = Vec2(12.5f, 12.5f); // Start in the center of the first room
     view.angle = 0.0f;  // Looking east
     view.fov = 90.0f;   // 90 degree field of view
     view.height = 0.8f; // Player's eye height
     
-    float moveSpeed = 0.05f;
-    float rotateSpeed = 0.05f;
+    float moveSpeed = 0.05f;  // Reduced from 0.1f for better control
+    float rotateSpeed = 0.03f; // Reduced from 0.05f for smoother turning
     
     // Jump physics variables
     const float PLAYER_DEFAULT_HEIGHT = 0.8f;
@@ -459,7 +519,7 @@ void renderWithSDL(BSPTree& bsp) {
     
     // Mouse control variables
     bool mouseControlEnabled = true;
-    const float mouseSensitivity = 0.003f;
+    const float mouseSensitivity = 0.002f; // Reduced from 0.003f for finer control
     int mouseX = renderWidth / 2;
     int mouseY = renderHeight / 2;
     
@@ -751,7 +811,7 @@ void renderWithSDL(BSPTree& bsp) {
         }
         
         // Define player collision radius
-        const float PLAYER_RADIUS = 0.25f;
+        const float PLAYER_RADIUS = 0.4f; // Increased from 0.25f to be more forgiving
         
         // Initialize movement vector
         Vec2 movementVector(0.0f, 0.0f);

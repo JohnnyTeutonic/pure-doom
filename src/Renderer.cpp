@@ -151,10 +151,10 @@ Renderer::Renderer(int width, int height) : m_width(width), m_height(height) {
     
     // Set up minimap defaults
     m_minimapEnabled = true;
-    m_minimapSize = std::min(width, height) / 3;  // Larger minimap (was 1/4)
+    m_minimapSize = std::min(width, height) / 2.5;  // Even larger minimap (was 1/3)
     m_minimapX = width - m_minimapSize - 10;     // Right corner
     m_minimapY = 10;                           // Top corner
-    m_minimapScale = 0.6f;                     // Much larger scale for better visibility (was 0.2f)
+    m_minimapScale = 0.8f;                     // Increased scale for better visibility (was 0.6f)
     
     // Load textures
     loadTextures();
@@ -1210,11 +1210,6 @@ bool Renderer::isSpriteVisible(const Sprite& sprite, const ViewPosition& view, f
     float halfFOV = view.fov * DEG_TO_RAD / 2.0f;
     bool isVisible = angleDiff <= halfFOV;
     
-    if (!isVisible) {
-        std::cout << "Sprite '" << sprite.tag << "' outside FOV. Angle diff: " << (angleDiff * 180.0f / PI) 
-                  << " degrees, Half FOV: " << (halfFOV * 180.0f / PI) << " degrees" << std::endl;
-    }
-    
     return isVisible;
 }
 
@@ -1642,11 +1637,11 @@ Vec2 Renderer::worldToMinimap(const Vec2& worldPos) const {
     // Scale and translate the world position to minimap position
     // Use fixed view of the world - don't center on player for debugging
     // This will show ALL walls regardless of player position
-    float scale = m_minimapScale * 1.5f; // Increase scale for better visibility
+    float scale = m_minimapScale * 0.4f; // Further reduce scale to show more of the map (was 0.6f)
     
-    // Center the map view at position (10,10) which is the center of the test level
-    float minimapX = minimapCenterX + (worldPos.x - 10.0f) * scale;
-    float minimapY = minimapCenterY + (worldPos.y - 10.0f) * scale;
+    // Center the map view at position (12.5,12.5) which is the center of the main room in the larger map
+    float minimapX = minimapCenterX + (worldPos.x - 12.5f) * scale;
+    float minimapY = minimapCenterY + (worldPos.y - 12.5f) * scale;
     
     return Vec2(minimapX, minimapY);
 }
