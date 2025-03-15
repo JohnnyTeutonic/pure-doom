@@ -3,6 +3,7 @@
 #include <limits>
 #include <iostream>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace PureDoom {
 
@@ -15,6 +16,15 @@ BSPTree::~BSPTree() = default;
 void BSPTree::build(const std::vector<Sector>& sectors) {
     std::cout << "Building BSP tree with " << sectors.size() << " sectors..." << std::endl;
     m_sectors = sectors;
+    
+    // Clear and populate the tag-to-sectors map
+    m_tagToSectors.clear();
+    for (size_t i = 0; i < sectors.size(); ++i) {
+        const Sector& sector = sectors[i];
+        if (!sector.tag.empty()) {
+            m_tagToSectors[sector.tag].push_back(static_cast<int>(i));
+        }
+    }
     
     // Collect all walls from all sectors
     std::vector<Wall> allWalls;
@@ -168,18 +178,37 @@ Line BSPTree::findBestSplitter(const std::vector<Wall>& walls) const {
         const Line& candidate = walls[i].segment;
         int splits = 0;
         int balance = 0;
+        int portalsFront = 0;
+        int portalsBack = 0;
         
         for (size_t j = 0; j < walls.size(); ++j) {
             if (i == j) continue; // Skip the candidate itself
             
-            SplitType type = classifyWall(walls[j], candidate);
-            if (type == SplitType::FRONT) balance++;
-            else if (type == SplitType::BACK) balance--;
-            else if (type == SplitType::SPANNING) splits++;
+            const Wall& wall = walls[j];
+            SplitType type = classifyWall(wall, candidate);
+            
+            if (type == SplitType::FRONT) {
+                balance++;
+                if (wall.isPortal()) portalsFront++;
+            }
+            else if (type == SplitType::BACK) {
+                balance--;
+                if (wall.isPortal()) portalsBack++;
+            }
+            else if (type == SplitType::SPANNING) {
+                splits++;
+            }
         }
         
-        // Calculate score: minimize splits and balance the tree
-        int score = 10 * splits + std::abs(balance);
+        // Calculate score: minimize splits, balance the tree, and try to keep portals on one side
+        int portalSplit = std::abs(portalsFront - portalsBack);
+        int score = 10 * splits + std::abs(balance) + 5 * portalSplit;
+        
+        // Prefer using portal walls as splitters if possible
+        if (walls[i].isPortal()) {
+            score -= 5;
+        }
+        
         if (score < bestScore) {
             bestScore = score;
             bestIndex = i;
@@ -513,6 +542,575 @@ int BSPTree::findSectorRecursive(const BSPNode* node, const Vec2& point) const {
     }
     
     return -1;
+}
+
+// Enhanced ray casting with more detailed collision info
+CollisionInfo BSPTree::castRay(const Vec2& origin, const Vec2& direction, float maxDistance) const {
+    CollisionInfo collision;
+    
+    if (!m_root) {
+        return collision;
+    }
+    
+    // Initialize collision info
+    collision.collision = false;
+    collision.distance = maxDistance;
+    
+    // Cast the ray recursively through the BSP tree
+    castRayRecursive(m_root.get(), origin, direction, maxDistance, collision);
+    
+    return collision;
+}
+
+// Enhanced ray casting recursive function
+void BSPTree::castRayRecursive(const BSPNode* node, const Vec2& origin, const Vec2& direction,
+                             float maxDistance, CollisionInfo& collision) const {
+    if (!node) {
+        return;
+    }
+    
+    // If this is a leaf node, check for intersection with all walls
+    if (node->isLeaf) {
+        for (size_t i = 0; i < node->walls.size(); ++i) {
+            const Wall& wall = node->walls[i];
+            
+            // Skip non-solid walls if we're checking for movement collision
+            if (!wall.isSolid) {
+                continue;
+            }
+            
+            Vec2 wallStart = wall.segment.start.position;
+            Vec2 wallEnd = wall.segment.end.position;
+            
+            // Line segment intersection
+            Vec2 v1 = origin - wallStart;
+            Vec2 v2 = wallEnd - wallStart;
+            Vec2 v3(-direction.y, direction.x);
+            
+            float dot = v2.dotProduct(v3);
+            if (std::abs(dot) < 0.0001f) {
+                // Lines are parallel
+                continue;
+            }
+            
+            float t1 = v2.crossProduct(v1) / dot;
+            float t2 = v1.dotProduct(v3) / dot;
+            
+            if (t1 >= 0.0f && t1 < collision.distance && t2 >= 0.0f && t2 <= 1.0f) {
+                // Hit!
+                collision.collision = true;
+                collision.distance = t1;
+                collision.point = origin + direction * t1;
+                collision.wallIndex = static_cast<int>(i);
+                collision.sectorId = node->sectorId;
+                
+                // Calculate surface normal (perpendicular to the wall)
+                Vec2 wallDir = (wallEnd - wallStart).normalized();
+                collision.normal = Vec2(-wallDir.y, wallDir.x);
+                
+                // Make sure normal points back toward the ray origin
+                if (collision.normal.dotProduct(direction) > 0) {
+                    collision.normal = collision.normal * -1.0f;
+                }
+            }
+        }
+        
+        return;
+    }
+    
+    // Otherwise, traverse the BSP tree
+    Vec2 partDir = node->partitioner.direction();
+    Vec2 normal(-partDir.y, partDir.x);  // Normal vector to the partitioner
+    
+    Vec2 toPartStart = origin - node->partitioner.start.position;
+    float side = normal.dotProduct(toPartStart);
+    float dirSide = normal.dotProduct(direction);
+    
+    // Determine which side(s) to check
+    if (side >= 0.0f) {
+        // Origin is in front of the partitioner
+        
+        // Check front side first
+        if (node->front) {
+            castRayRecursive(node->front.get(), origin, direction, maxDistance, collision);
+        }
+        
+        // If the ray is pointing to the back side and we haven't hit anything yet
+        if (dirSide < 0.0f && node->back && collision.distance > maxDistance * 0.999f) {
+            // Calculate distance to partitioner
+            float t = -side / dirSide;
+            if (t < maxDistance) {
+                // Compute new origin and continue from there
+                Vec2 newOrigin = origin + direction * t;
+                float newMaxDistance = maxDistance - t;
+                
+                castRayRecursive(node->back.get(), newOrigin, direction, newMaxDistance, collision);
+            }
+        }
+    } else {
+        // Origin is behind the partitioner
+        
+        // Check back side first
+        if (node->back) {
+            castRayRecursive(node->back.get(), origin, direction, maxDistance, collision);
+        }
+        
+        // If the ray is pointing to the front side and we haven't hit anything yet
+        if (dirSide > 0.0f && node->front && collision.distance > maxDistance * 0.999f) {
+            // Calculate distance to partitioner
+            float t = -side / dirSide;
+            if (t < maxDistance) {
+                // Compute new origin and continue from there
+                Vec2 newOrigin = origin + direction * t;
+                float newMaxDistance = maxDistance - t;
+                
+                castRayRecursive(node->front.get(), newOrigin, direction, newMaxDistance, collision);
+            }
+        }
+    }
+}
+
+// Collision detection for moving objects
+CollisionInfo BSPTree::checkCollision(const Vec2& position, float radius, const Vec2& velocity) const {
+    CollisionInfo collision;
+    
+    if (!m_root) {
+        return collision;
+    }
+    
+    // Initialize collision info
+    collision.collision = false;
+    collision.distance = 1.0f; // Normalized distance
+    
+    // Check collision recursively through the BSP tree
+    checkCollisionRecursive(m_root.get(), position, radius, velocity, collision);
+    
+    return collision;
+}
+
+// Recursive function to check for collisions
+void BSPTree::checkCollisionRecursive(const BSPNode* node, const Vec2& position, float radius, 
+                                    const Vec2& velocity, CollisionInfo& collision) const {
+    if (!node) {
+        return;
+    }
+    
+    // If this is a leaf node, check for collision with all walls
+    if (node->isLeaf) {
+        for (size_t i = 0; i < node->walls.size(); ++i) {
+            const Wall& wall = node->walls[i];
+            
+            // Skip non-solid walls
+            if (!wall.isSolid) {
+                continue;
+            }
+            
+            // Calculate distance from position to wall
+            float dist = wall.segment.distanceToPoint(position);
+            
+            // If position is already too close to the wall
+            if (dist < radius) {
+                // Immediate collision
+                collision.collision = true;
+                collision.distance = 0.0f;
+                collision.wallIndex = static_cast<int>(i);
+                collision.sectorId = node->sectorId;
+                
+                // Find closest point on wall
+                Vec2 wallDir = (wall.segment.end.position - wall.segment.start.position).normalized();
+                Vec2 toWall = position - wall.segment.start.position;
+                float proj = toWall.dotProduct(wallDir);
+                Vec2 closestPoint = wall.segment.start.position + wallDir * std::max(0.0f, std::min(proj, wall.segment.length()));
+                
+                // Set collision point and normal
+                collision.point = closestPoint;
+                collision.normal = (position - closestPoint).normalized();
+                return;
+            }
+            
+            // Check if movement will cause collision with the wall
+            if (velocity.lengthSquared() > 0.0001f) {
+                // Cast a ray from position in direction of velocity
+                Vec2 dir = velocity.normalized();
+                float len = velocity.length();
+                
+                // Create enlarged wall to account for radius
+                Vec2 wallDir = (wall.segment.end.position - wall.segment.start.position).normalized();
+                Vec2 wallNormal = Vec2(-wallDir.y, wallDir.x);
+                Vec2 offset = wallNormal * radius;
+                Line enlargedWall(
+                    wall.segment.start.position + offset,
+                    wall.segment.end.position + offset
+                );
+                
+                // Check for intersection
+                Vec2 v1 = position - enlargedWall.start.position;
+                Vec2 v2 = enlargedWall.end.position - enlargedWall.start.position;
+                Vec2 v3(-dir.y, dir.x);
+                
+                float dot = v2.dotProduct(v3);
+                if (std::abs(dot) > 0.0001f) {
+                    float t1 = v2.crossProduct(v1) / dot;
+                    float t2 = v1.dotProduct(v3) / dot;
+                    
+                    // If we will hit the wall during movement
+                    if (t1 >= 0.0f && t1 < len && t2 >= 0.0f && t2 <= 1.0f) {
+                        float normalizedDist = t1 / len;
+                        if (normalizedDist < collision.distance) {
+                            // Record this collision
+                            collision.collision = true;
+                            collision.distance = normalizedDist;
+                            collision.point = position + dir * t1;
+                            collision.wallIndex = static_cast<int>(i);
+                            collision.sectorId = node->sectorId;
+                            collision.normal = wallNormal;
+                            
+                            // Make sure normal points against movement
+                            if (collision.normal.dotProduct(dir) > 0) {
+                                collision.normal = collision.normal * -1.0f;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        return;
+    }
+    
+    // Otherwise, traverse the BSP tree to the appropriate nodes
+    Vec2 partDir = node->partitioner.direction();
+    Vec2 normal(-partDir.y, partDir.x);  // Normal vector to the partitioner
+    
+    Vec2 toPartStart = position - node->partitioner.start.position;
+    float side = normal.dotProduct(toPartStart);
+    
+    // Determine which side(s) to check
+    bool checkFront = (side + radius >= 0.0f);
+    bool checkBack = (side - radius <= 0.0f);
+    
+    // Check appropriate sides
+    if (checkFront && node->front) {
+        checkCollisionRecursive(node->front.get(), position, radius, velocity, collision);
+    }
+    
+    if (checkBack && node->back && (!collision.collision || collision.distance > 0.0f)) {
+        checkCollisionRecursive(node->back.get(), position, radius, velocity, collision);
+    }
+}
+
+// Check for convexity in a set of walls
+bool BSPTree::isConvex(const std::vector<Wall>& walls) const {
+    if (walls.size() <= 3) return true; // Triangles and simpler shapes are always convex
+    
+    // For a shape to be convex, all interior angles must be less than 180 degrees
+    // In a properly ordered wall list, that means all cross products point in the same direction
+    
+    bool crossProductSign = false; // The sign of the first non-zero cross product
+    bool signInitialized = false;
+    
+    for (size_t i = 0; i < walls.size(); i++) {
+        size_t j = (i + 1) % walls.size();
+        
+        // Get directions of consecutive walls
+        Vec2 dir1 = (walls[i].segment.end.position - walls[i].segment.start.position).normalized();
+        Vec2 dir2 = (walls[j].segment.end.position - walls[j].segment.start.position).normalized();
+        
+        // Calculate cross product
+        float cross = dir1.crossProduct(dir2);
+        
+        // Skip pairs of walls that are nearly parallel
+        if (std::abs(cross) < 0.0001f) {
+            continue;
+        }
+        
+        // Initialize sign with first significant cross product
+        if (!signInitialized) {
+            crossProductSign = (cross > 0);
+            signInitialized = true;
+        } 
+        // If sign changes, the shape is not convex
+        else if ((cross > 0) != crossProductSign) {
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+// Optimize a set of walls by merging colinear segments
+std::vector<Wall> BSPTree::optimizeWalls(const std::vector<Wall>& walls) const {
+    if (walls.size() <= 1) return walls;
+    
+    std::vector<Wall> optimized;
+    
+    for (size_t i = 0; i < walls.size(); i++) {
+        const Wall& current = walls[i];
+        
+        // Skip processing if the wall was already merged
+        if (current.segment.start.position.approxEquals(current.segment.end.position)) {
+            continue;
+        }
+        
+        // Look for a wall that can be merged with the current one
+        bool merged = false;
+        for (Wall& existing : optimized) {
+            // Check if they share an endpoint and are in the same sector
+            bool shareEndpoint = 
+                current.segment.start.position.approxEquals(existing.segment.end.position) ||
+                current.segment.end.position.approxEquals(existing.segment.start.position);
+                
+            bool sameSectors = 
+                current.sectorFront == existing.sectorFront && 
+                current.sectorBack == existing.sectorBack;
+                
+            if (shareEndpoint && sameSectors) {
+                // Calculate directions
+                Vec2 dir1 = (existing.segment.end.position - existing.segment.start.position).normalized();
+                Vec2 dir2 = (current.segment.end.position - current.segment.start.position).normalized();
+                
+                // Check if they are nearly parallel
+                float dot = dir1.dotProduct(dir2);
+                if (std::abs(dot - 1.0f) < 0.0001f || std::abs(dot + 1.0f) < 0.0001f) {
+                    // Merge by extending the existing wall
+                    if (current.segment.start.position.approxEquals(existing.segment.end.position)) {
+                        existing.segment.end = current.segment.end;
+                    } else {
+                        existing.segment.start = current.segment.start;
+                    }
+                    merged = true;
+                    break;
+                }
+            }
+        }
+        
+        // If not merged, add as a new wall
+        if (!merged) {
+            optimized.push_back(current);
+        }
+    }
+    
+    return optimized;
+}
+
+// Update moving sectors
+void BSPTree::update(float deltaTime) {
+    // Update all moving sectors
+    bool anySectorMoved = false;
+    
+    for (auto& sector : m_sectors) {
+        if (sector.isMoving() && sector.movementActive) {
+            sector.update(deltaTime);
+            anySectorMoved = true;
+        }
+    }
+    
+    // If any sector moved, we might need to rebuild the BSP tree
+    // However, for efficiency, we only rebuild if there's significant movement
+    if (anySectorMoved) {
+        // In a full implementation, you'd need smarter logic to determine
+        // when to rebuild vs. when to just update the walls in place
+        std::cout << "Moving sectors updated. BSP tree needs rebuilding for accuracy." << std::endl;
+    }
+}
+
+// Trigger a sector by tag
+void BSPTree::triggerSector(const std::string& tag) {
+    auto it = m_tagToSectors.find(tag);
+    if (it != m_tagToSectors.end()) {
+        for (int sectorId : it->second) {
+            if (sectorId >= 0 && sectorId < static_cast<int>(m_sectors.size())) {
+                m_sectors[sectorId].trigger();
+                std::cout << "Triggered sector " << sectorId << " with tag '" << tag << "'" << std::endl;
+            }
+        }
+    }
+}
+
+// Check if a sector is visible from a viewpoint
+bool BSPTree::isSectorVisible(int sectorId, const Vec2& viewPosition, float viewAngle, float fov) const {
+    if (sectorId < 0 || sectorId >= static_cast<int>(m_sectors.size())) {
+        return false;
+    }
+    
+    // The viewer's sector is always visible
+    int viewerSector = findSector(viewPosition);
+    if (viewerSector == sectorId) {
+        return true;
+    }
+    
+    // Find portals connecting to this sector
+    for (const Sector& sector : m_sectors) {
+        for (const Wall& wall : sector.walls) {
+            if (wall.isPortal() && 
+                (wall.sectorBack == sectorId || wall.sectorFront == sectorId)) {
+                // Found a portal to the target sector, check if it's visible
+                if (isPortalVisible(wall, viewPosition, viewAngle, fov)) {
+                    return true;
+                }
+            }
+        }
+    }
+    
+    return false;
+}
+
+// Check if a portal is potentially visible from a viewpoint
+bool BSPTree::isPortalVisible(const Wall& portalWall, const Vec2& viewPosition, 
+                            float viewAngle, float fov) const {
+    // Calculate angle to each portal endpoint
+    Vec2 toStart = portalWall.segment.start.position - viewPosition;
+    Vec2 toEnd = portalWall.segment.end.position - viewPosition;
+    
+    float angleStart = std::atan2(toStart.y, toStart.x);
+    float angleEnd = std::atan2(toEnd.y, toEnd.x);
+    
+    // Make sure the angle difference is correct (handles wrap-around)
+    float angleDiff = angleEnd - angleStart;
+    if (angleDiff > 3.14159f) angleDiff -= 6.28318f;
+    if (angleDiff < -3.14159f) angleDiff += 6.28318f;
+    
+    // Calculate the view cone
+    float halfFov = fov * 0.5f * 0.01745329f; // Convert to radians
+    float minViewAngle = viewAngle - halfFov;
+    float maxViewAngle = viewAngle + halfFov;
+    
+    // Normalize all angles to [0, 2π)
+    while (minViewAngle < 0) minViewAngle += 6.28318f;
+    while (maxViewAngle < 0) maxViewAngle += 6.28318f;
+    while (angleStart < 0) angleStart += 6.28318f;
+    while (angleEnd < 0) angleEnd += 6.28318f;
+    
+    // Check if the portal overlaps with the view cone
+    if (minViewAngle < maxViewAngle) {
+        // Normal case
+        if ((angleStart >= minViewAngle && angleStart <= maxViewAngle) ||
+            (angleEnd >= minViewAngle && angleEnd <= maxViewAngle) ||
+            (angleStart <= minViewAngle && angleEnd >= maxViewAngle)) {
+            return true;
+        }
+    } else {
+        // View cone wraps around
+        if ((angleStart >= minViewAngle || angleStart <= maxViewAngle) ||
+            (angleEnd >= minViewAngle || angleEnd <= maxViewAngle) ||
+            (angleStart <= minViewAngle && angleEnd >= maxViewAngle)) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// Find visible portals from a viewpoint
+std::vector<int> BSPTree::findVisiblePortals(int startSectorId, const Vec2& viewPosition, 
+                                           float viewAngle, float fov) const {
+    // Use a helper function with recursion depth limit to prevent stack overflow
+    std::unordered_map<int, bool> processedSectors;
+    return findVisiblePortalsRecursive(startSectorId, viewPosition, viewAngle, fov, 
+                                      processedSectors, 0, 10); // Max recursion depth of 10
+}
+
+// Helper function with recursion depth tracking
+std::vector<int> BSPTree::findVisiblePortalsRecursive(int currentSectorId, const Vec2& viewPosition,
+                                                   float viewAngle, float fov,
+                                                   std::unordered_map<int, bool>& processedSectors,
+                                                   int currentDepth, int maxDepth) const {
+    std::vector<int> visibleSectors;
+    
+    // Check for invalid sector ID or excessive recursion depth
+    if (currentSectorId < 0 || 
+        currentSectorId >= static_cast<int>(m_sectors.size()) ||
+        currentDepth >= maxDepth ||
+        processedSectors.find(currentSectorId) != processedSectors.end()) {
+        return visibleSectors;
+    }
+    
+    // Mark this sector as processed to prevent cycles
+    processedSectors[currentSectorId] = true;
+    
+    // Add the current sector
+    visibleSectors.push_back(currentSectorId);
+    
+    // Check all portal walls in the current sector
+    const Sector& sector = m_sectors[currentSectorId];
+    for (const Wall& wall : sector.walls) {
+        // Skip non-portal walls
+        if (!wall.isPortal()) {
+            continue;
+        }
+        
+        int nextSector = (wall.sectorFront == currentSectorId) ? wall.sectorBack : wall.sectorFront;
+        
+        // Skip invalid sectors or already processed sectors
+        if (nextSector < 0 || 
+            nextSector >= static_cast<int>(m_sectors.size()) ||
+            processedSectors.find(nextSector) != processedSectors.end()) {
+            continue;
+        }
+        
+        // Check if the portal is visible
+        if (isPortalVisible(wall, viewPosition, viewAngle, fov)) {
+            // Calculate the center point of the portal wall for the next viewpoint
+            Vec2 portalCenter = (wall.segment.start.position + wall.segment.end.position) * 0.5f;
+            
+            // Recursively find visible sectors through this portal
+            std::vector<int> nextVisible = findVisiblePortalsRecursive(
+                nextSector, portalCenter, viewAngle, fov, 
+                processedSectors, currentDepth + 1, maxDepth
+            );
+            
+            // Add all newly found visible sectors
+            for (int secId : nextVisible) {
+                if (std::find(visibleSectors.begin(), visibleSectors.end(), secId) == visibleSectors.end()) {
+                    visibleSectors.push_back(secId);
+                }
+            }
+        }
+    }
+    
+    return visibleSectors;
+}
+
+// Validate the BSP tree
+bool BSPTree::validate() const {
+    if (!m_root) {
+        std::cout << "BSP Tree is empty - nothing to validate." << std::endl;
+        return true;
+    }
+    
+    bool valid = validateRecursive(m_root.get());
+    
+    if (valid) {
+        std::cout << "BSP Tree validation successful." << std::endl;
+    } else {
+        std::cout << "BSP Tree validation failed." << std::endl;
+    }
+    
+    return valid;
+}
+
+// Recursive function to validate the BSP tree
+bool BSPTree::validateRecursive(const BSPNode* node) const {
+    if (!node) {
+        return true;
+    }
+    
+    // If this is a leaf node, check that it has a valid sector ID
+    if (node->isLeaf) {
+        if (node->sectorId < 0 || node->sectorId >= static_cast<int>(m_sectors.size())) {
+            std::cerr << "Invalid sector ID: " << node->sectorId << std::endl;
+            return false;
+        }
+        return true;
+    }
+    
+    // Check front subtree
+    bool frontValid = validateRecursive(node->front.get());
+    
+    // Check back subtree
+    bool backValid = validateRecursive(node->back.get());
+    
+    return frontValid && backValid;
 }
 
 } // namespace PureDoom 
