@@ -813,6 +813,11 @@ void Renderer::renderWallSlice(const WallSlice& slice, const ViewPosition& view)
     int wallTop = static_cast<int>(calculateScreenYPosition(slice.ceilingHeight, slice.distance, view.height));
     int wallBottom = static_cast<int>(calculateScreenYPosition(slice.floorHeight, slice.distance, view.height));
     
+    // Ensure wall has at least some height to be visible
+    if (wallBottom <= wallTop) {
+        wallBottom = wallTop + 1;
+    }
+    
     // Clamp to screen bounds
     int clampedTop = std::max(0, wallTop);
     int clampedBottom = std::min(m_height - 1, wallBottom);
@@ -1532,15 +1537,26 @@ float Renderer::calculateWallHeight(float distance, float wallHeight) const {
     // DOOM-style perspective projection
     if (distance < 0.1f) distance = 0.1f; // Prevent division by zero
     
+    // Apply a stronger height multiplier to ensure walls are visible
     return (DISTANCE_MULTIPLIER * wallHeight) / distance;
 }
 
 // Consistent helper function to calculate screen Y position based on world height and distance
 float Renderer::calculateScreenYPosition(float worldY, float distance, float viewHeight) const {
     if (distance < 0.1f) distance = 0.1f; // Prevent division by zero
+    
+    // Calculate height relative to player eye level
     float relativeHeight = worldY - viewHeight;
+    
+    // Get screen center
     int centerY = m_height / 2;
-    return centerY - ((relativeHeight * DISTANCE_MULTIPLIER) / distance);
+    
+    // Scale the height based on distance using perspective projection formula
+    // This ensures correct perspective even for close/far objects
+    float scaledHeight = (relativeHeight * DISTANCE_MULTIPLIER) / distance;
+    
+    // Return screen Y coordinate (top of screen is 0)
+    return centerY - scaledHeight;
 }
 
 Vec2 Renderer::worldToScreen(const Vec2& worldPos, const ViewPosition& view) const {

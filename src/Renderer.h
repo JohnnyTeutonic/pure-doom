@@ -21,11 +21,11 @@
 #define __device__
 #endif
 
-// Constant values
+// Constants for rendering
 constexpr float PI = 3.14159265358979323846f;
 constexpr float DEG_TO_RAD = PI / 180.0f;
 constexpr float RAD_TO_DEG = 180.0f / PI;
-constexpr float DISTANCE_MULTIPLIER = 120.0f; // Used for projecting wall heights
+constexpr float DISTANCE_MULTIPLIER = 150.0f; // Used for projecting wall heights (slight increase from original 120.0f)
 
 namespace PureDoom {
 

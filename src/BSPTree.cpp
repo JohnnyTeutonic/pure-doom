@@ -563,30 +563,39 @@ CollisionInfo BSPTree::castRay(const Vec2& origin, const Vec2& direction, float 
 }
 
 // Enhanced ray casting recursive function
-void BSPTree::castRayRecursive(const BSPNode* node, const Vec2& origin, const Vec2& direction,
+void BSPTree::castRayRecursive(const BSPNode* node, const Vec2& origin, const Vec2& direction, 
                              float maxDistance, CollisionInfo& collision) const {
     if (!node) {
         return;
     }
     
-    // If this is a leaf node, check for intersection with all walls
+    // If this is a leaf node, check collision with all walls
     if (node->isLeaf) {
-        for (size_t i = 0; i < node->walls.size(); ++i) {
-            const Wall& wall = node->walls[i];
-            
-            // Skip non-solid walls if we're checking for movement collision
-            if (!wall.isSolid) {
-                continue;
-            }
-            
+        // If the sector ID is invalid, there's nothing to check
+        if (node->sectorId < 0 || node->sectorId >= static_cast<int>(m_sectors.size())) {
+            return;
+        }
+        
+        const Sector& sector = m_sectors[node->sectorId];
+        
+        // Find closest wall intersection in this sector
+        float closestDist = maxDistance;
+        bool hit = false;
+        Vec2 hitPoint;
+        int hitWallIndex = -1;
+        Vec2 hitNormal;
+        
+        for (size_t i = 0; i < sector.walls.size(); i++) {
+            const Wall& wall = sector.walls[i];
             Vec2 wallStart = wall.segment.start.position;
             Vec2 wallEnd = wall.segment.end.position;
             
-            // Line segment intersection
+            // Vectors for intersection calculation
             Vec2 v1 = origin - wallStart;
             Vec2 v2 = wallEnd - wallStart;
-            Vec2 v3(-direction.y, direction.x);
+            Vec2 v3(direction.y, -direction.x);  // Perpendicular to ray direction
             
+            // Check if ray and wall are parallel
             float dot = v2.dotProduct(v3);
             if (std::abs(dot) < 0.0001f) {
                 // Lines are parallel
@@ -596,23 +605,32 @@ void BSPTree::castRayRecursive(const BSPNode* node, const Vec2& origin, const Ve
             float t1 = v2.crossProduct(v1) / dot;
             float t2 = v1.dotProduct(v3) / dot;
             
-            if (t1 >= 0.0f && t1 < collision.distance && t2 >= 0.0f && t2 <= 1.0f) {
+            if (t1 >= 0.0f && t1 < closestDist && t2 >= 0.0f && t2 <= 1.0f) {
                 // Hit!
-                collision.collision = true;
-                collision.distance = t1;
-                collision.point = origin + direction * t1;
-                collision.wallIndex = static_cast<int>(i);
-                collision.sectorId = node->sectorId;
+                closestDist = t1;
+                hitPoint = origin + direction * t1;
+                hitWallIndex = static_cast<int>(i);
+                hit = true;
                 
-                // Calculate surface normal (perpendicular to the wall)
+                // Calculate surface normal
                 Vec2 wallDir = (wallEnd - wallStart).normalized();
-                collision.normal = Vec2(-wallDir.y, wallDir.x);
+                hitNormal = Vec2(-wallDir.y, wallDir.x);
                 
-                // Make sure normal points back toward the ray origin
-                if (collision.normal.dotProduct(direction) > 0) {
-                    collision.normal = collision.normal * -1.0f;
+                // Make sure normal points back toward ray origin
+                if (hitNormal.dotProduct(direction) > 0.0f) {
+                    hitNormal = hitNormal * -1.0f;
                 }
             }
+        }
+        
+        if (hit && (closestDist < collision.distance)) {
+            // Update collision information 
+            collision.collision = true;
+            collision.distance = closestDist;
+            collision.point = hitPoint;
+            collision.wallIndex = hitWallIndex;
+            collision.sectorId = node->sectorId;
+            collision.normal = hitNormal;
         }
         
         return;
@@ -626,8 +644,19 @@ void BSPTree::castRayRecursive(const BSPNode* node, const Vec2& origin, const Ve
     float side = normal.dotProduct(toPartStart);
     float dirSide = normal.dotProduct(direction);
     
-    // Determine which side(s) to check
-    if (side >= 0.0f) {
+    // Improved traversal logic to ensure proper wall detection
+    if (std::abs(side) < 0.0001f) {
+        // Ray origin is on the partitioner line - check both sides
+        // Start with the side the ray is pointing to
+        if (dirSide > 0.0f) {
+            if (node->back) castRayRecursive(node->back.get(), origin, direction, maxDistance, collision);
+            if (node->front) castRayRecursive(node->front.get(), origin, direction, maxDistance, collision);
+        } else {
+            if (node->front) castRayRecursive(node->front.get(), origin, direction, maxDistance, collision);
+            if (node->back) castRayRecursive(node->back.get(), origin, direction, maxDistance, collision);
+        }
+    }
+    else if (side >= 0.0f) {
         // Origin is in front of the partitioner
         
         // Check front side first
@@ -635,19 +664,26 @@ void BSPTree::castRayRecursive(const BSPNode* node, const Vec2& origin, const Ve
             castRayRecursive(node->front.get(), origin, direction, maxDistance, collision);
         }
         
-        // If the ray is pointing to the back side and we haven't hit anything yet
-        if (dirSide < 0.0f && node->back && collision.distance > maxDistance * 0.999f) {
-            // Calculate distance to partitioner
+        // Check if we need to check the back side
+        if (dirSide < 0.0f && node->back) {
+            // Ray is pointing to back side
+            // Calculate intersection with partitioner
             float t = -side / dirSide;
-            if (t < maxDistance) {
-                // Compute new origin and continue from there
-                Vec2 newOrigin = origin + direction * t;
-                float newMaxDistance = maxDistance - t;
+            
+            if (t > 0.0f && t < collision.distance) {
+                // Ray intersects partitioner before any detected collision
+                Vec2 intersectionPoint = origin + direction * t;
                 
-                castRayRecursive(node->back.get(), newOrigin, direction, newMaxDistance, collision);
+                // Check if intersection point is on the partitioner segment
+                if (node->partitioner.containsPoint(intersectionPoint)) {
+                    // Continue from intersection point
+                    castRayRecursive(node->back.get(), intersectionPoint, direction, 
+                                     collision.distance - t, collision);
+                }
             }
         }
-    } else {
+    } 
+    else {
         // Origin is behind the partitioner
         
         // Check back side first
@@ -655,16 +691,22 @@ void BSPTree::castRayRecursive(const BSPNode* node, const Vec2& origin, const Ve
             castRayRecursive(node->back.get(), origin, direction, maxDistance, collision);
         }
         
-        // If the ray is pointing to the front side and we haven't hit anything yet
-        if (dirSide > 0.0f && node->front && collision.distance > maxDistance * 0.999f) {
-            // Calculate distance to partitioner
+        // Check if we need to check the front side
+        if (dirSide > 0.0f && node->front) {
+            // Ray is pointing to front side
+            // Calculate intersection with partitioner
             float t = -side / dirSide;
-            if (t < maxDistance) {
-                // Compute new origin and continue from there
-                Vec2 newOrigin = origin + direction * t;
-                float newMaxDistance = maxDistance - t;
+            
+            if (t > 0.0f && t < collision.distance) {
+                // Ray intersects partitioner before any detected collision
+                Vec2 intersectionPoint = origin + direction * t;
                 
-                castRayRecursive(node->front.get(), newOrigin, direction, newMaxDistance, collision);
+                // Check if intersection point is on the partitioner segment
+                if (node->partitioner.containsPoint(intersectionPoint)) {
+                    // Continue from intersection point
+                    castRayRecursive(node->front.get(), intersectionPoint, direction, 
+                                    collision.distance - t, collision);
+                }
             }
         }
     }
