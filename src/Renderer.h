@@ -150,7 +150,7 @@ private:
     int m_width;
     int m_height;
     std::vector<Color> m_frameBuffer;
-    std::vector<float> m_zBuffer;            // Depth buffer for each column
+    std::vector<float> m_zBuffer;            // Depth buffer for each pixel
     std::vector<Texture> m_textures;         // Loaded textures
     std::vector<Sprite> m_sprites;           // Sprites to render
     
@@ -185,6 +185,8 @@ private:
     // Helper methods for rendering
     void drawVerticalLine(int x, int y1, int y2, const Color& color);
     void drawPixel(int x, int y, const Color& color);
+    void drawPixelWithDepth(int x, int y, float depth, const Color& color);
+    bool isPixelVisible(int x, int y, float depth) const;
     void drawHorizontalLine(int y, int x1, int x2, const Color& color);
     
     // Calculate projected wall height
@@ -198,6 +200,12 @@ private:
     
     // Convert screen space to world space
     Vec2 screenToWorld(int x, int y, float z, const ViewPosition& view) const;
+    
+    // Get Z-buffer value
+    float getDepth(int x, int y) const;
+    
+    // Set Z-buffer value
+    void setDepth(int x, int y, float depth);
     
     // Load textures
     void loadTextures();

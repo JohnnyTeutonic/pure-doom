@@ -113,7 +113,7 @@ void Texture::generateCheckerboard() {
 // Renderer implementation
 Renderer::Renderer(int width, int height) : m_width(width), m_height(height) {
     m_frameBuffer.resize(width * height);
-    m_zBuffer.resize(width, std::numeric_limits<float>::max());
+    m_zBuffer.resize(width * height, std::numeric_limits<float>::max());
     m_wallExtents.resize(width);
 }
 
@@ -334,10 +334,7 @@ void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
                 // Render the wall slice
                 renderWallSlice(slice);
                 
-                // Update z-buffer
-                m_zBuffer[x] = correctedDistance;
-                
-                // Update visplanes - create/update floor and ceiling planes
+                // Update wall extents for this column
                 int centerY = m_height / 2;
                 int wallTop = centerY - static_cast<int>(slice.height / 2);
                 int wallBottom = centerY + static_cast<int>(slice.height / 2);
@@ -438,8 +435,8 @@ void Renderer::renderWallSlice(const WallSlice& slice) {
         float fogFactor = 1.0f - std::min(1.0f, slice.distance / 30.0f);
         finalColor = Color::blend(Color(0, 0, 0), finalColor, fogFactor);
         
-        // Draw the pixel
-        drawPixel(slice.x, y, finalColor);
+        // Draw the pixel with depth information
+        drawPixelWithDepth(slice.x, y, slice.distance, finalColor);
     }
 }
 
@@ -614,21 +611,18 @@ void Renderer::renderSpan(const Span& span) {
     
     // Draw the span one pixel at a time
     for (int x = startX; x <= endX; x++) {
-        // Skip if there's a wall in front
-        if (z > m_zBuffer[x]) {
-            // Get texture color
-            Color texColor = tex.sample(u, v);
-            
-            // Apply lighting
-            Color finalColor = Color::blend(Color(0, 0, 0), texColor, lightFactor);
-            
-            // Apply distance fog
-            float fogFactor = 1.0f - std::min(1.0f, z / 30.0f);
-            finalColor = Color::blend(Color(0, 0, 0), finalColor, fogFactor);
-            
-            // Draw the pixel
-            drawPixel(x, span.y, finalColor);
-        }
+        // Get texture color
+        Color texColor = tex.sample(u, v);
+        
+        // Apply lighting
+        Color finalColor = Color::blend(Color(0, 0, 0), texColor, lightFactor);
+        
+        // Apply distance fog
+        float fogFactor = 1.0f - std::min(1.0f, z / 30.0f);
+        finalColor = Color::blend(Color(0, 0, 0), finalColor, fogFactor);
+        
+        // Draw the pixel with depth information
+        drawPixelWithDepth(x, span.y, z, finalColor);
         
         // Step to next pixel
         u += uStep;
@@ -792,11 +786,6 @@ void Renderer::renderSprite(const Sprite& sprite, const BSPTree& bsp, const View
     
     // Draw the sprite
     for (int x = left; x <= right; x++) {
-        // Skip if obscured by a wall
-        if (m_zBuffer[x] <= distance) {
-            continue;
-        }
-        
         // Calculate texture coordinate
         float u = static_cast<float>(x - spriteLeft) / (spriteRight - spriteLeft);
         if (sprite.flipped) {
@@ -822,8 +811,8 @@ void Renderer::renderSprite(const Sprite& sprite, const BSPTree& bsp, const View
             // Apply fog
             Color finalColor = Color::blend(Color(0, 0, 0), litColor, fogFactor);
             
-            // Draw pixel
-            drawPixel(x, y, finalColor);
+            // Draw pixel with depth check
+            drawPixelWithDepth(x, y, distance, finalColor);
         }
     }
 }
@@ -925,6 +914,33 @@ Vec2 Renderer::screenToWorld(int x, int y, float z, const ViewPosition& view) co
     float yWorld = view.position.y + xCamera * sinAngle + yCamera * cosAngle;
     
     return Vec2(xWorld, yWorld);
+}
+
+// Helper functions for Z-buffer operations
+float Renderer::getDepth(int x, int y) const {
+    if (x >= 0 && x < m_width && y >= 0 && y < m_height) {
+        return m_zBuffer[y * m_width + x];
+    }
+    return std::numeric_limits<float>::max();
+}
+
+void Renderer::setDepth(int x, int y, float depth) {
+    if (x >= 0 && x < m_width && y >= 0 && y < m_height) {
+        m_zBuffer[y * m_width + x] = depth;
+    }
+}
+
+bool Renderer::isPixelVisible(int x, int y, float depth) const {
+    return depth < getDepth(x, y);
+}
+
+void Renderer::drawPixelWithDepth(int x, int y, float depth, const Color& color) {
+    if (x >= 0 && x < m_width && y >= 0 && y < m_height) {
+        if (isPixelVisible(x, y, depth)) {
+            m_frameBuffer[y * m_width + x] = color;
+            setDepth(x, y, depth);
+        }
+    }
 }
 
 } // namespace PureDoom 
