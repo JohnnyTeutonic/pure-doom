@@ -30,6 +30,12 @@ public:
     // Copy rendering results back from device to host
     void retrieveRenderingResults(std::vector<Color>& frameBuffer, std::vector<float>& zBuffer);
     
+    // Upload textures to the GPU
+    void uploadTextures(const std::vector<Texture>& textures);
+    
+    // Set the reference to the skybox (needed for maxViewDistance)
+    void setSkybox(const Skybox& skybox) { m_skybox = skybox; }
+    
     // CUDA accelerated rendering functions
     void renderSkyboxCuda(const ViewPosition& view, float deltaTime, const Skybox& skybox);
     void drawSunCuda(float screenX, float screenY, float sizeDegrees, const Color& color, 
@@ -54,6 +60,7 @@ private:
     bool m_cudaAvailable;
     bool m_initialized;
     CudaDeviceInfo m_deviceInfo;
+    Skybox m_skybox;  // Store a copy of the skybox for reference
     
     // CUDA data structure containing device pointers and state
     // This is a pointer to avoid exposing CUDA types in the header

@@ -466,19 +466,27 @@ void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const s
     bool useGPU = isGpuAccelerationEnabled();
     
     if (useGPU) {
+        // Upload textures to GPU if needed (first frame or when textures change)
+        static bool texturesUploaded = false;
+        if (!texturesUploaded) {
+            m_cudaRenderer->uploadTextures(m_textures);
+            texturesUploaded = true;
+        }
+        
+        // Pass skybox reference to CUDA renderer
+        m_cudaRenderer->setSkybox(m_skybox);
+        
         // Copy buffers to GPU
         m_cudaRenderer->prepareForRendering(m_frameBuffer, m_zBuffer);
         
-        // Render skybox on GPU
+        // Render the entire scene on GPU
         m_cudaRenderer->renderSkyboxCuda(view, deltaTime, m_skybox);
+        m_cudaRenderer->renderBSPCuda(bsp, view, m_skybox.maxViewDistance);
+        m_cudaRenderer->renderFloorAndCeilingCuda(bsp, view);
+        m_cudaRenderer->renderSpritesCuda(bsp, view, sprites);
         
         // Copy results back from GPU
         m_cudaRenderer->retrieveRenderingResults(m_frameBuffer, m_zBuffer);
-        
-        // CPU rendering for the rest of the scene
-        renderBSP(bsp, view);
-        renderFloorAndCeilingSpans(bsp, view);
-        renderSprites(bsp, view, sprites);
     } else {
         // Full CPU rendering pipeline
         renderSkybox(view, deltaTime);

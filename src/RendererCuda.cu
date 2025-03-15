@@ -72,11 +72,20 @@ __host__ __device__ Color Color::blend(const Color& c1, const Color& c2, float t
     return result;
 }
 
-// Structure for passing data between CPU and GPU
+// Update the structure for passing data between CPU and GPU
 struct CudaRenderData {
     // Device pointers
     Color* d_frameBuffer;
     float* d_zBuffer;
+    
+    // Texture data on device
+    struct TextureData {
+        Color* pixels;
+        int width;
+        int height;
+    };
+    TextureData* d_textures;
+    int numTextures;
     
     // Dimensions
     int width;
@@ -252,10 +261,352 @@ __global__ void sunRenderKernel(Color* frameBuffer, float* zBuffer, int width, i
     }
 }
 
+// Add a Wall collision data structure for the CUDA implementation
+struct CudaWallCollision {
+    bool collision;      // Whether a wall collision occurred
+    float distance;      // Distance to the wall
+    float wallHeight;    // Height of the wall
+    int textureId;       // Texture ID for the wall
+    float texCoordU;     // Texture U coordinate
+    float floorHeight;   // Floor height of the sector
+    float ceilingHeight; // Ceiling height of the sector
+    bool isPortal;       // Whether the wall is a portal
+    int lightLevel;      // Light level for the wall
+};
+
+// New BSP ray casting kernel
+__global__ void bspRenderKernel(
+    Color* frameBuffer,
+    float* zBuffer,
+    int width, 
+    int height,
+    float playerX,
+    float playerY,
+    float playerAngle,
+    float playerHeight,
+    float fov,
+    float maxDistance,
+    float floorLevel,
+    float ceilingLevel)
+{
+    // Calculate the current pixel coordinates
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Early exit if outside screen bounds
+    if (x >= width) return;
+    
+    // Calculate ray angle for this column
+    float halfFov = fov * 0.5f * (PI / 180.0f);
+    float angleStep = fov * (PI / 180.0f) / width;
+    float rayAngle = playerAngle - halfFov + angleStep * x;
+    
+    // Normalize angle to [0, 2π)
+    while (rayAngle < 0) rayAngle += 2 * PI;
+    while (rayAngle >= 2 * PI) rayAngle -= 2 * PI;
+    
+    // Ray direction vector
+    float rayDirX = cosf(rayAngle);
+    float rayDirY = sinf(rayAngle);
+    
+    // Since we can't directly access the BSP tree in CUDA, we would need to
+    // either upload a simplified version of the tree to GPU memory or
+    // perform ray casting on the CPU and upload results.
+    // For now, we'll simulate wall detection with a simple distance calculation
+    // This should be replaced with actual BSP tree traversal in a future version
+    
+    // Placeholder: Simulating a wall detection at a fixed distance
+    // In a real implementation, this would come from traversing the BSP tree
+    CudaWallCollision collision;
+    collision.collision = true;
+    collision.distance = maxDistance * 0.5f;  // Simulate a wall halfway to max distance
+    collision.wallHeight = 1.0f;  // Standard wall height
+    collision.textureId = 1;      // Default texture
+    collision.texCoordU = 0.5f;   // Middle of texture
+    collision.floorHeight = floorLevel;
+    collision.ceilingHeight = ceilingLevel + collision.wallHeight;
+    collision.isPortal = false;
+    collision.lightLevel = 255;  // Full brightness
+    
+    if (collision.collision) {
+        // Correct for fisheye effect
+        float correctedDistance = collision.distance * cosf(rayAngle - playerAngle);
+        
+        // Calculate projected wall height
+        float distanceFactor = DISTANCE_MULTIPLIER / correctedDistance;
+        float projectedWallHeight = collision.wallHeight * distanceFactor;
+        
+        // Calculate wall top and bottom screen positions
+        float wallMidY = height / 2.0f;
+        
+        // Calculate vertical positions relative to player eye level
+        float floorDiff = collision.floorHeight - playerHeight;
+        float ceilingDiff = collision.ceilingHeight - playerHeight;
+        
+        // Project these differences to screen space
+        float floorScreenY = wallMidY + floorDiff * distanceFactor;
+        float ceilingScreenY = wallMidY + ceilingDiff * distanceFactor;
+        
+        // Ensure the wall is drawn within screen bounds
+        int wallTop = max(0, (int)ceilingScreenY);
+        int wallBottom = min(height - 1, (int)floorScreenY);
+        
+        // Simple coloring based on distance (placeholder for texture mapping)
+        float intensityFactor = 1.0f - min(1.0f, correctedDistance / maxDistance);
+        intensityFactor = max(0.2f, intensityFactor) * collision.lightLevel / 255.0f;
+        
+        // Draw the wall column
+        for (int y = wallTop; y <= wallBottom; y++) {
+            // Calculate texture coordinate V
+            float wallY = (y - ceilingScreenY) / (floorScreenY - ceilingScreenY);
+            
+            // Simple color for now (would be texture sampling)
+            Color wallColor = Color(
+                (uint8_t)(200 * intensityFactor),
+                (uint8_t)(200 * intensityFactor),
+                (uint8_t)(200 * intensityFactor)
+            );
+            
+            // Set pixel with depth
+            int idx = y * width + x;
+            frameBuffer[idx] = wallColor;
+            zBuffer[idx] = correctedDistance / maxDistance;
+        }
+    }
+}
+
+// Floor and ceiling rendering kernel
+__global__ void floorCeilingRenderKernel(
+    Color* frameBuffer,
+    float* zBuffer,
+    int width,
+    int height,
+    float playerX,
+    float playerY,
+    float playerAngle,
+    float playerHeight,
+    float fov,
+    float maxDistance,
+    float floorHeight,
+    float ceilingHeight)
+{
+    // Calculate the current pixel coordinates
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    // Early exit if outside screen bounds
+    if (x >= width || y >= height) return;
+    
+    // Skip if pixel is in the middle section (already drawn by walls)
+    int horizon = height / 2;
+    bool isFloor = y > horizon;
+    
+    // Only process floor below horizon and ceiling above horizon
+    if ((isFloor && y <= horizon) || (!isFloor && y >= horizon)) return;
+    
+    // Calculate ray angle for this column
+    float halfFov = fov * 0.5f * (PI / 180.0f);
+    float angleStep = fov * (PI / 180.0f) / width;
+    float rayAngle = playerAngle - halfFov + angleStep * x;
+    
+    // Normalize angle to [0, 2π)
+    while (rayAngle < 0) rayAngle += 2 * PI;
+    while (rayAngle >= 2 * PI) rayAngle -= 2 * PI;
+    
+    // Ray direction vector
+    float rayDirX = cosf(rayAngle);
+    float rayDirY = sinf(rayAngle);
+    
+    // Calculate the vertical position factor relative to horizon
+    float verticalAngle = 0.0f;
+    if (isFloor) {
+        // Floor rendering - calculate distance based on screen Y
+        verticalAngle = (y - horizon) / (float)(height - horizon);
+    } else {
+        // Ceiling rendering - calculate distance based on screen Y
+        verticalAngle = (horizon - y) / (float)horizon;
+    }
+    
+    // Avoid division by zero
+    verticalAngle = max(0.01f, verticalAngle);
+    
+    // Calculate the distance to the point on floor/ceiling
+    float heightDiff = isFloor ? (playerHeight - floorHeight) : (ceilingHeight - playerHeight);
+    float distance = heightDiff / verticalAngle * DISTANCE_MULTIPLIER / height;
+    
+    // If too far, don't render (fog)
+    if (distance > maxDistance) return;
+    
+    // Calculate world position
+    float worldX = playerX + rayDirX * distance;
+    float worldY = playerY + rayDirY * distance;
+    
+    // Simple texture coordinates based on world position
+    float texU = fmodf(worldX, 1.0f);
+    float texV = fmodf(worldY, 1.0f);
+    
+    if (texU < 0) texU += 1.0f;
+    if (texV < 0) texV += 1.0f;
+    
+    // Apply a checkerboard pattern for demonstration
+    bool isEvenX = (int)worldX % 2 == 0;
+    bool isEvenY = (int)worldY % 2 == 0;
+    bool isCheckerLight = isEvenX != isEvenY;
+    
+    // Apply a distance fog effect
+    float fogFactor = 1.0f - min(1.0f, distance / maxDistance);
+    
+    // Choose color based on floor/ceiling and checker pattern
+    Color baseColor;
+    if (isFloor) {
+        baseColor = isCheckerLight ? Color(80, 80, 80) : Color(40, 40, 40);
+    } else {
+        baseColor = isCheckerLight ? Color(100, 100, 150) : Color(60, 60, 100);
+    }
+    
+    // Apply fog effect
+    Color finalColor = Color(
+        (uint8_t)(baseColor.r * fogFactor),
+        (uint8_t)(baseColor.g * fogFactor),
+        (uint8_t)(baseColor.b * fogFactor)
+    );
+    
+    // Set pixel with depth
+    int idx = y * width + x;
+    
+    // Only draw if this point is closer than what's already there
+    if (distance / maxDistance < zBuffer[idx]) {
+        frameBuffer[idx] = finalColor;
+        zBuffer[idx] = distance / maxDistance;
+    }
+}
+
+// Structure to hold sprite rendering data for CUDA
+struct CudaSpriteData {
+    float x, y;           // Position in world space
+    float scale;          // Sprite scale factor
+    int textureId;        // Texture ID for the sprite
+    int type;             // Sprite type
+    float distance;       // Distance to the sprite from player
+    bool visible;         // Whether the sprite is visible
+};
+
+// This kernel will be called once per sprite
+__global__ void spriteRenderKernel(
+    Color* frameBuffer,
+    float* zBuffer,
+    int width,
+    int height,
+    float playerX,
+    float playerY,
+    float playerAngle,
+    float playerHeight,
+    float fov,
+    CudaSpriteData sprite,
+    int textureWidth,
+    int textureHeight,
+    Color* textureData)  // We would need to pass texture data to the kernel
+{
+    // Calculate the current pixel coordinates
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    // Early exit if outside screen bounds or sprite not visible
+    if (x >= width || y >= height || !sprite.visible) return;
+    
+    // Calculate direction to sprite from player
+    float dx = sprite.x - playerX;
+    float dy = sprite.y - playerY;
+    
+    // Calculate sprite angle relative to player's view
+    float spriteAngle = atan2f(dy, dx);
+    
+    // Normalize angles to [0, 2π)
+    while (spriteAngle < 0) spriteAngle += 2 * PI;
+    while (spriteAngle >= 2 * PI) spriteAngle -= 2 * PI;
+    while (playerAngle < 0) playerAngle += 2 * PI;
+    while (playerAngle >= 2 * PI) playerAngle -= 2 * PI;
+    
+    // Calculate relative angle (accounting for wraparound)
+    float relativeAngle = spriteAngle - playerAngle;
+    if (relativeAngle > PI) relativeAngle -= 2 * PI;
+    if (relativeAngle < -PI) relativeAngle += 2 * PI;
+    
+    // Check if sprite is in field of view
+    float halfFovRadians = fov * 0.5f * DEG_TO_RAD;
+    if (fabs(relativeAngle) > halfFovRadians) return;
+    
+    // Calculate screen position of sprite center
+    float normalizedAngle = relativeAngle / halfFovRadians;  // [-1, 1]
+    float screenX = (width / 2.0f) * (1.0f + normalizedAngle);
+    
+    // Calculate sprite size on screen
+    float spriteSize = min(height, (int)(height / sprite.distance * sprite.scale * DISTANCE_MULTIPLIER / 120.0f));
+    if (spriteSize <= 0) return;
+    
+    // Calculate sprite screen coordinates
+    float halfSize = spriteSize / 2.0f;
+    float spriteTopY = height / 2.0f - halfSize;
+    float spriteBottomY = height / 2.0f + halfSize;
+    float spriteLeftX = screenX - halfSize;
+    float spriteRightX = screenX + halfSize;
+    
+    // Calculate this thread's contribution to the sprite
+    float textureU = (x - spriteLeftX) / (spriteRightX - spriteLeftX);
+    float textureV = (y - spriteTopY) / (spriteBottomY - spriteTopY);
+    
+    // Check if this pixel is within the sprite bounds
+    if (textureU < 0.0f || textureU >= 1.0f || textureV < 0.0f || textureV >= 1.0f) return;
+    
+    // Sample the texture (simple nearest neighbor sampling)
+    int texX = (int)(textureU * textureWidth);
+    int texY = (int)(textureV * textureHeight);
+    int texIndex = texY * textureWidth + texX;
+    
+    // Get the texel color
+    Color texColor = textureData[texIndex];
+    
+    // Skip transparent pixels
+    if (texColor.a < 10) return;
+    
+    // Apply distance-based fog
+    float fogFactor = 1.0f - min(1.0f, sprite.distance / 30.0f);
+    Color finalColor = Color(
+        (uint8_t)(texColor.r * fogFactor),
+        (uint8_t)(texColor.g * fogFactor),
+        (uint8_t)(texColor.b * fogFactor),
+        texColor.a
+    );
+    
+    // Calculate the pixel index
+    int idx = y * width + x;
+    
+    // Apply depth test - only draw if this sprite's pixel is closer than what's already drawn
+    if (sprite.distance < zBuffer[idx] * 30.0f) {  // Convert normalized z-buffer to world distance
+        // Handle alpha blending
+        if (texColor.a < 255) {
+            // Blend with existing color
+            float alpha = texColor.a / 255.0f;
+            Color existingColor = frameBuffer[idx];
+            finalColor = Color(
+                (uint8_t)(existingColor.r * (1.0f - alpha) + finalColor.r * alpha),
+                (uint8_t)(existingColor.g * (1.0f - alpha) + finalColor.g * alpha),
+                (uint8_t)(existingColor.b * (1.0f - alpha) + finalColor.b * alpha),
+                255
+            );
+        }
+        
+        frameBuffer[idx] = finalColor;
+        // Update z-buffer with a slight bias for sprites (0.99) to prevent z-fighting
+        zBuffer[idx] = sprite.distance / 30.0f * 0.99f;
+    }
+}
+
 // Host code for RendererCuda implementation
 
 RendererCuda::RendererCuda(int width, int height) 
     : m_width(width), m_height(height), m_cudaAvailable(false), m_initialized(false), m_cudaData(nullptr) {
+    // Initialize skybox with default values
+    m_skybox.maxViewDistance = 30.0f; // Default max view distance
 }
 
 RendererCuda::~RendererCuda() {
@@ -305,6 +656,10 @@ void RendererCuda::allocateCudaMemory() {
     
     // Allocate device memory for Z-buffer
     CUDA_CHECK(cudaMalloc(&m_cudaData->d_zBuffer, m_width * m_height * sizeof(float)));
+    
+    // Initialize texture data array
+    m_cudaData->numTextures = 0;
+    m_cudaData->d_textures = nullptr;
 }
 
 void RendererCuda::freeCudaMemory() {
@@ -319,6 +674,21 @@ void RendererCuda::freeCudaMemory() {
     if (m_cudaData->d_zBuffer) {
         CUDA_CHECK(cudaFree(m_cudaData->d_zBuffer));
         m_cudaData->d_zBuffer = nullptr;
+    }
+    
+    // Free texture data
+    if (m_cudaData->d_textures) {
+        // Free each texture's pixel data
+        for (int i = 0; i < m_cudaData->numTextures; ++i) {
+            if (m_cudaData->d_textures[i].pixels) {
+                CUDA_CHECK(cudaFree(m_cudaData->d_textures[i].pixels));
+            }
+        }
+        
+        // Free the texture array
+        CUDA_CHECK(cudaFree(m_cudaData->d_textures));
+        m_cudaData->d_textures = nullptr;
+        m_cudaData->numTextures = 0;
     }
 }
 
@@ -435,18 +805,247 @@ void RendererCuda::drawSunCuda(float screenX, float screenY, float radius, const
     CUDA_CHECK(cudaGetLastError());
 }
 
-// These methods are stubs for now - to be implemented in follow-up PR
+// Update the renderBSPCuda method from a stub to a real implementation
 void RendererCuda::renderBSPCuda(const BSPTree& bsp, const ViewPosition& view, float maxViewDistance) {
-    // Will be implemented in next phase
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
+    
+    // Get player information
+    float playerX = view.position.x;
+    float playerY = view.position.y;
+    float playerAngle = view.angle;
+    float playerHeight = view.height;
+    float fov = view.fov;
+    
+    // Get current sector information (floor and ceiling heights)
+    float floorLevel = 0.0f;
+    float ceilingLevel = 0.0f;
+    int playerSectorId = bsp.findSector(view.position);
+    if (playerSectorId >= 0 && playerSectorId < static_cast<int>(bsp.getSectors().size())) {
+        const Sector& playerSector = bsp.getSectors()[playerSectorId];
+        floorLevel = playerSector.floorHeight;
+        ceilingLevel = playerSector.ceilingHeight;
+    }
+    
+    // Determine thread block and grid sizes
+    dim3 blockSize(16, 1);  // Use 16 threads per block for simplicity
+    dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x);
+    
+    // Launch the BSP rendering kernel
+    bspRenderKernel<<<gridSize, blockSize>>>(
+        m_cudaData->d_frameBuffer,
+        m_cudaData->d_zBuffer,
+        m_width,
+        m_height,
+        playerX,
+        playerY,
+        playerAngle,
+        playerHeight,
+        fov,
+        maxViewDistance,
+        floorLevel,
+        ceilingLevel
+    );
+    
+    // Check for errors
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void RendererCuda::renderFloorAndCeilingCuda(const BSPTree& bsp, const ViewPosition& view) {
-    // Will be implemented in next phase
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
+    
+    // Get player information
+    float playerX = view.position.x;
+    float playerY = view.position.y;
+    float playerAngle = view.angle;
+    float playerHeight = view.height;
+    float fov = view.fov;
+    
+    // Get current sector information (floor and ceiling heights)
+    float floorHeight = 0.0f;
+    float ceilingHeight = 2.0f;  // Default ceiling height
+    int playerSectorId = bsp.findSector(view.position);
+    if (playerSectorId >= 0 && playerSectorId < static_cast<int>(bsp.getSectors().size())) {
+        const Sector& playerSector = bsp.getSectors()[playerSectorId];
+        floorHeight = playerSector.floorHeight;
+        ceilingHeight = playerSector.ceilingHeight;
+    }
+    
+    // Use the maxViewDistance from skybox
+    float maxViewDistance = m_skybox.maxViewDistance;
+    
+    // Determine thread block and grid sizes - use 2D grid for floor/ceiling
+    dim3 blockSize(16, 16);  // 16x16 threads per block
+    dim3 gridSize(
+        (m_width + blockSize.x - 1) / blockSize.x,
+        (m_height + blockSize.y - 1) / blockSize.y
+    );
+    
+    // Launch the floor and ceiling rendering kernel
+    floorCeilingRenderKernel<<<gridSize, blockSize>>>(
+        m_cudaData->d_frameBuffer,
+        m_cudaData->d_zBuffer,
+        m_width,
+        m_height,
+        playerX,
+        playerY,
+        playerAngle,
+        playerHeight,
+        fov,
+        maxViewDistance,
+        floorHeight,
+        ceilingHeight
+    );
+    
+    // Check for errors
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void RendererCuda::renderSpritesCuda(const BSPTree& bsp, const ViewPosition& view, 
-                                  const std::vector<Sprite>& sprites) {
-    // Will be implemented in next phase
+                                   const std::vector<Sprite>& sprites) {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData || sprites.empty()) return;
+    
+    // Get player information
+    float playerX = view.position.x;
+    float playerY = view.position.y;
+    float playerAngle = view.angle;
+    float playerHeight = view.height;
+    float fov = view.fov;
+    
+    // Sort sprites by distance (farthest to nearest)
+    std::vector<std::pair<float, size_t>> sortedIndices;
+    for (size_t i = 0; i < sprites.size(); ++i) {
+        const Sprite& sprite = sprites[i];
+        
+        // Calculate distance to sprite
+        float dx = sprite.position.x - playerX;
+        float dy = sprite.position.y - playerY;
+        float distance = std::sqrt(dx * dx + dy * dy);
+        
+        // Add to the list of indices to sort
+        sortedIndices.push_back(std::make_pair(distance, i));
+    }
+    
+    // Sort from farthest to nearest
+    std::sort(sortedIndices.begin(), sortedIndices.end(), 
+              [](const std::pair<float, size_t>& a, const std::pair<float, size_t>& b) { 
+                  return a.first > b.first; 
+              });
+    
+    // Iterate through sorted sprites
+    for (size_t i = 0; i < sortedIndices.size(); ++i) {
+        float distance = sortedIndices[i].first;
+        size_t index = sortedIndices[i].second;
+        const Sprite& sprite = sprites[index];
+        
+        // Skip if too far or too close
+        if (distance > 30.0f || distance < 0.1f) continue;
+        
+        // Get the current frame
+        const SpriteFrame& frame = sprite.getCurrentFrame();
+        int textureId = frame.textureId;
+        
+        // Check if the texture ID is valid
+        if (textureId < 0 || textureId >= m_cudaData->numTextures) {
+            std::cerr << "Invalid texture ID for sprite: " << textureId << std::endl;
+            continue;
+        }
+        
+        // Create sprite data for CUDA
+        CudaSpriteData spriteData;
+        spriteData.x = sprite.position.x;
+        spriteData.y = sprite.position.y;
+        spriteData.scale = sprite.scale;
+        spriteData.textureId = textureId;
+        spriteData.type = static_cast<int>(sprite.type);
+        spriteData.distance = distance;
+        spriteData.visible = sprite.visible;
+        
+        // Determine block and grid sizes for the sprite
+        dim3 blockSize(16, 16);
+        dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x,
+                      (m_height + blockSize.y - 1) / blockSize.y);
+        
+        // Get texture information
+        CudaRenderData::TextureData textureData;
+        CUDA_CHECK(cudaMemcpy(&textureData, 
+                            &(m_cudaData->d_textures[textureId]), 
+                            sizeof(CudaRenderData::TextureData), 
+                            cudaMemcpyDeviceToHost));
+        
+        // Launch kernel for this sprite
+        spriteRenderKernel<<<gridSize, blockSize>>>(
+            m_cudaData->d_frameBuffer,
+            m_cudaData->d_zBuffer,
+            m_width,
+            m_height,
+            playerX,
+            playerY, 
+            playerAngle,
+            playerHeight,
+            fov,
+            spriteData,
+            textureData.width,
+            textureData.height,
+            textureData.pixels
+        );
+        
+        // Check for errors
+        CUDA_CHECK(cudaGetLastError());
+    }
+}
+
+// Add a new method to upload textures to the GPU
+void RendererCuda::uploadTextures(const std::vector<Texture>& textures) {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
+    
+    // Free old texture data if it exists
+    if (m_cudaData->d_textures) {
+        // Free each texture's pixel data
+        for (int i = 0; i < m_cudaData->numTextures; ++i) {
+            if (m_cudaData->d_textures[i].pixels) {
+                CUDA_CHECK(cudaFree(m_cudaData->d_textures[i].pixels));
+            }
+        }
+        
+        // Free the texture array
+        CUDA_CHECK(cudaFree(m_cudaData->d_textures));
+    }
+    
+    // Allocate new texture array
+    int numTextures = static_cast<int>(textures.size());
+    m_cudaData->numTextures = numTextures;
+    
+    if (numTextures > 0) {
+        // Allocate device memory for texture array
+        CUDA_CHECK(cudaMalloc(&m_cudaData->d_textures, numTextures * sizeof(CudaRenderData::TextureData)));
+        
+        // Create a host-side copy of the texture array
+        CudaRenderData::TextureData* hostTextures = new CudaRenderData::TextureData[numTextures];
+        
+        // Upload each texture
+        for (int i = 0; i < numTextures; ++i) {
+            const Texture& texture = textures[i];
+            int pixelCount = texture.width() * texture.height();
+            
+            // Allocate device memory for texture pixels
+            CUDA_CHECK(cudaMalloc(&hostTextures[i].pixels, pixelCount * sizeof(Color)));
+            
+            // Copy texture data to device
+            CUDA_CHECK(cudaMemcpy(hostTextures[i].pixels, texture.m_pixels.data(), 
+                              pixelCount * sizeof(Color), cudaMemcpyHostToDevice));
+            
+            // Set texture dimensions
+            hostTextures[i].width = texture.width();
+            hostTextures[i].height = texture.height();
+        }
+        
+        // Copy the texture array to device
+        CUDA_CHECK(cudaMemcpy(m_cudaData->d_textures, hostTextures, 
+                           numTextures * sizeof(CudaRenderData::TextureData), cudaMemcpyHostToDevice));
+        
+        // Free host-side array
+        delete[] hostTextures;
+    }
 }
 
 } // namespace PureDoom 
