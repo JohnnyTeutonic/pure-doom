@@ -399,7 +399,7 @@ void renderWithSDL(BSPTree& bsp) {
     view.height = 0.8f; // Player's eye height
     
     float moveSpeed = 0.05f;
-    float rotateSpeed = 0.02f;
+    float rotateSpeed = 0.05f;
     
     // Jump physics variables
     const float PLAYER_DEFAULT_HEIGHT = 0.8f;
