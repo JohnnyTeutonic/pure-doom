@@ -74,14 +74,22 @@ struct Span {
     float endV;        // End texture V coordinate
     float startZ;      // Start depth
     float endZ;        // End depth
+    float startUOverZ; // Start U/Z for perspective correction
+    float startVOverZ; // Start V/Z for perspective correction
+    float endUOverZ;   // End U/Z for perspective correction
+    float endVOverZ;   // End V/Z for perspective correction
+    float startInvZ;   // Start 1/Z for perspective correction
+    float endInvZ;     // End 1/Z for perspective correction
     int textureId;     // Texture to use
     int lightLevel;    // Light level
     bool isFloor;      // Is this a floor span (vs ceiling)?
     
     Span() : y(0), startX(0), endX(0), 
              startU(0.0f), startV(0.0f), endU(0.0f), endV(0.0f),
-             startZ(0.0f), endZ(0.0f), textureId(-1), lightLevel(0),
-             isFloor(true) {}
+             startZ(0.0f), endZ(0.0f), 
+             startUOverZ(0.0f), startVOverZ(0.0f), endUOverZ(0.0f), endVOverZ(0.0f),
+             startInvZ(0.0f), endInvZ(0.0f),
+             textureId(-1), lightLevel(0), isFloor(true) {}
 };
 
 // Visplane for floor/ceiling

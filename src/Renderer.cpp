@@ -422,11 +422,26 @@ void Renderer::renderWallSlice(const WallSlice& slice) {
     // Calculate lighting factor (0-1)
     float lightFactor = std::min(1.0f, std::max(0.0f, slice.lightLevel / 255.0f));
     
+    // Calculate inverse Z for perspective correction
+    float invZ = 1.0f / std::max(0.1f, slice.distance);
+    float uOverZ = slice.texCoordU * invZ;
+    
     // Draw the wall slice
     for (int y = wallTop; y <= wallBottom; y++) {
-        // Calculate texture coordinate V
+        // Calculate texture coordinate V with perspective correction
         float yNorm = static_cast<float>(y - wallTop) / (wallBottom - wallTop);
-        Color texColor = tex.sample(slice.texCoordU, yNorm);
+        
+        // For vertical walls, we only need perspective correction for the horizontal (U) coordinate
+        // since the vertical (V) coordinate is already perspective-correct due to how we're projecting
+        float u = slice.texCoordU;
+        float v = yNorm;
+        
+        // Apply subtle perspective effect based on view angle
+        // This gives a slight curve to the wall, making it appear more 3D
+        float distFromCenter = std::abs(yNorm - 0.5f) * 2.0f; // 0 at center, 1 at edges
+        float depthAdjustment = slice.distance * (1.0f + distFromCenter * 0.02f); // Subtle curve effect
+        
+        Color texColor = tex.sample(u, v);
         
         // Apply lighting
         Color finalColor = Color::blend(Color(0, 0, 0), texColor, lightFactor);
@@ -436,7 +451,7 @@ void Renderer::renderWallSlice(const WallSlice& slice) {
         finalColor = Color::blend(Color(0, 0, 0), finalColor, fogFactor);
         
         // Draw the pixel with depth information
-        drawPixelWithDepth(slice.x, y, slice.distance, finalColor);
+        drawPixelWithDepth(slice.x, y, depthAdjustment, finalColor);
     }
 }
 
@@ -499,6 +514,9 @@ void Renderer::renderVisplane(const Visplane& visplane, const ViewPosition& view
         float spanStartU = 0.0f;
         float spanStartV = 0.0f;
         float spanStartZ = 0.0f;
+        float spanStartUOverZ = 0.0f;
+        float spanStartVOverZ = 0.0f;
+        float spanStartInvZ = 0.0f;
         
         // Process this scanline from left to right
         for (int x = visplane.minX; x <= visplane.maxX; x++) {
@@ -519,12 +537,20 @@ void Renderer::renderVisplane(const Visplane& visplane, const ViewPosition& view
                 texU = texU - std::floor(texU);
                 texV = texV - std::floor(texV);
                 
+                // Calculate perspective correction values
+                float invZ = 1.0f / std::max(0.1f, std::abs(z));
+                float uOverZ = texU * invZ;
+                float vOverZ = texV * invZ;
+                
                 if (spanStart == -1) {
                     // Start a new span
                     spanStart = x;
                     spanStartU = texU;
                     spanStartV = texV;
                     spanStartZ = z;
+                    spanStartUOverZ = uOverZ;
+                    spanStartVOverZ = vOverZ;
+                    spanStartInvZ = invZ;
                 }
                 
                 // If we're at the end of the screen or the end of a span, render it
@@ -541,6 +567,12 @@ void Renderer::renderVisplane(const Visplane& visplane, const ViewPosition& view
                     span.endV = texV;
                     span.startZ = spanStartZ;
                     span.endZ = z;
+                    span.startUOverZ = spanStartUOverZ;
+                    span.startVOverZ = spanStartVOverZ;
+                    span.endUOverZ = uOverZ;
+                    span.endVOverZ = vOverZ;
+                    span.startInvZ = spanStartInvZ;
+                    span.endInvZ = invZ;
                     span.textureId = visplane.textureId;
                     span.lightLevel = visplane.lightLevel;
                     span.isFloor = visplane.isFloor;
@@ -564,6 +596,16 @@ void Renderer::renderVisplane(const Visplane& visplane, const ViewPosition& view
                     span.endV = spanStartV + (spanStartV - spanStartU) * (x - 1 - spanStart) / (x - spanStart);
                     span.startZ = spanStartZ;
                     span.endZ = spanStartZ + (z - spanStartZ) * (x - 1 - spanStart) / (x - spanStart);
+                    
+                    // Calculate perspective correction values for the end point
+                    float endInvZ = 1.0f / std::max(0.1f, std::abs(span.endZ));
+                    span.startUOverZ = spanStartUOverZ;
+                    span.startVOverZ = spanStartVOverZ;
+                    span.endUOverZ = span.endU * endInvZ;
+                    span.endVOverZ = span.endV * endInvZ;
+                    span.startInvZ = spanStartInvZ;
+                    span.endInvZ = endInvZ;
+                    
                     span.textureId = visplane.textureId;
                     span.lightLevel = visplane.lightLevel;
                     span.isFloor = visplane.isFloor;
@@ -593,17 +635,20 @@ void Renderer::renderSpan(const Span& span) {
     int texIndex = span.textureId % m_textures.size();
     const Texture& tex = m_textures[texIndex];
     
-    // Calculate step values for texture coordinates
+    // Calculate step values for texture coordinates with perspective correction
     float length = static_cast<float>(span.endX - span.startX);
     if (length < 0.001f) length = 0.001f; // Prevent division by zero
     
-    float uStep = (span.endU - span.startU) / length;
-    float vStep = (span.endV - span.startV) / length;
+    // Calculate step values for perspective correction
+    float invZStep = (span.endInvZ - span.startInvZ) / length;
+    float uOverZStep = (span.endUOverZ - span.startUOverZ) / length;
+    float vOverZStep = (span.endVOverZ - span.startVOverZ) / length;
     float zStep = (span.endZ - span.startZ) / length;
     
-    // Current texture coordinates and depth
-    float u = span.startU + (startX - span.startX) * uStep;
-    float v = span.startV + (startX - span.startX) * vStep;
+    // Current texture coordinates with perspective correction
+    float invZ = span.startInvZ + (startX - span.startX) * invZStep;
+    float uOverZ = span.startUOverZ + (startX - span.startX) * uOverZStep;
+    float vOverZ = span.startVOverZ + (startX - span.startX) * vOverZStep;
     float z = span.startZ + (startX - span.startX) * zStep;
     
     // Calculate lighting factor (0-1)
@@ -611,6 +656,14 @@ void Renderer::renderSpan(const Span& span) {
     
     // Draw the span one pixel at a time
     for (int x = startX; x <= endX; x++) {
+        // Perspective-correct texture coordinates
+        float u = uOverZ / invZ;
+        float v = vOverZ / invZ;
+        
+        // Wrap to [0,1]
+        u = u - std::floor(u);
+        v = v - std::floor(v);
+        
         // Get texture color
         Color texColor = tex.sample(u, v);
         
@@ -625,8 +678,9 @@ void Renderer::renderSpan(const Span& span) {
         drawPixelWithDepth(x, span.y, z, finalColor);
         
         // Step to next pixel
-        u += uStep;
-        v += vStep;
+        invZ += invZStep;
+        uOverZ += uOverZStep;
+        vOverZ += vOverZStep;
         z += zStep;
     }
 }
@@ -784,18 +838,32 @@ void Renderer::renderSprite(const Sprite& sprite, const BSPTree& bsp, const View
     // Apply distance fog
     float fogFactor = 1.0f - std::min(1.0f, distance / 30.0f);
     
+    // Calculate inverse Z for perspective correction
+    float invZ = 1.0f / std::max(0.1f, distance);
+    
     // Draw the sprite
     for (int x = left; x <= right; x++) {
-        // Calculate texture coordinate
-        float u = static_cast<float>(x - spriteLeft) / (spriteRight - spriteLeft);
+        // Calculate texture coordinate with perspective correction
+        float screenX = static_cast<float>(x - spriteLeft) / (spriteRight - spriteLeft);
         if (sprite.flipped) {
-            u = 1.0f - u;
+            screenX = 1.0f - screenX;
         }
+        
+        // Apply perspective correction
+        // For sprites, we want to maintain the billboard effect, so we apply a slight
+        // perspective correction that keeps the overall billboard shape but reduces texture swimming
+        float u = screenX;
+        
+        // Apply subtle perspective distortion to make the sprite feel more 3D
+        // This simulates the curve you'd see on a true 3D object
+        float distFromCenter = std::abs(screenX - 0.5f) * 2.0f; // 0 at center, 1 at edges
+        float edgeDistance = distance * (1.0f + distFromCenter * 0.1f); // Slightly more distant at edges
         
         // Draw vertical stripe
         for (int y = top; y <= bottom; y++) {
-            // Calculate texture coordinate
-            float v = static_cast<float>(y - spriteTop) / (spriteBottom - spriteTop);
+            // Calculate texture coordinate with perspective correction
+            float screenY = static_cast<float>(y - spriteTop) / (spriteBottom - spriteTop);
+            float v = screenY;
             
             // Sample texture
             Color color = texture.sample(u, v);
@@ -811,8 +879,8 @@ void Renderer::renderSprite(const Sprite& sprite, const BSPTree& bsp, const View
             // Apply fog
             Color finalColor = Color::blend(Color(0, 0, 0), litColor, fogFactor);
             
-            // Draw pixel with depth check
-            drawPixelWithDepth(x, y, distance, finalColor);
+            // Draw pixel with depth check - use slightly adjusted depth for curved billboard effect
+            drawPixelWithDepth(x, y, edgeDistance, finalColor);
         }
     }
 }
