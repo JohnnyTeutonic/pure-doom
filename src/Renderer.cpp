@@ -1797,13 +1797,6 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
         Color(255, 255, 255) // White for better visibility
     );
     
-    // Draw a very obvious test wall (static) to verify minimap drawing works
-    int testX1 = m_minimapX + m_minimapSize / 4;
-    int testY1 = m_minimapY + m_minimapSize / 4;
-    int testX2 = m_minimapX + m_minimapSize * 3 / 4;
-    int testY2 = m_minimapY + m_minimapSize * 3 / 4;
-    drawMinimapWall(testX1, testY1, testX2, testY2, Color(255, 255, 0, 255)); // Yellow test wall
-    
     // Draw grid lines (every 10 units)
     Color gridColor(100, 100, 100, 128);
     for (int grid = -100; grid <= 100; grid += 10) {
