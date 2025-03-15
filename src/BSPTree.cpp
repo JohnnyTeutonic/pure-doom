@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <limits>
 #include <iostream>
+#include <stdexcept>
 
 namespace PureDoom {
 
@@ -12,12 +13,15 @@ BSPTree::~BSPTree() = default;
 
 // Build the BSP tree from a list of sectors
 void BSPTree::build(const std::vector<Sector>& sectors) {
+    std::cout << "Building BSP tree with " << sectors.size() << " sectors..." << std::endl;
     m_sectors = sectors;
     
     // Collect all walls from all sectors
     std::vector<Wall> allWalls;
     for (size_t i = 0; i < sectors.size(); ++i) {
         const Sector& sector = sectors[i];
+        std::cout << "Processing sector " << i << " with " << sector.walls.size() << " walls..." << std::endl;
+        
         for (const Wall& wall : sector.walls) {
             Wall wallCopy = wall;
             if (wallCopy.sectorFront == -1) {
@@ -27,29 +31,43 @@ void BSPTree::build(const std::vector<Sector>& sectors) {
         }
     }
     
-    // Build the tree recursively
-    m_root = buildTree(std::move(allWalls));
+    std::cout << "Collected " << allWalls.size() << " walls for BSP construction." << std::endl;
     
-    std::cout << "BSP Tree built successfully with " << sectors.size() << " sectors.\n";
+    // Build the tree recursively
+    try {
+        m_root = buildTree(std::move(allWalls));
+        std::cout << "BSP Tree built successfully with " << sectors.size() << " sectors.\n";
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Exception during BSP construction: " << e.what() << std::endl;
+        throw;
+    }
+    catch (...) {
+        std::cerr << "Unknown exception during BSP construction!" << std::endl;
+        throw;
+    }
 }
 
 // Recursive function to build the BSP tree
 std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
     // If no walls are left, return nullptr (empty space)
     if (walls.empty()) {
+        std::cout << "No walls left, returning nullptr." << std::endl;
         return nullptr;
     }
     
     // If only one wall is left, create a leaf node
     if (walls.size() == 1) {
+        std::cout << "Single wall, creating leaf node with sector ID: " << walls[0].sectorFront << std::endl;
         auto node = std::make_unique<BSPNode>();
         node->isLeaf = true;
-        node->walls = std::move(walls);
         node->sectorId = walls[0].sectorFront;
+        node->walls.push_back(walls[0]); // Copy the wall instead of moving the entire vector
         return node;
     }
     
     // Find the best splitter among the walls
+    std::cout << "Finding best splitter among " << walls.size() << " walls..." << std::endl;
     Line splitter = findBestSplitter(walls);
     
     // Create the node with this splitter
@@ -59,19 +77,23 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
     std::vector<Wall> frontWalls;
     std::vector<Wall> backWalls;
     
+    std::cout << "Classifying walls..." << std::endl;
     for (const Wall& wall : walls) {
         SplitType splitType = classifyWall(wall, splitter);
         
         switch (splitType) {
             case SplitType::FRONT:
+                std::cout << "Wall classified as FRONT" << std::endl;
                 frontWalls.push_back(wall);
                 break;
                 
             case SplitType::BACK:
+                std::cout << "Wall classified as BACK" << std::endl;
                 backWalls.push_back(wall);
                 break;
                 
             case SplitType::SPANNING: {
+                std::cout << "Wall classified as SPANNING, splitting..." << std::endl;
                 // Wall spans the splitter - split it into two
                 Wall frontPart, backPart;
                 splitWall(wall, splitter, frontPart, backPart);
@@ -81,15 +103,52 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
             }
             
             case SplitType::COLINEAR:
+                std::cout << "Wall classified as COLINEAR" << std::endl;
                 // Add to front side by convention
                 frontWalls.push_back(wall);
                 break;
         }
     }
     
+    std::cout << "Walls distributed: " << frontWalls.size() << " front, " << backWalls.size() << " back" << std::endl;
+    
+    // Check if we're making progress in splitting the walls
+    if ((frontWalls.size() == walls.size() && backWalls.empty()) || 
+        (backWalls.size() == walls.size() && frontWalls.empty())) {
+        std::cout << "Warning: No progress in splitting walls. Using different approach." << std::endl;
+        
+        // If we're not making progress, just make a leaf node with all walls
+        auto leafNode = std::make_unique<BSPNode>();
+        leafNode->isLeaf = true;
+        
+        // Try to find a common sector for all walls
+        int commonSector = -1;
+        for (const Wall& wall : walls) {
+            if (commonSector == -1) {
+                commonSector = wall.sectorFront;
+            } else if (commonSector != wall.sectorFront) {
+                // If walls belong to different sectors, use the first one
+                std::cout << "Warning: Walls belong to different sectors in leaf node." << std::endl;
+                break;
+            }
+        }
+        
+        leafNode->sectorId = (commonSector != -1) ? commonSector : walls[0].sectorFront;
+        leafNode->walls = walls; // Copy all walls
+        
+        return leafNode;
+    }
+    
     // Recursively build the front and back subtrees
-    node->front = buildTree(std::move(frontWalls));
-    node->back = buildTree(std::move(backWalls));
+    std::cout << "Building front subtree..." << std::endl;
+    if (!frontWalls.empty()) {
+        node->front = buildTree(std::move(frontWalls));
+    }
+    
+    std::cout << "Building back subtree..." << std::endl;
+    if (!backWalls.empty()) {
+        node->back = buildTree(std::move(backWalls));
+    }
     
     return node;
 }
@@ -97,16 +156,11 @@ std::unique_ptr<BSPNode> BSPTree::buildTree(std::vector<Wall> walls) {
 // Find the best splitter for a set of walls
 Line BSPTree::findBestSplitter(const std::vector<Wall>& walls) const {
     if (walls.empty()) {
-        // Fallback - should never happen if called properly
-        return Line(0.0f, 0.0f, 1.0f, 0.0f);
+        std::cerr << "Error: findBestSplitter called with empty walls vector" << std::endl;
+        throw std::runtime_error("Cannot find splitter in empty walls vector");
     }
     
-    // Simple heuristic: Use the first wall
-    // In a production system, you'd want a more sophisticated heuristic
-    // that minimizes the number of splits
-    
-    // More advanced heuristic (commented out for simplicity):
-    /*
+    // Use more advanced heuristic to find a good splitter
     int bestScore = std::numeric_limits<int>::max();
     size_t bestIndex = 0;
     
@@ -115,10 +169,10 @@ Line BSPTree::findBestSplitter(const std::vector<Wall>& walls) const {
         int splits = 0;
         int balance = 0;
         
-        for (const Wall& wall : walls) {
-            if (&wall.segment == &candidate) continue;
+        for (size_t j = 0; j < walls.size(); ++j) {
+            if (i == j) continue; // Skip the candidate itself
             
-            SplitType type = classifyWall(wall, candidate);
+            SplitType type = classifyWall(walls[j], candidate);
             if (type == SplitType::FRONT) balance++;
             else if (type == SplitType::BACK) balance--;
             else if (type == SplitType::SPANNING) splits++;
@@ -133,9 +187,6 @@ Line BSPTree::findBestSplitter(const std::vector<Wall>& walls) const {
     }
     
     return walls[bestIndex].segment;
-    */
-    
-    return walls[0].segment;
 }
 
 // Classify a wall with respect to a partitioner line
@@ -150,8 +201,10 @@ SplitType BSPTree::classifyWall(const Wall& wall, const Line& partitioner) const
     float startSide = normal.dotProduct(startToPartStart);
     float endSide = normal.dotProduct(endToPartStart);
     
+    const float EPSILON = 0.0001f;
+    
     // Check classification based on point positions
-    if (std::abs(startSide) < 0.0001f && std::abs(endSide) < 0.0001f) {
+    if (std::abs(startSide) < EPSILON && std::abs(endSide) < EPSILON) {
         // Both points lie on the partitioner
         return SplitType::COLINEAR;
     } else if (startSide >= 0.0f && endSide >= 0.0f) {
@@ -184,6 +237,7 @@ void BSPTree::splitWall(const Wall& wall, const Line& partitioner,
     Vec2 v3 = p1 - p3;
     
     float cross = v1.crossProduct(v2);
+    
     if (std::abs(cross) < 0.0001f) {
         // Lines are nearly parallel, just split in the middle
         Vec2 mid = (p1 + p2) * 0.5f;
@@ -194,6 +248,10 @@ void BSPTree::splitWall(const Wall& wall, const Line& partitioner,
     }
     
     float t = v2.crossProduct(v3) / cross;
+    
+    // Clamp t to [0,1] to ensure the intersection point is on the wall segment
+    t = std::max(0.0f, std::min(1.0f, t));
+    
     Vec2 intersection = p1 + v1 * t;
     
     // Compute which side of the partitioner the start and end points lie on
@@ -283,13 +341,16 @@ bool BSPTree::traceRayRecursive(const BSPNode* node, const Vec2& origin, const V
     if (side >= 0.0f) {
         // Origin is in front of the partitioner
         
-        // Check front side first
-        if (traceRayRecursive(node->front.get(), origin, direction, maxDistance, hitPoint, hitWallIndex)) {
-            return true;
+        // Check if front node exists before recursion
+        if (node->front) {
+            // Check front side first
+            if (traceRayRecursive(node->front.get(), origin, direction, maxDistance, hitPoint, hitWallIndex)) {
+                return true;
+            }
         }
         
-        // If the ray is pointing to the back side, check it too
-        if (dirSide < 0.0f) {
+        // If the ray is pointing to the back side, check it too (if back node exists)
+        if (dirSide < 0.0f && node->back) {
             // Calculate distance to partitioner
             float t = -side / dirSide;
             if (t < maxDistance) {
@@ -303,13 +364,16 @@ bool BSPTree::traceRayRecursive(const BSPNode* node, const Vec2& origin, const V
     } else {
         // Origin is behind the partitioner
         
-        // Check back side first
-        if (traceRayRecursive(node->back.get(), origin, direction, maxDistance, hitPoint, hitWallIndex)) {
-            return true;
+        // Check if back node exists before recursion
+        if (node->back) {
+            // Check back side first
+            if (traceRayRecursive(node->back.get(), origin, direction, maxDistance, hitPoint, hitWallIndex)) {
+                return true;
+            }
         }
         
-        // If the ray is pointing to the front side, check it too
-        if (dirSide > 0.0f) {
+        // If the ray is pointing to the front side, check it too (if front node exists)
+        if (dirSide > 0.0f && node->front) {
             // Calculate distance to partitioner
             float t = -side / dirSide;
             if (t < maxDistance) {
@@ -328,6 +392,7 @@ bool BSPTree::traceRayRecursive(const BSPNode* node, const Vec2& origin, const V
 // Render the scene from a viewpoint
 void BSPTree::render(const Vec2& viewPosition, float viewAngle, float fov) const {
     if (!m_root) {
+        std::cout << "No BSP tree to render!" << std::endl;
         return;
     }
     
@@ -358,6 +423,19 @@ void BSPTree::renderRecursive(const BSPNode* node, const Vec2& viewPosition,
         return;
     }
     
+    // If this is a leaf node, render its walls
+    if (node->isLeaf) {
+        std::cout << "Rendering leaf node with sector ID: " << node->sectorId << std::endl;
+        for (const Wall& wall : node->walls) {
+            // In a real renderer, this would draw the wall with texture
+            // Here we just print some information
+            std::cout << "  Rendering wall: (" 
+                      << wall.segment.start.position.x << ", " << wall.segment.start.position.y << ") to ("
+                      << wall.segment.end.position.x << ", " << wall.segment.end.position.y << ")" << std::endl;
+        }
+        return;
+    }
+    
     // Determine which side of the partition the viewer is on
     Vec2 partDir = node->partitioner.direction();
     Vec2 normal(-partDir.y, partDir.x);  // Normal vector to the partitioner
@@ -368,37 +446,23 @@ void BSPTree::renderRecursive(const BSPNode* node, const Vec2& viewPosition,
     if (side >= 0.0f) {
         // Viewer is in front of the partitioner
         // Render back side first, then front side
-        renderRecursive(node->back.get(), viewPosition, viewAngle, fov);
-        
-        // If this is a leaf node, render its walls
-        if (node->isLeaf) {
-            for (const Wall& wall : node->walls) {
-                // In a real renderer, this would draw the wall with texture
-                // Here we just print some information
-                std::cout << "Rendering wall: (" 
-                          << wall.segment.start.position.x << ", " << wall.segment.start.position.y << ") to ("
-                          << wall.segment.end.position.x << ", " << wall.segment.end.position.y << ")" << std::endl;
-            }
+        if (node->back) {
+            renderRecursive(node->back.get(), viewPosition, viewAngle, fov);
         }
         
-        renderRecursive(node->front.get(), viewPosition, viewAngle, fov);
+        if (node->front) {
+            renderRecursive(node->front.get(), viewPosition, viewAngle, fov);
+        }
     } else {
         // Viewer is behind the partitioner
         // Render front side first, then back side
-        renderRecursive(node->front.get(), viewPosition, viewAngle, fov);
-        
-        // If this is a leaf node, render its walls
-        if (node->isLeaf) {
-            for (const Wall& wall : node->walls) {
-                // In a real renderer, this would draw the wall with texture
-                // Here we just print some information
-                std::cout << "Rendering wall: (" 
-                          << wall.segment.start.position.x << ", " << wall.segment.start.position.y << ") to ("
-                          << wall.segment.end.position.x << ", " << wall.segment.end.position.y << ")" << std::endl;
-            }
+        if (node->front) {
+            renderRecursive(node->front.get(), viewPosition, viewAngle, fov);
         }
         
-        renderRecursive(node->back.get(), viewPosition, viewAngle, fov);
+        if (node->back) {
+            renderRecursive(node->back.get(), viewPosition, viewAngle, fov);
+        }
     }
 }
 
@@ -430,11 +494,25 @@ int BSPTree::findSectorRecursive(const BSPNode* node, const Vec2& point) const {
     
     if (side >= 0.0f) {
         // Point is in front of the partitioner
-        return findSectorRecursive(node->front.get(), point);
+        if (node->front) {
+            return findSectorRecursive(node->front.get(), point);
+        }
     } else {
         // Point is behind the partitioner
-        return findSectorRecursive(node->back.get(), point);
+        if (node->back) {
+            return findSectorRecursive(node->back.get(), point);
+        }
     }
+    
+    // If we get here, the point is on one side but that subtree is missing
+    // Try the other side as a fallback
+    if (side >= 0.0f && node->back) {
+        return findSectorRecursive(node->back.get(), point);
+    } else if (side < 0.0f && node->front) {
+        return findSectorRecursive(node->front.get(), point);
+    }
+    
+    return -1;
 }
 
 } // namespace PureDoom 

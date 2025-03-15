@@ -22,8 +22,6 @@ std::vector<Sector> createTestMap() {
     room.walls.push_back(Wall(Line(Vertex(10.0f, 10.0f), Vertex(0.0f, 10.0f)), 0, -1, 5));
     room.walls.push_back(Wall(Line(Vertex(0.0f, 10.0f), Vertex(0.0f, 0.0f)), 0, -1, 6));
     
-    sectors.push_back(room);
-    
     // Create a second room connected to the first
     Sector secondRoom;
     secondRoom.floorHeight = 0.0f;
@@ -36,14 +34,13 @@ std::vector<Sector> createTestMap() {
     secondRoom.walls.push_back(Wall(Line(Vertex(10.0f, 0.0f), Vertex(20.0f, 0.0f)), 1, -1, 9));
     secondRoom.walls.push_back(Wall(Line(Vertex(20.0f, 0.0f), Vertex(20.0f, 10.0f)), 1, -1, 10));
     secondRoom.walls.push_back(Wall(Line(Vertex(20.0f, 10.0f), Vertex(10.0f, 10.0f)), 1, -1, 11));
-    
-    // Portal wall connecting to the first room (note: two-way portal)
     secondRoom.walls.push_back(Wall(Line(Vertex(10.0f, 10.0f), Vertex(10.0f, 0.0f)), 1, 0, 12));
     
     // Update the corresponding wall in the first room to be a portal as well
     room.walls[1].sectorBack = 1;
     
-    sectors[0] = room;
+    // Important: We must add the room after updating it
+    sectors.push_back(room);
     sectors.push_back(secondRoom);
     
     return sectors;
@@ -102,22 +99,33 @@ int main() {
         std::cout << "Sector " << i << " has " << sector.walls.size() << " walls\n";
     }
     
+    std::cout << "Starting BSP tree build...\n";
+    
     // Create and build the BSP tree
     BSPTree bsp;
-    bsp.build(testMap);
-    
-    // Test rendering from a viewpoint
-    std::cout << "\n--- Rendering Test ---\n";
-    Vec2 viewPos(5.0f, 5.0f);
-    float viewAngle = 0.0f;  // Looking east
-    float fov = 90.0f;       // 90 degree field of view
-    
-    bsp.render(viewPos, viewAngle, fov);
-    
-    // Test ray casting
-    testRayCasting(bsp);
-    
-    std::cout << "\nBSP tree tests completed successfully.\n";
+    try {
+        bsp.build(testMap);
+        std::cout << "BSP tree build successful!\n";
+        
+        // Test rendering from a viewpoint
+        std::cout << "\n--- Rendering Test ---\n";
+        Vec2 viewPos(5.0f, 5.0f);
+        float viewAngle = 0.0f;  // Looking east
+        float fov = 90.0f;       // 90 degree field of view
+        
+        bsp.render(viewPos, viewAngle, fov);
+        
+        // Test ray casting
+        testRayCasting(bsp);
+        
+        std::cout << "\nBSP tree tests completed successfully.\n";
+    }
+    catch(const std::exception& e) {
+        std::cerr << "Exception caught: " << e.what() << std::endl;
+    }
+    catch(...) {
+        std::cerr << "Unknown exception caught!" << std::endl;
+    }
     
     return 0;
 } 
