@@ -37,6 +37,10 @@ public:
     
     // Upload textures to the GPU
     void uploadTextures(const std::vector<Texture>& textures);
+
+    // BSP serialization for CUDA
+    void serializeBSPForCuda(const BSPTree& bsp);
+    void freeBSPData();
     
     // Set the reference to the skybox (needed for maxViewDistance)
     void setSkybox(const Skybox& skybox) { m_skybox = skybox; }
@@ -70,12 +74,16 @@ private:
     bool m_initialized;
     bool m_buffersAllocated;  // Track if GPU buffers are allocated
     bool m_texturesUploaded;  // Track if textures are uploaded
+    bool m_bspUploaded;       // Track if BSP tree is uploaded
     CudaDeviceInfo m_deviceInfo;
     Skybox m_skybox;  // Store a copy of the skybox for reference
     
     // CUDA data structure containing device pointers and state
     // This is a pointer to avoid exposing CUDA types in the header
     CudaRenderData* m_cudaData;
+    
+    // Serialized BSP data on device
+    CudaBSPTree m_deviceBSPTree;
     
     // Allocate CUDA memory
     void allocateCudaMemory();

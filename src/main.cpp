@@ -450,9 +450,9 @@ void renderWithSDL(BSPTree& bsp) {
     bool keyPressedF = false; // Dynamic sky
     bool keyPressedB = false; // Speed up time
     bool keyPressedN = false; // Slow down time
-    bool keyPressedK = false; // Increase sun size
-    bool keyPressedL = false; // Decrease sun size
-    bool keyPressedG = false; // Toggle GPU acceleration
+    bool keyPressedK = false; // Toggle collision visualization
+    bool keyPressedL = false; // Sun size
+    bool keyPressedG = false; // GPU acceleration
     
     // Create test sprites
     std::vector<Sprite> sprites = createTestSprites();
@@ -486,7 +486,8 @@ void renderWithSDL(BSPTree& bsp) {
     std::cout << "Press O to toggle FPS display\n";
     std::cout << "Press [ to decrease rendering resolution\n";
     std::cout << "Press ] to increase rendering resolution\n";
-    std::cout << "Press G to toggle GPU acceleration\n\n";
+    std::cout << "Press G to toggle GPU acceleration\n";
+    std::cout << "Press K to toggle collision visualization\n\n";
     
     std::cout << "\n--- Starting Rendering Loop ---\n";
     std::cout << "Use WASD to move, QE to rotate, or move the mouse to look around.\n";
@@ -721,21 +722,20 @@ void renderWithSDL(BSPTree& bsp) {
             keyPressedN = false;
         }
         
-        // Increase sun size (K key)
+        // Toggle collision visualization (K key)
         if (keystates[SDL_SCANCODE_K] && !keyPressedK) {
             keyPressedK = true;
-            skybox.sunSize += 1.0f;
-            skybox.sunSize = std::min(20.0f, skybox.sunSize);
-            std::cout << "Sun size: " << skybox.sunSize << " degrees" << std::endl;
+            renderer.setShowCollisions(!renderer.isShowingCollisions());
+            std::cout << "Collision visualization: " << (renderer.isShowingCollisions() ? "ON" : "OFF") << std::endl;
         } else if (!keystates[SDL_SCANCODE_K]) {
             keyPressedK = false;
         }
         
-        // Decrease sun size (L key)
+        // Increase sun size (L key)
         if (keystates[SDL_SCANCODE_L] && !keyPressedL) {
             keyPressedL = true;
-            skybox.sunSize -= 1.0f;
-            skybox.sunSize = std::max(1.0f, skybox.sunSize);
+            skybox.sunSize += 1.0f;
+            skybox.sunSize = std::min(20.0f, skybox.sunSize);
             std::cout << "Sun size: " << skybox.sunSize << " degrees" << std::endl;
         } else if (!keystates[SDL_SCANCODE_L]) {
             keyPressedL = false;
@@ -811,7 +811,7 @@ void renderWithSDL(BSPTree& bsp) {
         }
         
         // Define player collision radius
-        const float PLAYER_RADIUS = 0.4f; // Increased from 0.25f to be more forgiving
+        const float PLAYER_RADIUS = 0.3f; // Reduced from 0.35f to make navigation much easier in tight spaces
         
         // Initialize movement vector
         Vec2 movementVector(0.0f, 0.0f);
@@ -832,28 +832,48 @@ void renderWithSDL(BSPTree& bsp) {
         
         // Only attempt movement if the player is trying to move
         if (movementVector.lengthSquared() > 0.001f) {
+            // Store original position for unstick detection
+            Vec2 originalPosition = view.position;
+            
+            // Check for nearby walls - debug output
+            CollisionInfo nearbyWalls = bsp.castRay(view.position, movementVector.normalized(), PLAYER_RADIUS * 3.0f);
+            if (nearbyWalls.collision && nearbyWalls.distance < 0.5f) {
+                // Only output when we're very close to a wall
+                std::cout << "NEARBY WALL: Player at (" << view.position.x << ", " << view.position.y 
+                          << "), Wall at " << nearbyWalls.distance * PLAYER_RADIUS * 3.0f 
+                          << " units away in direction (" << movementVector.normalized().x 
+                          << ", " << movementVector.normalized().y << ")" << std::endl;
+            }
+            
             // Check for collisions
             CollisionInfo collision = bsp.checkCollision(view.position, PLAYER_RADIUS, movementVector);
             
             if (collision.collision) {
+                // Output collision details when a collision is detected
+                std::cout << "COLLISION: Distance=" << collision.distance 
+                          << ", Normal=(" << collision.normal.x << ", " << collision.normal.y 
+                          << "), SectorId=" << collision.sectorId
+                          << ", WallIndex=" << collision.wallIndex << std::endl;
+                
                 // If we're about to hit a wall
                 if (collision.distance < 1.0f) {
                     // Move as far as we can before hitting the wall
-                    Vec2 safeMovement = movementVector * collision.distance;
-                    
-                    // Apply a tiny offset to avoid floating point precision issues
-                    const float SAFE_OFFSET = 0.001f;
-                    safeMovement = safeMovement - collision.normal * SAFE_OFFSET;
+                    // Apply a small safety factor (0.9) to avoid getting too close
+                    Vec2 safeMovement = movementVector * (collision.distance * 0.9f);
                     
                     // Move up to the collision point
                     view.position = view.position + safeMovement;
                     
                     // Calculate the remaining movement vector that needs to be redirected
-                    Vec2 remainingMovement = movementVector * (1.0f - collision.distance);
+                    Vec2 remainingMovement = movementVector * (1.0f - collision.distance * 0.9f);
                     
                     // Slide along the wall (project the remaining movement onto the wall plane)
                     Vec2 slideVector = remainingMovement - 
                                     collision.normal * remainingMovement.dotProduct(collision.normal);
+                    
+                    // Add a significant component away from the wall to prevent sticking
+                    Vec2 awayFromWall = collision.normal * 0.01f; // Doubled from 0.005f
+                    slideVector = slideVector + awayFromWall;
                     
                     // Apply the slide movement, but check for a second collision
                     if (slideVector.lengthSquared() > 0.001f) {
@@ -861,7 +881,22 @@ void renderWithSDL(BSPTree& bsp) {
                         
                         if (slideCollision.collision && slideCollision.distance < 1.0f) {
                             // If we'd hit another wall while sliding, move safely along the slide vector
-                            view.position = view.position + slideVector * slideCollision.distance * 0.9f;
+                            // Reduce the sliding movement to avoid getting stuck in corners
+                            float slideDistance = slideCollision.distance * 0.7f; // Further reduced for safety
+                            
+                            // Add a stronger repulsion force to push away from corners
+                            Vec2 repulsionForce = slideCollision.normal * 0.025f; // Further increased
+                            view.position = view.position + slideVector * slideDistance + repulsionForce;
+                            
+                            // If movement is very small, apply a larger bump in the normal direction to unstick
+                            if (slideVector.length() * slideDistance < 0.015f) { // Increased threshold
+                                Vec2 unstickVector = collision.normal * -0.03f; // Further increased
+                                view.position = view.position + unstickVector;
+                                
+                                // Debug output for unsticking
+                                std::cout << "Applying unstick vector: (" << unstickVector.x << ", " 
+                                          << unstickVector.y << ")" << std::endl;
+                            }
                         } else {
                             // No collision with the slide vector, apply it fully
                             view.position = view.position + slideVector;
@@ -874,6 +909,26 @@ void renderWithSDL(BSPTree& bsp) {
             } else {
                 // No collision, safe to move
                 view.position = view.position + movementVector;
+            }
+            
+            // Check if we've moved at all - if not, we might be stuck
+            if ((view.position - originalPosition).lengthSquared() < 0.0001f) {
+                // We haven't moved, so apply a larger random bump to unstick
+                float randomAngle = static_cast<float>(rand()) / RAND_MAX * 2.0f * PI;
+                Vec2 randomDir(std::cos(randomAngle), std::sin(randomAngle));
+                view.position = view.position + randomDir * 0.05f; // Increased from 0.02f
+                
+                // Debug output for getting stuck
+                std::cout << "MAJOR STUCK: Player at position (" << view.position.x << ", " << view.position.y 
+                          << ") - applying stronger random bump in direction (" 
+                          << randomDir.x << ", " << randomDir.y << ")" << std::endl;
+                
+                // Try another ray cast in the random direction to see what's there
+                CollisionInfo stuckRay = bsp.castRay(view.position, randomDir, PLAYER_RADIUS * 5.0f);
+                if (stuckRay.collision) {
+                    std::cout << "  Nearest obstacle in random direction at distance: " 
+                              << stuckRay.distance * PLAYER_RADIUS * 5.0f << " units" << std::endl;
+                }
             }
         }
         

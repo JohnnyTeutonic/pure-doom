@@ -4,6 +4,7 @@
 #include <iostream>
 #include <cmath>      // For std::fmod
 #include <algorithm>  // For std::max, std::min
+#include <vector>     // For BSP serialization
 
 // Host and device implementations of Color methods for CUDA kernels
 namespace PureDoom {
@@ -72,24 +73,26 @@ __host__ __device__ Color Color::blend(const Color& c1, const Color& c2, float t
     return result;
 }
 
-// Update the structure for passing data between CPU and GPU
+// Define data structure for CUDA rendering
 struct CudaRenderData {
-    // Device pointers
+    // Frame buffer info
     Color* d_frameBuffer;
     float* d_zBuffer;
+    int width;
+    int height;
     
-    // Texture data on device
+    // Texture data
     struct TextureData {
         Color* pixels;
         int width;
         int height;
     };
+    
     TextureData* d_textures;
     int numTextures;
     
-    // Dimensions
-    int width;
-    int height;
+    // BSP tree data
+    CudaBSPTree* d_bspTree;
 };
 
 // CUDA-compatible color blend function for device code
@@ -261,20 +264,7 @@ __global__ void sunRenderKernel(Color* frameBuffer, float* zBuffer, int width, i
     }
 }
 
-// Add a Wall collision data structure for the CUDA implementation
-struct CudaWallCollision {
-    bool collision;      // Whether a wall collision occurred
-    float distance;      // Distance to the wall
-    float wallHeight;    // Height of the wall
-    int textureId;       // Texture ID for the wall
-    float texCoordU;     // Texture U coordinate
-    float floorHeight;   // Floor height of the sector
-    float ceilingHeight; // Ceiling height of the sector
-    bool isPortal;       // Whether the wall is a portal
-    int lightLevel;      // Light level for the wall
-};
-
-// New BSP ray casting kernel
+// Update BSP ray casting kernel to use serialized BSP tree
 __global__ void bspRenderKernel(
     Color* frameBuffer,
     float* zBuffer,
@@ -286,8 +276,7 @@ __global__ void bspRenderKernel(
     float playerHeight,
     float fov,
     float maxDistance,
-    float floorLevel,
-    float ceilingLevel)
+    CudaBSPTree* bspTree)
 {
     // Calculate the current pixel coordinates
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -308,24 +297,12 @@ __global__ void bspRenderKernel(
     float rayDirX = cosf(rayAngle);
     float rayDirY = sinf(rayAngle);
     
-    // Since we can't directly access the BSP tree in CUDA, we would need to
-    // either upload a simplified version of the tree to GPU memory or
-    // perform ray casting on the CPU and upload results.
-    // For now, we'll simulate wall detection with a simple distance calculation
-    // This should be replaced with actual BSP tree traversal in a future version
+    // Use the BSP tree to cast the ray
+    CudaVec2 rayOrigin(playerX, playerY);
+    CudaVec2 rayDir(rayDirX, rayDirY);
     
-    // Placeholder: Simulating a wall detection at a fixed distance
-    // In a real implementation, this would come from traversing the BSP tree
-    CudaWallCollision collision;
-    collision.collision = true;
-    collision.distance = maxDistance * 0.5f;  // Simulate a wall halfway to max distance
-    collision.wallHeight = 1.0f;  // Standard wall height
-    collision.textureId = 1;      // Default texture
-    collision.texCoordU = 0.5f;   // Middle of texture
-    collision.floorHeight = floorLevel;
-    collision.ceilingHeight = ceilingLevel + collision.wallHeight;
-    collision.isPortal = false;
-    collision.lightLevel = 255;  // Full brightness
+    // Cast ray through BSP tree
+    CudaWallCollision collision = castRayBSP(*bspTree, rayOrigin, rayDir, maxDistance);
     
     if (collision.collision) {
         // Correct for fisheye effect
@@ -350,7 +327,7 @@ __global__ void bspRenderKernel(
         int wallTop = max(0, (int)ceilingScreenY);
         int wallBottom = min(height - 1, (int)floorScreenY);
         
-        // Simple coloring based on distance (placeholder for texture mapping)
+        // Calculate lighting based on distance
         float intensityFactor = 1.0f - min(1.0f, correctedDistance / maxDistance);
         intensityFactor = max(0.2f, intensityFactor) * collision.lightLevel / 255.0f;
         
@@ -359,7 +336,7 @@ __global__ void bspRenderKernel(
             // Calculate texture coordinate V
             float wallY = (y - ceilingScreenY) / (floorScreenY - ceilingScreenY);
             
-            // Simple color for now (would be texture sampling)
+            // Simple gray color for debugging
             Color wallColor = Color(
                 (uint8_t)(200 * intensityFactor),
                 (uint8_t)(200 * intensityFactor),
@@ -479,16 +456,6 @@ __global__ void floorCeilingRenderKernel(
         zBuffer[idx] = distance / maxDistance;
     }
 }
-
-// Structure to hold sprite rendering data for CUDA
-struct CudaSpriteData {
-    float x, y;           // Position in world space
-    float scale;          // Sprite scale factor
-    int textureId;        // Texture ID for the sprite
-    int type;             // Sprite type
-    float distance;       // Distance to the sprite from player
-    bool visible;         // Whether the sprite is visible
-};
 
 // This kernel will be called once per sprite
 __global__ void spriteRenderKernel(
@@ -614,11 +581,23 @@ __global__ void clearZBufferKernel(float* zBuffer, int width, int height, float 
 
 // Host code for RendererCuda implementation
 
-RendererCuda::RendererCuda(int width, int height) 
-    : m_width(width), m_height(height), m_cudaAvailable(false), m_initialized(false), 
-      m_buffersAllocated(false), m_texturesUploaded(false), m_cudaData(nullptr) {
-    // Initialize skybox with default values
-    m_skybox.maxViewDistance = 30.0f; // Default max view distance
+RendererCuda::RendererCuda(int width, int height)
+    : m_width(width), m_height(height), m_cudaAvailable(false), m_initialized(false),
+      m_buffersAllocated(false), m_texturesUploaded(false), m_bspUploaded(false), m_cudaData(nullptr)
+{
+    // Check CUDA availability
+    m_deviceInfo = getCudaDeviceInfo();
+    m_cudaAvailable = m_deviceInfo.available;
+    
+    if (m_cudaAvailable) {
+        std::cout << "CUDA is available for rendering acceleration" << std::endl;
+        printCudaDeviceInfo(m_deviceInfo);
+    } else {
+        std::cout << "CUDA is not available, using CPU rendering" << std::endl;
+    }
+    
+    // Initialize to empty BSP tree
+    memset(&m_deviceBSPTree, 0, sizeof(m_deviceBSPTree));
 }
 
 RendererCuda::~RendererCuda() {
@@ -636,25 +615,20 @@ RendererCuda::~RendererCuda() {
 }
 
 bool RendererCuda::initialize() {
-    // Initialize CUDA
-    m_deviceInfo = initializeCuda();
-    m_cudaAvailable = m_deviceInfo.cudaAvailable;
-    
     if (!m_cudaAvailable) {
-        std::cerr << "CUDA initialization failed. Using CPU fallback." << std::endl;
+        std::cout << "CUDA is not available for initialization" << std::endl;
         return false;
     }
     
-    // Print device info
-    printCudaDeviceInfo(m_deviceInfo);
-    
-    // Allocate CUDA data structure
+    // Allocate cudaData structure
     m_cudaData = new CudaRenderData();
     m_cudaData->width = m_width;
     m_cudaData->height = m_height;
-    
-    // Allocate device memory
-    allocateCudaMemory();
+    m_cudaData->d_frameBuffer = nullptr;
+    m_cudaData->d_zBuffer = nullptr;
+    m_cudaData->d_textures = nullptr;
+    m_cudaData->numTextures = 0;
+    m_cudaData->d_bspTree = nullptr;
     
     m_initialized = true;
     return true;
@@ -753,6 +727,9 @@ void RendererCuda::freeCudaMemory() {
         m_cudaData->numTextures = 0;
         m_texturesUploaded = false;
     }
+    
+    // Free BSP data
+    freeBSPData();
 }
 
 void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
@@ -764,6 +741,11 @@ void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
         allocateBuffers();
     }
     
+    // Ensure BSP data is uploaded
+    if (!m_bspUploaded) {
+        serializeBSPForCuda(bsp);
+    }
+    
     // Clear buffers for new frame
     clearBuffers();
     
@@ -772,8 +754,6 @@ void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
     renderBSPCuda(bsp, view, m_skybox.maxViewDistance);
     renderFloorAndCeilingCuda(bsp, view);
     renderSpritesCuda(bsp, view, sprites);
-    
-    // No need to synchronize - retrieveRenderingResults will wait for kernels to finish
 }
 
 void RendererCuda::renderSkyboxCuda(const ViewPosition& view, float deltaTime, const Skybox& skybox) {
@@ -865,7 +845,7 @@ void RendererCuda::drawSunCuda(float screenX, float screenY, float radius, const
     CUDA_CHECK(cudaGetLastError());
 }
 
-// Update the renderBSPCuda method from a stub to a real implementation
+// Update renderBSPCuda to use the serialized BSP tree
 void RendererCuda::renderBSPCuda(const BSPTree& bsp, const ViewPosition& view, float maxViewDistance) {
     if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
     
@@ -876,21 +856,27 @@ void RendererCuda::renderBSPCuda(const BSPTree& bsp, const ViewPosition& view, f
     float playerHeight = view.height;
     float fov = view.fov;
     
-    // Get current sector information (floor and ceiling heights)
-    float floorLevel = 0.0f;
-    float ceilingLevel = 0.0f;
-    int playerSectorId = bsp.findSector(view.position);
-    if (playerSectorId >= 0 && playerSectorId < static_cast<int>(bsp.getSectors().size())) {
-        const Sector& playerSector = bsp.getSectors()[playerSectorId];
-        floorLevel = playerSector.floorHeight;
-        ceilingLevel = playerSector.ceilingHeight;
+    // Ensure BSP data is uploaded
+    if (!m_bspUploaded) {
+        serializeBSPForCuda(bsp);
+    }
+    
+    // Make sure buffers are allocated
+    if (!m_buffersAllocated) {
+        allocateBuffers();
+    }
+    
+    // Ensure BSP data was successfully uploaded
+    if (!m_bspUploaded || !m_cudaData->d_bspTree) {
+        std::cout << "Error: BSP data not available for CUDA rendering" << std::endl;
+        return;
     }
     
     // Determine thread block and grid sizes
     dim3 blockSize(16, 1);  // Use 16 threads per block for simplicity
     dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x);
     
-    // Launch the BSP rendering kernel
+    // Launch the BSP rendering kernel with the serialized BSP tree
     bspRenderKernel<<<gridSize, blockSize>>>(
         m_cudaData->d_frameBuffer,
         m_cudaData->d_zBuffer,
@@ -902,8 +888,7 @@ void RendererCuda::renderBSPCuda(const BSPTree& bsp, const ViewPosition& view, f
         playerHeight,
         fov,
         maxViewDistance,
-        floorLevel,
-        ceilingLevel
+        m_cudaData->d_bspTree
     );
     
     // Check for errors
@@ -1140,6 +1125,140 @@ void RendererCuda::retrieveRenderingResults(std::vector<Color>& frameBuffer, std
     // Copy Z-buffer data back to host
     CUDA_CHECK(cudaMemcpy(zBuffer.data(), m_cudaData->d_zBuffer, 
                        m_width * m_height * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
+// Serializing the BSP tree for CUDA
+void RendererCuda::serializeBSPForCuda(const BSPTree& bsp) {
+    if (!m_cudaAvailable || !m_initialized) {
+        std::cout << "Can't serialize BSP: CUDA not available or not initialized" << std::endl;
+        return;
+    }
+    
+    // Free existing BSP data if present
+    freeBSPData();
+    
+    // Get the sectors from the BSP tree
+    const std::vector<Sector>& sectors = bsp.getSectors();
+    
+    // Collect all unique walls from all sectors
+    std::vector<CudaWall> wallsData;
+    std::vector<CudaSector> sectorsData;
+    std::vector<CudaBSPNode> nodesData;
+    
+    // First pass: Build sectors and walls
+    for (size_t i = 0; i < sectors.size(); i++) {
+        const Sector& sector = sectors[i];
+        
+        CudaSector cudaSector;
+        cudaSector.wallStartIndex = wallsData.size();
+        cudaSector.wallCount = sector.walls.size();
+        cudaSector.floorHeight = sector.floorHeight;
+        cudaSector.ceilingHeight = sector.ceilingHeight;
+        cudaSector.floorTextureId = sector.floorTextureId;
+        cudaSector.ceilingTextureId = sector.ceilingTextureId;
+        cudaSector.lightLevel = sector.lightLevel;
+        
+        // Add all walls from this sector
+        for (const Wall& wall : sector.walls) {
+            CudaWall cudaWall;
+            
+            // Convert coordinates
+            cudaWall.segment.start.x = wall.segment.start.position.x;
+            cudaWall.segment.start.y = wall.segment.start.position.y;
+            cudaWall.segment.end.x = wall.segment.end.position.x;
+            cudaWall.segment.end.y = wall.segment.end.position.y;
+            
+            // Add other wall properties
+            cudaWall.sectorFront = wall.sectorFront;
+            cudaWall.sectorBack = wall.sectorBack;
+            cudaWall.textureId = wall.textureId;
+            cudaWall.textureOffsetX = wall.textureOffsetX;
+            cudaWall.textureOffsetY = wall.textureOffsetY;
+            cudaWall.lightLevel = sector.lightLevel; // Use sector light level
+            
+            wallsData.push_back(cudaWall);
+        }
+        
+        sectorsData.push_back(cudaSector);
+    }
+    
+    // For simplicity, create a simple BSP structure
+    // In a more advanced implementation, you would need to serialize the actual BSP tree
+    // but for now, we'll create a single leaf node containing all walls
+    CudaBSPNode rootNode;
+    rootNode.isLeaf = true;
+    rootNode.wallStartIndex = 0;
+    rootNode.wallCount = wallsData.size();
+    rootNode.sectorId = 0; // Default to first sector
+    
+    nodesData.push_back(rootNode);
+    
+    // Allocate device memory for BSP data
+    CudaWall* d_walls = nullptr;
+    CudaSector* d_sectors = nullptr;
+    CudaBSPNode* d_nodes = nullptr;
+    CudaBSPTree* d_bspTree = nullptr;
+    
+    CUDA_CHECK(cudaMalloc((void**)&d_walls, wallsData.size() * sizeof(CudaWall)));
+    CUDA_CHECK(cudaMalloc((void**)&d_sectors, sectorsData.size() * sizeof(CudaSector)));
+    CUDA_CHECK(cudaMalloc((void**)&d_nodes, nodesData.size() * sizeof(CudaBSPNode)));
+    CUDA_CHECK(cudaMalloc((void**)&d_bspTree, sizeof(CudaBSPTree)));
+    
+    // Copy data to device
+    CUDA_CHECK(cudaMemcpy(d_walls, wallsData.data(), wallsData.size() * sizeof(CudaWall), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_sectors, sectorsData.data(), sectorsData.size() * sizeof(CudaSector), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_nodes, nodesData.data(), nodesData.size() * sizeof(CudaBSPNode), cudaMemcpyHostToDevice));
+    
+    // Create device BSP tree structure
+    CudaBSPTree hostBSPTree;
+    hostBSPTree.nodes = d_nodes;
+    hostBSPTree.nodeCount = nodesData.size();
+    hostBSPTree.rootNodeIndex = 0;
+    hostBSPTree.walls = d_walls;
+    hostBSPTree.wallCount = wallsData.size();
+    hostBSPTree.sectors = d_sectors;
+    hostBSPTree.sectorCount = sectorsData.size();
+    
+    // Copy BSP tree structure to device
+    CUDA_CHECK(cudaMemcpy(d_bspTree, &hostBSPTree, sizeof(CudaBSPTree), cudaMemcpyHostToDevice));
+    
+    // Store device pointers
+    m_deviceBSPTree = hostBSPTree;
+    m_cudaData->d_bspTree = d_bspTree;
+    
+    m_bspUploaded = true;
+    
+    std::cout << "BSP tree serialized for CUDA: " 
+              << wallsData.size() << " walls, " 
+              << sectorsData.size() << " sectors, " 
+              << nodesData.size() << " nodes" << std::endl;
+}
+
+// Free BSP data on device
+void RendererCuda::freeBSPData() {
+    if (!m_cudaAvailable || !m_bspUploaded) return;
+    
+    if (m_deviceBSPTree.walls) {
+        CUDA_CHECK(cudaFree(m_deviceBSPTree.walls));
+        m_deviceBSPTree.walls = nullptr;
+    }
+    
+    if (m_deviceBSPTree.sectors) {
+        CUDA_CHECK(cudaFree(m_deviceBSPTree.sectors));
+        m_deviceBSPTree.sectors = nullptr;
+    }
+    
+    if (m_deviceBSPTree.nodes) {
+        CUDA_CHECK(cudaFree(m_deviceBSPTree.nodes));
+        m_deviceBSPTree.nodes = nullptr;
+    }
+    
+    if (m_cudaData->d_bspTree) {
+        CUDA_CHECK(cudaFree(m_cudaData->d_bspTree));
+        m_cudaData->d_bspTree = nullptr;
+    }
+    
+    m_bspUploaded = false;
 }
 
 } // namespace PureDoom 

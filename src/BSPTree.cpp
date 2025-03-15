@@ -750,8 +750,9 @@ void BSPTree::checkCollisionRecursive(const BSPNode* node, const Vec2& position,
             // Calculate distance from position to wall
             float dist = wall.segment.distanceToPoint(position);
             
-            // If position is already too close to the wall
-            if (dist < radius) {
+            // If position is already too close to the wall - apply a small buffer
+            // Using a larger buffer (0.005f) to prevent getting stuck
+            if (dist < radius - 0.005f) {
                 // Immediate collision
                 collision.collision = true;
                 collision.distance = 0.0f;
@@ -766,7 +767,15 @@ void BSPTree::checkCollisionRecursive(const BSPNode* node, const Vec2& position,
                 
                 // Set collision point and normal
                 collision.point = closestPoint;
-                collision.normal = (position - closestPoint).normalized();
+                
+                // Ensure the normal points away from the wall (toward the player)
+                Vec2 normal = (position - closestPoint);
+                // Make sure we don't get a zero normal
+                if (normal.lengthSquared() < 0.0001f) {
+                    // Create a perpendicular vector to the wall if we're exactly on the wall
+                    normal = Vec2(-wallDir.y, wallDir.x);
+                }
+                collision.normal = normal.normalized();
                 return;
             }
             
@@ -779,7 +788,12 @@ void BSPTree::checkCollisionRecursive(const BSPNode* node, const Vec2& position,
                 // Create enlarged wall to account for radius
                 Vec2 wallDir = (wall.segment.end.position - wall.segment.start.position).normalized();
                 Vec2 wallNormal = Vec2(-wallDir.y, wallDir.x);
-                Vec2 offset = wallNormal * radius;
+                
+                // Significantly reduce the collision radius to help with narrow passages
+                // This gives the player a lot more room to move through tight spaces
+                float adjustedRadius = radius * 0.85f; // Reduce to 85% to allow more movement in tight spaces
+                
+                Vec2 offset = wallNormal * adjustedRadius;
                 Line enlargedWall(
                     wall.segment.start.position + offset,
                     wall.segment.end.position + offset
@@ -791,7 +805,8 @@ void BSPTree::checkCollisionRecursive(const BSPNode* node, const Vec2& position,
                 Vec2 v3(-dir.y, dir.x);
                 
                 float dot = v2.dotProduct(v3);
-                if (std::abs(dot) > 0.0001f) {
+                // Increased precision threshold further
+                if (std::abs(dot) > 0.000001f) {
                     float t1 = v2.crossProduct(v1) / dot;
                     float t2 = v1.dotProduct(v3) / dot;
                     
@@ -827,9 +842,16 @@ void BSPTree::checkCollisionRecursive(const BSPNode* node, const Vec2& position,
     Vec2 toPartStart = position - node->partitioner.start.position;
     float side = normal.dotProduct(toPartStart);
     
-    // Determine which side(s) to check
-    bool checkFront = (side + radius >= 0.0f);
-    bool checkBack = (side - radius <= 0.0f);
+    // Determine which side(s) to check with more padding
+    bool checkFront = (side + radius * 1.1f >= 0.0f); // Add 10% extra padding
+    bool checkBack = (side - radius * 1.1f <= 0.0f);  // Add 10% extra padding
+    
+    // Check both sides if we're near the partition plane - with much wider range
+    if (std::abs(side) < radius * 1.5f) {
+        // We're close to the partition, check both sides with generous margin
+        // to prevent getting stuck at partition boundaries
+        checkFront = checkBack = true;
+    }
     
     // Check appropriate sides
     if (checkFront && node->front) {

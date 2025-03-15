@@ -8,6 +8,8 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <SDL.h>
+#include <unordered_map>
 
 // Include CUDA runtime headers only when compiling with CUDA
 #if defined(__CUDACC__) || defined(ENABLE_CUDA)
@@ -37,6 +39,12 @@ struct WallSlice;
 struct Span;
 class Texture;
 class RendererCuda; // Forward declaration for CUDA renderer
+
+struct RendererSettings {
+    bool showCollisions;
+    
+    RendererSettings() : showCollisions(false) {}
+};
 
 // Color representation (RGBA)
 struct Color {
@@ -283,7 +291,7 @@ public:
     Skybox& getSkybox() { return m_skybox; }
     
     // Enable/disable GPU acceleration
-    void setGpuAccelerationEnabled(bool enabled) { m_gpuAccelerationEnabled = enabled; }
+    void setGpuAccelerationEnabled(bool enabled);
     bool isGpuAccelerationEnabled() const { return m_gpuAccelerationEnabled && m_cudaRenderer != nullptr; }
     
     // Minimap functionality
@@ -293,6 +301,10 @@ public:
     int getMinimapSize() const { return m_minimapSize; }
     void setMinimapPosition(int x, int y) { m_minimapX = x; m_minimapY = y; }
     void setMinimapScale(float scale) { m_minimapScale = scale; }
+    
+    // Add this method to toggle collision debugging
+    void setShowCollisions(bool show) { m_settings.showCollisions = show; }
+    bool isShowingCollisions() const { return m_settings.showCollisions; }
     
 private:
     int m_width;
@@ -329,6 +341,8 @@ private:
     void clearBuffers();
     void renderBSP(const BSPTree& bsp, const ViewPosition& view);
     void renderWallSlice(const WallSlice& slice, const ViewPosition& view);
+    void renderTexturedWallStrip(const WallSlice& slice, int y1, int y2, const Texture& texture, 
+                                float texVOffset = 0.0f, float texVScale = 1.0f);
     
     // Skybox rendering
     void renderSkybox(const ViewPosition& view, float deltaTime);
@@ -389,6 +403,8 @@ private:
     
     // Check if sprite is visible
     bool isSpriteVisible(const Sprite& sprite, const ViewPosition& view, float& distance) const;
+    
+    RendererSettings m_settings;
 };
 
 } // namespace PureDoom

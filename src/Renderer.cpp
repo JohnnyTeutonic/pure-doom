@@ -476,6 +476,13 @@ void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const s
         // Pass skybox reference to CUDA renderer
         m_cudaRenderer->setSkybox(m_skybox);
         
+        // Serialize BSP tree for CUDA rendering if needed
+        static bool bspUploaded = false;
+        if (!bspUploaded) {
+            m_cudaRenderer->serializeBSPForCuda(bsp);
+            bspUploaded = true;
+        }
+        
         // Option 1: Optimized approach - render everything on the GPU and retrieve results
         m_cudaRenderer->renderFrame(bsp, view, sprites, deltaTime);
         m_cudaRenderer->retrieveRenderingResults(m_frameBuffer, m_zBuffer);
@@ -724,163 +731,151 @@ void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
 }
 
 void Renderer::renderWallSlice(const WallSlice& slice, const ViewPosition& view) {
-    if (slice.x < 0 || slice.x >= m_width) return;
+    // Calculate base height and screen position
+    const float viewHeight = view.height;
     
-    // Calculate wall top and bottom on screen based on player height relative to floor
-    int centerY = m_height / 2;
+    // Get texture for this wall
+    const Texture& texture = m_textures[slice.textureId % m_textures.size()];
     
-    // Get the texture for this wall
-    int texIndex = slice.textureId % m_textures.size();
-    const Texture& tex = m_textures[texIndex];
+    // Calculate screen Y coordinates for wall top and bottom
+    int screenY1, screenY2;
     
-    // Calculate lighting factor (0-1)
-    float lightFactor = std::min(1.0f, std::max(0.0f, slice.lightLevel / 255.0f));
-    
-    // Apply a depth bias for z-fighting prevention
-    float depthBias = 0.0f;
-    if (slice.isPortal) {
-        depthBias = 0.01f; // Small bias to push portal walls slightly back
-    }
-    
-    // Enhanced bias for problematic portals
-    if (slice.isProblematicPortal) {
-        depthBias = 0.05f;
-        float stableOffset = (slice.textureId * 0.001f) + (slice.x % 2) * 0.0005f; 
-        depthBias += stableOffset;
-    }
-    
-    // Check if this is a portal with height differences
     if (slice.isPortal && slice.hasHeightDifference) {
-        // 1. Upper section (if adjacent ceiling is lower than current ceiling)
+        // For portals with height differences, three sections may need rendering
+        
+        // Upper section (if needed)
         if (slice.adjacentCeilingHeight < slice.ceilingHeight) {
-            // Calculate screen positions using consistent function
-            int upperWallTop = static_cast<int>(calculateScreenYPosition(slice.ceilingHeight, slice.distance, view.height));
-            int upperWallBottom = static_cast<int>(calculateScreenYPosition(slice.adjacentCeilingHeight, slice.distance, view.height));
+            float upperHeight = slice.ceilingHeight - slice.adjacentCeilingHeight;
+            float projectedUpperHeight = calculateWallHeight(slice.distance, upperHeight);
             
-            // Clamp to screen bounds
-            int clampedUpperTop = std::max(0, upperWallTop);
-            int clampedUpperBottom = std::min(m_height - 1, upperWallBottom);
+            // Calculate screen Y coordinates
+            float yCenter = m_height / 2.0f;
+            float ceilingBaseY = yCenter - calculateWallHeight(slice.distance, slice.ceilingHeight - viewHeight);
+            float adjacentCeilingY = yCenter - calculateWallHeight(slice.distance, slice.adjacentCeilingHeight - viewHeight);
             
-            // Draw the upper wall section
-            for (int y = clampedUpperTop; y <= clampedUpperBottom; y++) {
-                // Calculate vertical position within the upper wall section
-                float normalizedY = 0.0f;
-                if (upperWallBottom != upperWallTop) {
-                    normalizedY = static_cast<float>(y - upperWallTop) / (upperWallBottom - upperWallTop);
-                }
-                
-                // For upper sections, map to upper part of texture
-                float v = normalizedY * 0.5f; // Use top half of texture
-                
-                Color texColor = tex.sample(slice.texCoordU, v);
-                Color finalColor = Color::blend(Color(0, 0, 0), texColor, lightFactor);
-                
-                // Apply distance fog
-                float fogFactor = 1.0f - std::min(1.0f, slice.distance / 30.0f);
-                finalColor = Color::blend(Color(0, 0, 0), finalColor, fogFactor);
-                
-                // Draw with depth info
-                drawPixelWithDepth(slice.x, y, slice.distance + depthBias, finalColor);
-            }
+            screenY1 = static_cast<int>(ceilingBaseY);
+            screenY2 = static_cast<int>(adjacentCeilingY);
+            
+            renderTexturedWallStrip(slice, screenY1, screenY2, texture, slice.upperTexCoordV, 0.0f);
         }
         
-        // 2. Lower section (if adjacent floor is higher than current floor)
+        // Lower section (if needed)
         if (slice.adjacentFloorHeight > slice.floorHeight) {
-            // Calculate screen positions using consistent function
-            int lowerWallTop = static_cast<int>(calculateScreenYPosition(slice.adjacentFloorHeight, slice.distance, view.height));
-            int lowerWallBottom = static_cast<int>(calculateScreenYPosition(slice.floorHeight, slice.distance, view.height));
+            float lowerHeight = slice.adjacentFloorHeight - slice.floorHeight;
+            float projectedLowerHeight = calculateWallHeight(slice.distance, lowerHeight);
             
-            // Clamp to screen bounds
-            int clampedLowerTop = std::max(0, lowerWallTop);
-            int clampedLowerBottom = std::min(m_height - 1, lowerWallBottom);
+            // Calculate screen Y coordinates
+            float yCenter = m_height / 2.0f;
+            float floorBaseY = yCenter + calculateWallHeight(slice.distance, viewHeight - slice.floorHeight);
+            float adjacentFloorY = yCenter + calculateWallHeight(slice.distance, viewHeight - slice.adjacentFloorHeight);
             
-            // Draw the lower wall section
-            for (int y = clampedLowerTop; y <= clampedLowerBottom; y++) {
-                // Calculate vertical position within the lower wall section
-                float normalizedY = 0.0f;
-                if (lowerWallBottom != lowerWallTop) {
-                    normalizedY = static_cast<float>(y - lowerWallTop) / (lowerWallBottom - lowerWallTop);
-                }
-                
-                // For lower sections, map to lower part of texture
-                float v = 0.5f + normalizedY * 0.5f; // Use bottom half of texture
-                
-                Color texColor = tex.sample(slice.texCoordU, v);
-                Color finalColor = Color::blend(Color(0, 0, 0), texColor, lightFactor);
-                
-                // Apply distance fog
-                float fogFactor = 1.0f - std::min(1.0f, slice.distance / 30.0f);
-                finalColor = Color::blend(Color(0, 0, 0), finalColor, fogFactor);
-                
-                // Draw with depth info
-                drawPixelWithDepth(slice.x, y, slice.distance + depthBias, finalColor);
-            }
+            screenY1 = static_cast<int>(adjacentFloorY);
+            screenY2 = static_cast<int>(floorBaseY);
+            
+            renderTexturedWallStrip(slice, screenY1, screenY2, texture, slice.lowerTexCoordV, 0.5f);
+        }
+    }
+    else {
+        // Calculate standard wall heights
+        float wallHeight = slice.ceilingHeight - slice.floorHeight;
+        float projectedHeight = calculateWallHeight(slice.distance, wallHeight);
+        
+        // Calculate screen positions
+        int screenCenterY = m_height / 2;
+        float eyeHeight = viewHeight - slice.floorHeight;
+        float topOffset = (wallHeight - eyeHeight) / wallHeight * projectedHeight;
+        float bottomOffset = eyeHeight / wallHeight * projectedHeight;
+        
+        screenY1 = screenCenterY - static_cast<int>(topOffset);
+        screenY2 = screenCenterY + static_cast<int>(bottomOffset);
+        
+        // Clamp to screen
+        screenY1 = std::max(0, screenY1);
+        screenY2 = std::min(m_height - 1, screenY2);
+        
+        // Store wall extents for use in floor/ceiling rendering
+        if (screenY1 < m_wallExtents[slice.x].top || m_wallExtents[slice.x].top == 0) {
+            m_wallExtents[slice.x].top = screenY1;
+        }
+        if (screenY2 > m_wallExtents[slice.x].bottom) {
+            m_wallExtents[slice.x].bottom = screenY2;
         }
         
-        // Don't render the middle section for a portal with height differences
-        // as the player will see through it to the adjacent sector
+        // Render textured wall column
+        renderTexturedWallStrip(slice, screenY1, screenY2, texture);
+    }
+}
+
+// Helper function to render a textured wall strip
+void Renderer::renderTexturedWallStrip(
+    const WallSlice& slice, int y1, int y2, const Texture& texture, 
+    float texVOffset, float texVScale) {
+    
+    // Skip if off screen
+    if (y2 < y1 || y1 >= m_height || y2 < 0 || slice.x < 0 || slice.x >= m_width) {
         return;
     }
     
-    // Standard wall rendering for solid walls or portals without height differences
+    // Clamp to screen
+    y1 = std::max(0, y1);
+    y2 = std::min(m_height - 1, y2);
     
-    // Calculate screen positions using consistent function
-    int wallTop = static_cast<int>(calculateScreenYPosition(slice.ceilingHeight, slice.distance, view.height));
-    int wallBottom = static_cast<int>(calculateScreenYPosition(slice.floorHeight, slice.distance, view.height));
+    // Texture mapping
+    const int wallHeight = y2 - y1 + 1;
+    const float texU = slice.texCoordU;
+    const int texWidth = texture.width();
     
-    // Ensure wall has at least some height to be visible
-    if (wallBottom <= wallTop) {
-        wallBottom = wallTop + 1;
+    // Precalculate shading factors for better performance
+    float lightLevel = slice.lightLevel / 255.0f;
+    
+    // Apply stronger distance shading for better depth perception
+    // This will make distant walls darker, improving depth cues
+    float distanceFactor = 1.0f - slice.distance / m_skybox.maxViewDistance;
+    distanceFactor = std::max(0.3f, distanceFactor); // Increased base visibility (was 0.2f)
+    
+    // Enhance the contrast to make walls more visible
+    float shadingFactor = lightLevel * distanceFactor;
+    shadingFactor = shadingFactor * shadingFactor * 2.0f; // Increased contrast enhancement (was 1.5f)
+    shadingFactor = std::min(1.5f, shadingFactor); // Allow more brightness (was 1.2f)
+    
+    // Add a stronger brightening effect for edges to improve wall visibility
+    float edgeBrightness = 0.0f;
+    if (texU < 0.08f || texU > 0.92f) {
+        // Brighten the edges of walls significantly
+        edgeBrightness = 0.25f; // Increased from 0.15f
     }
     
-    // Clamp to screen bounds
-    int clampedTop = std::max(0, wallTop);
-    int clampedBottom = std::min(m_height - 1, wallBottom);
+    // Draw borders at the top and bottom of the wall for better visibility
+    const int borderThickness = 2;
     
-    // Draw the wall slice
-    for (int y = clampedTop; y <= clampedBottom; y++) {
-        // Calculate vertical position within wall (0 = ceiling, 1 = floor)
-        float normalizedY = 0.0f;
-        if (wallBottom != wallTop) {  // Avoid division by zero
-            normalizedY = static_cast<float>(y - wallTop) / (wallBottom - wallTop);
+    for (int y = y1; y <= y2; y++) {
+        // Calculate texture V coordinate
+        float texV = (y - y1) / static_cast<float>(wallHeight);
+        texV = texV * texVScale + texVOffset;
+        
+        // Get texture pixel color
+        Color texColor = texture.sample(texU, texV);
+        
+        // Check if we're at a border (top or bottom of wall)
+        bool isBorder = (y <= y1 + borderThickness) || (y >= y2 - borderThickness);
+        
+        // Apply shading based on light level and distance
+        Color finalColor;
+        
+        if (isBorder) {
+            // Draw borders in bright green to make walls stand out
+            finalColor = Color(0, 255, 0);
+        } else {
+            // Normal wall shading with enhanced brightness and green tint
+            finalColor = Color(
+                static_cast<uint8_t>(std::min(255.0f, texColor.r * (shadingFactor + edgeBrightness) * 0.5f)),  // Reduce red component
+                static_cast<uint8_t>(std::min(255.0f, texColor.g * (shadingFactor + edgeBrightness) * 1.5f)),  // Enhance green component
+                static_cast<uint8_t>(std::min(255.0f, texColor.b * (shadingFactor + edgeBrightness) * 0.5f))   // Reduce blue component
+            );
         }
         
-        // Special handling for problematic portals to prevent flickering
-        float u = slice.texCoordU;
-        float v = normalizedY;
-        
-        if (slice.isProblematicPortal) {
-            // Ensure stable texture coordinates by snapping to a grid
-            u = std::floor(u * 64.0f) / 64.0f;
-            
-            // Apply a subtle fixed offset based on the column to avoid uniform patterns
-            float columnBias = (slice.x % 4) * 0.005f;
-            u += columnBias;
-            
-            // Ensure u is in the [0,1] range
-            u = u - std::floor(u);
-        }
-        
-        // Apply subtle perspective effect based on viewing angle
-        float distFromCenter = std::abs(normalizedY - 0.5f) * 2.0f; // 0 at center, 1 at edges
-        float depthAdjustment = slice.distance * (1.0f + distFromCenter * 0.02f) + depthBias; // Subtle curve + portal bias
-        
-        // For problematic portals, use a consistent depth rather than a curved one
-        if (slice.isProblematicPortal) {
-            depthAdjustment = slice.distance + depthBias;
-        }
-        
-        Color texColor = tex.sample(u, v);
-        
-        // Apply lighting
-        Color finalColor = Color::blend(Color(0, 0, 0), texColor, lightFactor);
-        
-        // Apply distance fog
-        float fogFactor = 1.0f - std::min(1.0f, slice.distance / 30.0f);
-        finalColor = Color::blend(Color(0, 0, 0), finalColor, fogFactor);
-        
-        // Draw the pixel with depth information
-        drawPixelWithDepth(slice.x, y, depthAdjustment, finalColor);
+        // Store depth in z-buffer and draw pixel
+        drawPixelWithDepth(slice.x, y, slice.distance, finalColor);
     }
 }
 
@@ -1909,7 +1904,7 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
     // Draw minimap background
     for (int y = m_minimapY; y < m_minimapY + m_minimapSize; y++) {
         for (int x = m_minimapX; x < m_minimapX + m_minimapSize; x++) {
-            drawPixel(x, y, Color(0, 0, 0, 160)); // Slightly more transparent background
+            drawPixel(x, y, Color(0, 0, 0, 200)); // More opaque background
         }
     }
     
@@ -1932,7 +1927,7 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
         totalWalls += sector.walls.size();
     }
     
-    // Draw a text indicator of the number of walls (crude approximation with pixels)
+    // Draw a text indicator in the top-left corner of the minimap
     std::string wallCountStr = "Walls: " + std::to_string(totalWalls);
     int textX = m_minimapX + 5;
     int textY = m_minimapY + 5;
@@ -1947,10 +1942,11 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
         }
     }
     
-    // Try much larger scale
+    // Set an appropriate scale to show the entire map clearly
     float originalScale = m_minimapScale;
-    m_minimapScale = 1.0f; // Make 5x larger to see if walls exist but are very small
+    m_minimapScale = 0.7f; // Smaller value = more zoomed out (showing more of the map)
     
+    // Draw all sectors in bright colors
     for (size_t i = 0; i < sectors.size(); i++) {
         const Sector& sector = sectors[i];
         
@@ -1962,9 +1958,9 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
             // Choose color based on wall type (solid walls vs portals)
             Color wallColor;
             if (wall.sectorBack == -1) {
-                wallColor = Color(255, 0, 0, 255); // Solid red for solid walls with full opacity
+                wallColor = Color(255, 80, 80, 255); // Bright red for solid walls
             } else {
-                wallColor = Color(0, 255, 0, 255); // Solid green for portals with full opacity
+                wallColor = Color(80, 255, 80, 255); // Bright green for portals
             }
             
             // Make the walls thicker for better visibility
@@ -1975,17 +1971,98 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
                 wallColor
             );
             
-            // Draw additional lines for thickness
-            for (int offset = 1; offset <= 3; offset++) {
+            // Draw additional lines for thickness - increased to 5 pixels thick
+            for (int offset = 1; offset <= 5; offset++) {
+                // Horizontal thickening
                 drawMinimapWall(
-                    static_cast<int>(start.x) - offset, static_cast<int>(start.y) - offset,
-                    static_cast<int>(end.x) - offset, static_cast<int>(end.y) - offset,
+                    static_cast<int>(start.x), static_cast<int>(start.y) - offset,
+                    static_cast<int>(end.x), static_cast<int>(end.y) - offset,
                     wallColor
                 );
                 drawMinimapWall(
-                    static_cast<int>(start.x) + offset, static_cast<int>(start.y) + offset,
-                    static_cast<int>(end.x) + offset, static_cast<int>(end.y) + offset,
+                    static_cast<int>(start.x), static_cast<int>(start.y) + offset,
+                    static_cast<int>(end.x), static_cast<int>(end.y) + offset,
                     wallColor
+                );
+                
+                // Vertical thickening
+                drawMinimapWall(
+                    static_cast<int>(start.x) - offset, static_cast<int>(start.y),
+                    static_cast<int>(end.x) - offset, static_cast<int>(end.y),
+                    wallColor
+                );
+                drawMinimapWall(
+                    static_cast<int>(start.x) + offset, static_cast<int>(start.y),
+                    static_cast<int>(end.x) + offset, static_cast<int>(end.y),
+                    wallColor
+                );
+            }
+            
+            // Draw endpoints as circles for better visibility
+            int pointRadius = 3;
+            
+            // Start point circle
+            for (int dy = -pointRadius; dy <= pointRadius; dy++) {
+                for (int dx = -pointRadius; dx <= pointRadius; dx++) {
+                    if (dx*dx + dy*dy <= pointRadius*pointRadius) {
+                        drawPixel(
+                            static_cast<int>(start.x) + dx, 
+                            static_cast<int>(start.y) + dy, 
+                            Color(255, 255, 0) // Yellow for endpoints
+                        );
+                    }
+                }
+            }
+            
+            // End point circle
+            for (int dy = -pointRadius; dy <= pointRadius; dy++) {
+                for (int dx = -pointRadius; dx <= pointRadius; dx++) {
+                    if (dx*dx + dy*dy <= pointRadius*pointRadius) {
+                        drawPixel(
+                            static_cast<int>(end.x) + dx, 
+                            static_cast<int>(end.y) + dy, 
+                            Color(255, 255, 0) // Yellow for endpoints
+                        );
+                    }
+                }
+            }
+        }
+    }
+    
+    // Debug visualization: Show collision points if enabled
+    if (m_settings.showCollisions) {
+        // Check for potential collisions in multiple directions
+        const float radius = 0.35f;  // Match player radius from main.cpp
+        const int numRays = 32;     // Cast more rays for better coverage
+        
+        for (int i = 0; i < numRays; i++) {
+            float angle = (float)i * 2.0f * PI / numRays;
+            Vec2 dir(std::cos(angle), std::sin(angle));
+            
+            // Cast a ray in this direction to find potential collisions
+            CollisionInfo info = bsp.castRay(view.position, dir, radius * 3.0f);
+            
+            if (info.collision) {
+                // Convert collision point to minimap coordinates
+                Vec2 collPoint = worldToMinimap(info.point);
+                int collX = static_cast<int>(collPoint.x);
+                int collY = static_cast<int>(collPoint.y);
+                
+                // Draw collision point in bright magenta for visibility
+                for (int dy = -3; dy <= 3; dy++) {
+                    for (int dx = -3; dx <= 3; dx++) {
+                        if (dx*dx + dy*dy <= 9) {
+                            drawPixel(collX + dx, collY + dy, Color(255, 0, 255, 255));
+                        }
+                    }
+                }
+                
+                // Draw wall normal at collision point
+                Vec2 normalEnd = worldToMinimap(info.point + info.normal * 1.0f);
+                drawMinimapWall(
+                    collX, collY,
+                    static_cast<int>(normalEnd.x), static_cast<int>(normalEnd.y),
+                    Color(255, 255, 0, 255)
                 );
             }
         }
@@ -2005,7 +2082,7 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
     );
     
     // Draw grid lines (every 10 units)
-    Color gridColor(100, 100, 100, 128);
+    Color gridColor(100, 100, 100, 64); // More transparent grid
     for (int grid = -100; grid <= 100; grid += 10) {
         // Vertical grid line
         Vec2 gridStart = worldToMinimap(Vec2(grid, -100));
@@ -2024,6 +2101,39 @@ void Renderer::renderMinimap(const BSPTree& bsp, const ViewPosition& view) {
             static_cast<int>(gridEnd.x), static_cast<int>(gridEnd.y),
             gridColor
         );
+    }
+    
+    // Print current player coordinates at the bottom of minimap
+    std::string posStr = "Pos: (" + std::to_string(int(view.position.x)) + "," + 
+                       std::to_string(int(view.position.y)) + ")";
+    int posTextX = m_minimapX + 5;
+    int posTextY = m_minimapY + m_minimapSize - 10;
+    
+    // Draw each letter as a small rectangle
+    for (size_t i = 0; i < posStr.length(); i++) {
+        // Simple 3x5 pixel character
+        for (int dy = 0; dy < 5; dy++) {
+            for (int dx = 0; dx < 3; dx++) {
+                drawPixel(posTextX + i*4 + dx, posTextY + dy, Color(255, 255, 0)); // Yellow text
+            }
+        }
+    }
+}
+
+// Also update the setGpuAccelerationEnabled method to handle BSP data
+void Renderer::setGpuAccelerationEnabled(bool enabled) {
+    // Only change if there's actually a change
+    if (m_gpuAccelerationEnabled != enabled) {
+        m_gpuAccelerationEnabled = enabled;
+        
+        // If turning off GPU, make sure we'll reupload next time it's enabled
+        if (!enabled) {
+            // Reset flags to ensure data is re-uploaded when GPU is re-enabled
+            if (m_cudaRenderer) {
+                // Free GPU resources since we won't be using them
+                m_cudaRenderer->freeBSPData();
+            }
+        }
     }
 }
 
