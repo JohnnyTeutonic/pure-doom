@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+
 // Constant values
 constexpr float PI = 3.14159265358979323846f;
 constexpr float DEG_TO_RAD = PI / 180.0f;
@@ -21,6 +22,7 @@ struct Color;
 struct ViewPosition;
 struct RenderInfo;
 struct WallSlice;
+struct Span;
 class Texture;
 
 // Color representation (RGBA)
@@ -58,6 +60,43 @@ struct WallSlice {
     
     WallSlice() : x(0), distance(0.0f), height(0.0f), texCoordU(0.0f),
                  textureId(-1), lightLevel(0), isPortal(false) {}
+};
+
+// Span for floor/ceiling rendering
+struct Span {
+    int y;             // Screen y coordinate
+    int startX;        // Start x position
+    int endX;          // End x position
+    float startU;      // Start texture U coordinate
+    float startV;      // Start texture V coordinate
+    float endU;        // End texture U coordinate
+    float endV;        // End texture V coordinate
+    float startZ;      // Start depth
+    float endZ;        // End depth
+    int textureId;     // Texture to use
+    int lightLevel;    // Light level
+    bool isFloor;      // Is this a floor span (vs ceiling)?
+    
+    Span() : y(0), startX(0), endX(0), 
+             startU(0.0f), startV(0.0f), endU(0.0f), endV(0.0f),
+             startZ(0.0f), endZ(0.0f), textureId(-1), lightLevel(0),
+             isFloor(true) {}
+};
+
+// Visplane for floor/ceiling
+struct Visplane {
+    int minX;          // Leftmost x coordinate where this plane is visible
+    int maxX;          // Rightmost x coordinate where this plane is visible
+    std::vector<int> top;      // Top of visible area for each column
+    std::vector<int> bottom;   // Bottom of visible area for each column
+    float height;      // Height of this plane in world units
+    int textureId;     // Texture id
+    int lightLevel;    // Light level
+    bool isFloor;      // Is this a floor plane (vs ceiling)?
+    
+    Visplane(int width, float h, int tex, int light, bool floor)
+        : minX(width), maxX(0), top(width, -1), bottom(width, -1),
+          height(h), textureId(tex), lightLevel(light), isFloor(floor) {}
 };
 
 // Simple texture class
@@ -107,15 +146,34 @@ private:
     std::vector<float> m_zBuffer;            // Depth buffer for each column
     std::vector<Texture> m_textures;         // Loaded textures
     
+    // Wall Y coordinates for each column
+    struct WallExtent {
+        int top;        // Top pixel of wall
+        int bottom;     // Bottom pixel of wall
+        
+        WallExtent() : top(0), bottom(0) {}
+    };
+    std::vector<WallExtent> m_wallExtents;   // Wall extents for each column
+    std::vector<Visplane> m_visplanes;       // Visible floor/ceiling planes
+    
     // DOOM-style rendering methods
     void clearBuffers();
     void renderBSP(const BSPTree& bsp, const ViewPosition& view);
     void renderWallSlice(const WallSlice& slice);
-    void renderFloorAndCeiling(const BSPTree& bsp, const ViewPosition& view);
+    
+    // Span-based floor and ceiling rendering (DOOM style)
+    void renderFloorAndCeilingSpans(const BSPTree& bsp, const ViewPosition& view);
+    void makeVisplanes(const BSPTree& bsp, const ViewPosition& view);
+    void renderVisplane(const Visplane& visplane, const ViewPosition& view);
+    void renderSpan(const Span& span);
+    
+    // Simple floor and ceiling fill (for comparison)
+    void renderFloorAndCeilingSimple(const BSPTree& bsp, const ViewPosition& view);
     
     // Helper methods for rendering
     void drawVerticalLine(int x, int y1, int y2, const Color& color);
     void drawPixel(int x, int y, const Color& color);
+    void drawHorizontalLine(int y, int x1, int x2, const Color& color);
     
     // Calculate projected wall height
     float calculateWallHeight(float distance, float wallHeight) const;
@@ -125,6 +183,9 @@ private:
     
     // Convert world space to screen space
     Vec2 worldToScreen(const Vec2& worldPos, const ViewPosition& view) const;
+    
+    // Convert screen space to world space
+    Vec2 screenToWorld(int x, int y, float z, const ViewPosition& view) const;
     
     // Load textures
     void loadTextures();

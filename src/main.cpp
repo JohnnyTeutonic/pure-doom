@@ -270,7 +270,7 @@ void renderWithSDL(BSPTree& bsp) {
     const int SCREEN_HEIGHT = 480;
     
     // Create SDL window
-    SDL_Window* window = SDL_CreateWindow("PureDoom Renderer", 
+    SDL_Window* window = SDL_CreateWindow("PureDoom Renderer with Span-Based Floors", 
                                           SDL_WINDOWPOS_UNDEFINED, 
                                           SDL_WINDOWPOS_UNDEFINED, 
                                           SCREEN_WIDTH, 
@@ -308,6 +308,16 @@ void renderWithSDL(BSPTree& bsp) {
     // Create our DOOM-style renderer
     Renderer renderer(SCREEN_WIDTH, SCREEN_HEIGHT);
     renderer.initialize();
+    
+    std::cout << "\n--- DOOM-style Rendering ---\n";
+    std::cout << "This implementation uses two different rendering approaches:\n";
+    std::cout << "1. Column-based rendering for walls (raycasting)\n";
+    std::cout << "2. Span-based rendering for floors and ceilings\n\n";
+    std::cout << "Span-based rendering advantages:\n";
+    std::cout << "- Reduces overdraw by only drawing visible floor/ceiling pixels\n";
+    std::cout << "- Better memory access patterns for improved cache performance\n";
+    std::cout << "- More efficient for complex lighting and texture mapping\n";
+    std::cout << "- Scales better with scene complexity\n\n";
     
     // Initial player position and movement variables
     ViewPosition view;
@@ -424,6 +434,12 @@ void renderWithSDL(BSPTree& bsp) {
 int main() {
     std::cout << "PureDoom - Enhanced BSP Tree Implementation with Renderer\n";
     std::cout << "=======================================================\n\n";
+    std::cout << "DOOM-Style Rendering Features:\n";
+    std::cout << "- Column-based wall rendering (raycasting)\n";
+    std::cout << "- Span-based floor and ceiling rendering\n";
+    std::cout << "- Texture mapping with perspective correction\n";
+    std::cout << "- Visplane optimization for efficient rendering\n";
+    std::cout << "- Distance-based fog and lighting effects\n\n";
     
     // Create enhanced test map
     std::vector<Sector> testMap = createEnhancedTestMap();
