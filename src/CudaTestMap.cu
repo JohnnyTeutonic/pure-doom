@@ -1,8 +1,14 @@
 #include "CudaUtils.h"
+#include "BSPTree.h"
 #include <vector>
 #include <iostream>
+#include <map>
+#include <algorithm>
 
 namespace PureDoom {
+
+// Helper function to build a balanced BSP tree from leaf nodes
+int buildBalancedBSPTree(std::vector<CudaBSPNode>& nodes, const std::vector<int>& leafIndices, int start, int end);
 
 // Creates a simple test map directly in CUDA-friendly format
 // This bypasses the regular map system for debugging
@@ -438,6 +444,244 @@ void freeTestMap(CudaBSPTree& testMap) {
     testMap.wallCount = 0;
     testMap.sectorCount = 0;
     testMap.rootNodeIndex = 0;
+}
+
+// Creates a test map from the provided sectors
+// This allows for an arbitrary number of sectors to be used
+CudaBSPTree createTestMapFromSectors(const std::vector<Sector>& sectors) {
+    std::cout << "Creating CUDA test map from " << sectors.size() << " sectors..." << std::endl;
+    
+    // Initialize empty containers for our map data
+    std::vector<CudaSector> cudaSectors;
+    std::vector<CudaWall> cudaWalls;
+    std::vector<CudaBSPNode> cudaNodes;
+    
+    // Maps to track the correspondence between original and CUDA indices
+    std::map<int, int> sectorIdMap;
+    
+    // ======== CONVERT SECTORS ========
+    for (size_t i = 0; i < sectors.size(); i++) {
+        const Sector& sector = sectors[i];
+        
+        CudaSector cudaSector;
+        cudaSector.floorHeight = sector.floorHeight;
+        cudaSector.ceilingHeight = sector.ceilingHeight;
+        cudaSector.floorTextureId = sector.floorTextureId;
+        cudaSector.ceilingTextureId = sector.ceilingTextureId;
+        cudaSector.lightLevel = sector.lightLevel;
+        cudaSector.wallStartIndex = cudaWalls.size(); // Will be set after adding walls
+        cudaSector.wallCount = 0; // Will be set after adding walls
+        
+        // Store the mapping between original sector ID and CUDA sector ID
+        sectorIdMap[i] = cudaSectors.size();
+        
+        // Add the sector to our collection
+        cudaSectors.push_back(cudaSector);
+        
+        // ======== CONVERT WALLS ========
+        size_t wallStartIndex = cudaWalls.size();
+        
+        for (const Wall& wall : sector.walls) {
+            CudaWall cudaWall;
+            
+            // Set wall segment
+            cudaWall.segment.start.x = wall.segment.start.position.x;
+            cudaWall.segment.start.y = wall.segment.start.position.y;
+            cudaWall.segment.end.x = wall.segment.end.position.x;
+            cudaWall.segment.end.y = wall.segment.end.position.y;
+            
+            // Set sector references
+            cudaWall.sectorFront = sectorIdMap[i];
+            
+            // Handle portal walls
+            if (wall.sectorBack >= 0 && wall.sectorBack < static_cast<int>(sectors.size())) {
+                // This is a portal - the back sector will be mapped when we process it
+                // For now, store the original sector ID, we'll update it later
+                cudaWall.sectorBack = wall.sectorBack;
+            } else {
+                cudaWall.sectorBack = -1; // Not a portal
+            }
+            
+            // Set texture and lighting
+            cudaWall.textureId = wall.textureId;
+            cudaWall.textureOffsetX = 0.0f;
+            cudaWall.textureOffsetY = 0.0f;
+            cudaWall.lightLevel = sector.lightLevel;
+            
+            // Add the wall to our collection
+            cudaWalls.push_back(cudaWall);
+        }
+        
+        // Update sector wall indices
+        cudaSectors[cudaSectors.size() - 1].wallStartIndex = wallStartIndex;
+        cudaSectors[cudaSectors.size() - 1].wallCount = cudaWalls.size() - wallStartIndex;
+    }
+    
+    // Update portal wall sector references using the mapping
+    for (CudaWall& wall : cudaWalls) {
+        if (wall.sectorBack >= 0) {
+            // This is a portal - map the original sector ID to the CUDA sector ID
+            if (sectorIdMap.find(wall.sectorBack) != sectorIdMap.end()) {
+                wall.sectorBack = sectorIdMap[wall.sectorBack];
+            } else {
+                // Invalid back sector reference
+                wall.sectorBack = -1;
+            }
+        }
+    }
+    
+    // ======== BUILD BSP TREE ========
+    
+    // For simplicity, we'll create a flat BSP tree with one leaf node per sector
+    // This is not optimal for rendering but works for testing
+    
+    // Create the leaf node for each sector
+    for (size_t i = 0; i < cudaSectors.size(); i++) {
+        CudaBSPNode leafNode;
+        leafNode.isLeaf = true;
+        leafNode.sectorId = i;
+        leafNode.wallStartIndex = cudaSectors[i].wallStartIndex;
+        leafNode.wallCount = cudaSectors[i].wallCount;
+        leafNode.frontNodeIndex = -1;
+        leafNode.backNodeIndex = -1;
+        
+        cudaNodes.push_back(leafNode);
+    }
+    
+    // Create a simple binary tree structure if we have multiple sectors
+    // This is a very basic BSP tree, not optimized for rendering
+    int rootNodeIndex = 0;
+    
+    if (cudaSectors.size() > 1) {
+        // Create internal nodes to form a balanced binary tree
+        std::vector<int> leafIndices(cudaSectors.size());
+        for (size_t i = 0; i < cudaSectors.size(); i++) {
+            leafIndices[i] = i;
+        }
+        
+        // Build a balanced binary tree from the leaf nodes
+        rootNodeIndex = buildBalancedBSPTree(cudaNodes, leafIndices, 0, leafIndices.size() - 1);
+    }
+    
+    // ======== ALLOCATE CUDA MEMORY ========
+    
+    // Create host structure to hold our map data
+    CudaBSPTree testMap;
+    
+    // Allocate device memory for nodes
+    cudaError_t err = cudaMalloc((void**)&testMap.nodes, cudaNodes.size() * sizeof(CudaBSPNode));
+    if (err != cudaSuccess) {
+        std::cerr << "Failed to allocate memory for nodes: " << cudaGetErrorString(err) << std::endl;
+        return testMap; // Return empty structure on error
+    }
+    
+    // Copy nodes to device
+    err = cudaMemcpy(testMap.nodes, cudaNodes.data(), cudaNodes.size() * sizeof(CudaBSPNode), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        cudaFree(testMap.nodes);
+        std::cerr << "Failed to copy nodes to device: " << cudaGetErrorString(err) << std::endl;
+        return testMap; // Return empty structure on error
+    }
+    
+    // Allocate device memory for walls
+    err = cudaMalloc((void**)&testMap.walls, cudaWalls.size() * sizeof(CudaWall));
+    if (err != cudaSuccess) {
+        cudaFree(testMap.nodes);
+        std::cerr << "Failed to allocate memory for walls: " << cudaGetErrorString(err) << std::endl;
+        return testMap; // Return empty structure on error
+    }
+    
+    // Copy walls to device
+    err = cudaMemcpy(testMap.walls, cudaWalls.data(), cudaWalls.size() * sizeof(CudaWall), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        cudaFree(testMap.nodes);
+        cudaFree(testMap.walls);
+        std::cerr << "Failed to copy walls to device: " << cudaGetErrorString(err) << std::endl;
+        return testMap; // Return empty structure on error
+    }
+    
+    // Allocate device memory for sectors
+    err = cudaMalloc((void**)&testMap.sectors, cudaSectors.size() * sizeof(CudaSector));
+    if (err != cudaSuccess) {
+        cudaFree(testMap.nodes);
+        cudaFree(testMap.walls);
+        std::cerr << "Failed to allocate memory for sectors: " << cudaGetErrorString(err) << std::endl;
+        return testMap; // Return empty structure on error
+    }
+    
+    // Copy sectors to device
+    err = cudaMemcpy(testMap.sectors, cudaSectors.data(), cudaSectors.size() * sizeof(CudaSector), cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        cudaFree(testMap.nodes);
+        cudaFree(testMap.walls);
+        cudaFree(testMap.sectors);
+        std::cerr << "Failed to copy sectors to device: " << cudaGetErrorString(err) << std::endl;
+        return testMap; // Return empty structure on error
+    }
+    
+    // Set the remaining properties
+    testMap.nodeCount = cudaNodes.size();
+    testMap.wallCount = cudaWalls.size();
+    testMap.sectorCount = cudaSectors.size();
+    testMap.rootNodeIndex = rootNodeIndex;
+    
+    std::cout << "Successfully created test map with:" << std::endl;
+    std::cout << "  " << cudaNodes.size() << " nodes" << std::endl;
+    std::cout << "  " << cudaWalls.size() << " walls" << std::endl;
+    std::cout << "  " << cudaSectors.size() << " sectors" << std::endl;
+    
+    return testMap;
+}
+
+// Helper function to build a balanced BSP tree from leaf nodes
+int buildBalancedBSPTree(std::vector<CudaBSPNode>& nodes, const std::vector<int>& leafIndices, int start, int end) {
+    if (start > end) {
+        return -1;
+    }
+    
+    if (start == end) {
+        return leafIndices[start];
+    }
+    
+    // Find the middle element
+    int mid = start + (end - start) / 2;
+    
+    // Create a new internal node
+    CudaBSPNode internalNode;
+    internalNode.isLeaf = false;
+    internalNode.sectorId = -1;
+    internalNode.wallStartIndex = -1;
+    internalNode.wallCount = 0;
+    
+    // Create a simple horizontal or vertical partition line
+    // This is not optimal but works for testing
+    if ((mid % 2) == 0) {
+        // Horizontal partition
+        internalNode.partitioner.start.x = -100.0f;
+        internalNode.partitioner.start.y = 0.0f;
+        internalNode.partitioner.end.x = 100.0f;
+        internalNode.partitioner.end.y = 0.0f;
+    } else {
+        // Vertical partition
+        internalNode.partitioner.start.x = 0.0f;
+        internalNode.partitioner.start.y = -100.0f;
+        internalNode.partitioner.end.x = 0.0f;
+        internalNode.partitioner.end.y = 100.0f;
+    }
+    
+    // Add the internal node to the collection
+    int internalNodeIndex = nodes.size();
+    nodes.push_back(internalNode);
+    
+    // Recursively build the left and right subtrees
+    int leftChildIndex = buildBalancedBSPTree(nodes, leafIndices, start, mid - 1);
+    int rightChildIndex = buildBalancedBSPTree(nodes, leafIndices, mid + 1, end);
+    
+    // Update the internal node's child indices
+    nodes[internalNodeIndex].frontNodeIndex = leftChildIndex;
+    nodes[internalNodeIndex].backNodeIndex = rightChildIndex;
+    
+    return internalNodeIndex;
 }
 
 } // namespace PureDoom 

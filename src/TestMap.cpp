@@ -637,6 +637,303 @@ Texture createPulsatingFleshCeilingTexture(int width, int height) {
     return texture;
 }
 
+// Create a ramp/staircase texture for the transition between side room and elevated room
+Texture createRampTexture(int width, int height) {
+    Texture texture(width, height);
+    
+    // Base colors
+    Color baseColor(100, 80, 70);    // Brownish base
+    Color stepColor(140, 60, 50);    // Reddish step color
+    Color bloodColor(180, 20, 20);   // Blood accent color
+    
+    // Create a stair-like pattern with very distinct steps
+    int numSteps = 5;  // Number of steps in the staircase
+    int stepHeight = height / numSteps;
+    
+    for (int y = 0; y < height; ++y) {
+        // Determine which step we're on (0 is bottom, numSteps-1 is top)
+        int step = y / stepHeight;
+        
+        // Make the steps very distinct with clear horizontal lines
+        bool isStepEdge = (y % stepHeight) < 3;
+        bool isStepTop = (y % stepHeight) >= 3 && (y % stepHeight) < (stepHeight - 3);
+        
+        for (int x = 0; x < width; ++x) {
+            // Add some variation to the color based on position
+            int variation = ((x * 7 + y * 13) % 20) - 10;
+            
+            if (isStepEdge) {
+                // Step edge is darker and has more blood - very distinct
+                Color edgeColor(
+                    std::max(0, std::min(255, stepColor.r + variation - 40)),
+                    std::max(0, std::min(255, stepColor.g + variation - 40)),
+                    std::max(0, std::min(255, stepColor.b + variation - 40))
+                );
+                texture.m_pixels[y * width + x] = edgeColor;
+                
+                // Add blood streaks on step edges
+                if (rand() % 100 < 50) { // Increased blood for visibility
+                    texture.m_pixels[y * width + x].r = std::min(255, texture.m_pixels[y * width + x].r + 60);
+                    texture.m_pixels[y * width + x].g = std::max(0, texture.m_pixels[y * width + x].g - 30);
+                    texture.m_pixels[y * width + x].b = std::max(0, texture.m_pixels[y * width + x].b - 30);
+                }
+            } else if (isStepTop) {
+                // Regular step surface - lighter to contrast with edges
+                Color currentColor(
+                    std::max(0, std::min(255, baseColor.r + variation + step * 10 + 20)),
+                    std::max(0, std::min(255, baseColor.g + variation + 10)),
+                    std::max(0, std::min(255, baseColor.b + variation + 10))
+                );
+                texture.m_pixels[y * width + x] = currentColor;
+            } else {
+                // Back of step - medium tone
+                Color backColor(
+                    std::max(0, std::min(255, baseColor.r + variation + step * 5)),
+                    std::max(0, std::min(255, baseColor.g + variation - 10)),
+                    std::max(0, std::min(255, baseColor.b + variation - 10))
+                );
+                texture.m_pixels[y * width + x] = backColor;
+            }
+            
+            // Add some random blood stains
+            if (rand() % 100 < 8) {
+                int stainSize = 1 + rand() % 3;
+                
+                for (int dy = -stainSize; dy <= stainSize; dy++) {
+                    for (int dx = -stainSize; dx <= stainSize; dx++) {
+                        int px = x + dx;
+                        int py = y + dy;
+                        if (px >= 0 && px < width && py >= 0 && py < height) {
+                            float dist = std::sqrt(dx*dx + dy*dy);
+                            if (dist <= stainSize && rand() % 100 < 70) {
+                                int idx = py * width + px;
+                                texture.m_pixels[idx].r = std::min(255, texture.m_pixels[idx].r + 60);
+                                texture.m_pixels[idx].g = std::max(0, texture.m_pixels[idx].g - 30);
+                                texture.m_pixels[idx].b = std::max(0, texture.m_pixels[idx].b - 30);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Add horizontal lines to emphasize steps
+            if (y % stepHeight == 0 || y % stepHeight == stepHeight - 1) {
+                texture.m_pixels[y * width + x] = Color(20, 10, 10); // Very dark line
+            }
+        }
+    }
+    
+    return texture;
+}
+
+// Add this function to draw a path to the elevated room
+void drawPathToElevatedRoom(SDL_Renderer* renderer, const Vec2& playerPos, int minimapX, int minimapY, int minimapSize, float scale) {
+    // Define waypoints to the elevated room
+    const Vec2 waypoints[] = {
+        Vec2(0.0f, 0.0f),      // Main room center
+        Vec2(0.0f, 2.5f),      // Main room to corridor entrance
+        Vec2(0.0f, 4.5f),      // Corridor to side room entrance
+        Vec2(0.25f, 4.5f),     // Side room entrance
+        Vec2(0.5f, 5.5f),      // Side room to staircase entrance
+        Vec2(1.5f, 5.5f),      // Staircase to elevated room entrance
+        Vec2(2.0f, 5.0f)       // Elevated room center
+    };
+    
+    // Calculate minimap center (player will be centered)
+    int centerX = minimapX + minimapSize / 2;
+    int centerY = minimapY + minimapSize / 2;
+    
+    // Draw path lines
+    SDL_SetRenderDrawColor(renderer, 255, 215, 0, 255); // Gold color for path
+    
+    for (size_t i = 0; i < sizeof(waypoints)/sizeof(waypoints[0]) - 1; i++) {
+        // Convert world coordinates to minimap coordinates
+        int startX = centerX + (waypoints[i].x - playerPos.x) * scale;
+        int startY = centerY - (waypoints[i].y - playerPos.y) * scale;
+        int endX = centerX + (waypoints[i+1].x - playerPos.x) * scale;
+        int endY = centerY - (waypoints[i+1].y - playerPos.y) * scale;
+        
+        // Draw the path line with thicker width (3 pixels)
+        for (int offset = -1; offset <= 1; offset++) {
+            SDL_RenderDrawLine(renderer, startX + offset, startY, endX + offset, endY);
+            SDL_RenderDrawLine(renderer, startX, startY + offset, endX, endY + offset);
+        }
+        
+        // Draw a small circle at each waypoint
+        SDL_Rect waypointRect = {startX - 3, startY - 3, 6, 6};
+        SDL_RenderFillRect(renderer, &waypointRect);
+    }
+    
+    // Draw the final waypoint
+    int finalX = centerX + (waypoints[sizeof(waypoints)/sizeof(waypoints[0])-1].x - playerPos.x) * scale;
+    int finalY = centerY - (waypoints[sizeof(waypoints)/sizeof(waypoints[0])-1].y - playerPos.y) * scale;
+    SDL_Rect finalRect = {finalX - 4, finalY - 4, 8, 8};
+    SDL_RenderFillRect(renderer, &finalRect);
+    
+    // Draw "ELEVATED ROOM" text indicator near the final waypoint
+    SDL_SetRenderDrawColor(renderer, 255, 255, 0, 255);
+    SDL_Rect textBg = {finalX + 10, finalY - 5, 80, 10};
+    SDL_RenderFillRect(renderer, &textBg);
+    
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_Rect textOutline = {finalX + 10, finalY - 5, 80, 10};
+    SDL_RenderDrawRect(renderer, &textOutline);
+}
+
+// Render a minimap to help navigate
+void renderMinimap(SDL_Renderer* renderer, const std::vector<Sector>& sectors, const Vec2& playerPos, float playerAngle) {
+    // Minimap settings
+    const int MINIMAP_SIZE = 200;
+    const int MINIMAP_X = 20;
+    const int MINIMAP_Y = 20;
+    const float MINIMAP_SCALE = 15.0f;  // Scale factor to convert world coordinates to minimap pixels
+    
+    // Draw minimap background
+    SDL_Rect minimapRect = {MINIMAP_X, MINIMAP_Y, MINIMAP_SIZE, MINIMAP_SIZE};
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 200);
+    SDL_RenderFillRect(renderer, &minimapRect);
+    
+    // Draw minimap border
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+    SDL_RenderDrawRect(renderer, &minimapRect);
+    
+    // Calculate minimap center (player will be centered)
+    int centerX = MINIMAP_X + MINIMAP_SIZE / 2;
+    int centerY = MINIMAP_Y + MINIMAP_SIZE / 2;
+    
+    // Draw path to elevated room first (so it's behind the walls)
+    drawPathToElevatedRoom(renderer, playerPos, MINIMAP_X, MINIMAP_Y, MINIMAP_SIZE, MINIMAP_SCALE);
+    
+    // Draw each sector with different colors
+    const SDL_Color sectorColors[] = {
+        {100, 100, 255, 255},  // Main Room - Blue
+        {100, 255, 100, 255},  // Corridor - Green
+        {255, 100, 100, 255},  // Side Room - Red
+        {255, 255, 100, 255},  // Elevated Room - Yellow
+        {255, 100, 255, 255}   // Staircase - Purple
+    };
+    
+    // Draw all walls from all sectors
+    for (size_t i = 0; i < sectors.size(); i++) {
+        const Sector& sector = sectors[i];
+        
+        // Set color based on sector index
+        SDL_Color color = sectorColors[i % 5];
+        SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+        
+        // Draw sector label
+        std::string sectorName;
+        switch (i) {
+            case 0: sectorName = "Main"; break;
+            case 1: sectorName = "Corridor"; break;
+            case 2: sectorName = "Side"; break;
+            case 3: sectorName = "Elevated"; break;
+            case 4: sectorName = "Stairs"; break;
+            default: sectorName = "Unknown"; break;
+        }
+        
+        // Draw each wall in the sector
+        for (const Wall& wall : sector.walls) {
+            // Convert world coordinates to minimap coordinates
+            int startX = centerX + (wall.segment.start.position.x - playerPos.x) * MINIMAP_SCALE;
+            int startY = centerY - (wall.segment.start.position.y - playerPos.y) * MINIMAP_SCALE;
+            int endX = centerX + (wall.segment.end.position.x - playerPos.x) * MINIMAP_SCALE;
+            int endY = centerY - (wall.segment.end.position.y - playerPos.y) * MINIMAP_SCALE;
+            
+            // Draw the wall line
+            SDL_RenderDrawLine(renderer, startX, startY, endX, endY);
+            
+            // For portal walls, use a different color
+            if (wall.sectorBack >= 0) {
+                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                SDL_RenderDrawLine(renderer, startX, startY, endX, endY);
+                // Reset color for next wall
+                SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+            }
+        }
+        
+        // Calculate sector center for label
+        float centerSectorX = 0.0f;
+        float centerSectorY = 0.0f;
+        for (const Wall& wall : sector.walls) {
+            centerSectorX += wall.segment.start.position.x;
+            centerSectorY += wall.segment.start.position.y;
+        }
+        centerSectorX /= sector.walls.size();
+        centerSectorY /= sector.walls.size();
+        
+        // Convert to minimap coordinates
+        int labelX = centerX + (centerSectorX - playerPos.x) * MINIMAP_SCALE;
+        int labelY = centerY - (centerSectorY - playerPos.y) * MINIMAP_SCALE;
+        
+        // Draw a small rectangle at the sector center
+        SDL_Rect labelRect = {labelX - 3, labelY - 3, 6, 6};
+        SDL_RenderFillRect(renderer, &labelRect);
+        
+        // Add floor height indicator
+        std::string heightStr = std::to_string(sector.floorHeight);
+        heightStr = heightStr.substr(0, heightStr.find('.') + 2); // Truncate to 1 decimal place
+        
+        // Draw a small colored dot to indicate floor height
+        int heightIndicatorSize = 4 + static_cast<int>(sector.floorHeight * 10);
+        if (heightIndicatorSize < 2) heightIndicatorSize = 2;
+        SDL_Rect heightRect = {labelX - heightIndicatorSize/2, labelY - heightIndicatorSize/2, 
+                              heightIndicatorSize, heightIndicatorSize};
+        
+        // Use brighter color for elevated sectors
+        if (sector.floorHeight > 0.0f) {
+            SDL_SetRenderDrawColor(renderer, 255, 255, 0, 255); // Bright yellow for elevated
+        } else if (sector.floorHeight < 0.0f) {
+            SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);   // Bright red for lowered
+        } else {
+            SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);   // Bright green for ground level
+        }
+        SDL_RenderFillRect(renderer, &heightRect);
+    }
+    
+    // Draw player position
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+    SDL_Rect playerRect = {centerX - 3, centerY - 3, 6, 6};
+    SDL_RenderFillRect(renderer, &playerRect);
+    
+    // Draw player direction line
+    int dirX = centerX + cos(playerAngle) * 15;
+    int dirY = centerY - sin(playerAngle) * 15;
+    SDL_RenderDrawLine(renderer, centerX, centerY, dirX, dirY);
+    
+    // Draw minimap legend
+    int legendY = MINIMAP_Y + MINIMAP_SIZE + 10;
+    SDL_Rect legendRect = {MINIMAP_X, legendY, MINIMAP_SIZE, 60};
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 200);
+    SDL_RenderFillRect(renderer, &legendRect);
+    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+    SDL_RenderDrawRect(renderer, &legendRect);
+    
+    // Draw legend entries
+    int entryY = legendY + 5;
+    for (int i = 0; i < 5; i++) {
+        SDL_SetRenderDrawColor(renderer, sectorColors[i].r, sectorColors[i].g, sectorColors[i].b, sectorColors[i].a);
+        SDL_Rect colorRect = {MINIMAP_X + 5, entryY, 10, 10};
+        SDL_RenderFillRect(renderer, &colorRect);
+        
+        std::string sectorName;
+        switch (i) {
+            case 0: sectorName = "Main Room"; break;
+            case 1: sectorName = "Corridor"; break;
+            case 2: sectorName = "Side Room"; break;
+            case 3: sectorName = "Elevated Room"; break;
+            case 4: sectorName = "Staircase"; break;
+        }
+        
+        // Draw sector name (we'll use a rectangle to represent text since we can't easily render text)
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        SDL_Rect textRect = {MINIMAP_X + 20, entryY, static_cast<int>(sectorName.length() * 5), 10};
+        SDL_RenderDrawRect(renderer, &textRect);
+        
+        entryY += 12;
+    }
+}
+
 // Main function to test our CUDA test map
 int main(int argc, char* argv[]) {
     // Initialize SDL
@@ -827,6 +1124,9 @@ int main(int argc, char* argv[]) {
     // 9: Elevated room ceiling texture (pulsating flesh)
     textures.push_back(createPulsatingFleshCeilingTexture(64, 64));
     
+    // 10: Ramp/staircase texture for transition between side room and elevated room
+    textures.push_back(createRampTexture(64, 64));
+    
     // Upload textures to CUDA
     cudaRenderer.uploadTextures(textures);
     
@@ -858,12 +1158,6 @@ int main(int argc, char* argv[]) {
     view.height = 0.8f;
     view.angle = 0.0f;  // Facing north
     view.fov = 90.0f;   // Field of view in degrees
-    
-    // Enable test map mode
-    cudaRenderer.useTestMap(true);
-    
-    // Create a BSP tree for collision detection
-    BSPTree collisionBSP;
     
     // Create sectors for the test map (matching the CUDA test map structure)
     std::vector<Sector> testMapSectors;
@@ -940,26 +1234,54 @@ int main(int argc, char* argv[]) {
     
     // Rest of side room walls
     sideRoom.walls.push_back(Wall(Line(Vertex(-0.25f, 4.5f), Vertex(-1.5f, 5.5f)), 2, -1, 6));
-    sideRoom.walls.push_back(Wall(Line(Vertex(1.5f, 5.5f), Vertex(0.25f, 4.5f)), 2, -1, 6));
+    sideRoom.walls.push_back(Wall(Line(Vertex(-1.5f, 5.5f), Vertex(0.5f, 5.5f)), 2, -1, 6));
     
-    // Portal to elevated room
-    Wall elevatedRoomPortal = Wall(Line(Vertex(1.5f, 5.5f), Vertex(0.25f, 4.5f)), 2, 3, 4);
-    elevatedRoomPortal.isTransparent = true;
-    elevatedRoomPortal.isSolid = false;
-    sideRoom.walls.push_back(elevatedRoomPortal);
+    // Modified wall - side room now connects to staircase instead of directly to elevated room
+    Wall staircaseEntrance = Wall(Line(Vertex(0.5f, 5.5f), Vertex(0.25f, 4.5f)), 2, 4, 4); // Connect to staircase (sector 4)
+    staircaseEntrance.isTransparent = true;
+    staircaseEntrance.isSolid = false;
+    sideRoom.walls.push_back(staircaseEntrance);
+    
+    // Create a staircase sector (new sector between side room and elevated room)
+    Sector staircase;
+    staircase.floorHeight = 0.2f;  // Slightly higher than side room
+    staircase.ceilingHeight = 2.2f; // Higher ceiling to accommodate stairs
+    staircase.floorTextureId = 10;  // Ramp/staircase texture
+    staircase.ceilingTextureId = 1;
+    staircase.lightLevel = 90;
+    staircase.tag = "staircase";
+    
+    // Staircase walls
+    // Connection to side room
+    Wall staircaseSideRoomEntrance = Wall(Line(Vertex(0.25f, 4.5f), Vertex(0.5f, 5.5f)), 4, 2, 4);
+    staircaseSideRoomEntrance.isTransparent = true;
+    staircaseSideRoomEntrance.isSolid = false;
+    staircase.walls.push_back(staircaseSideRoomEntrance);
+    
+    // Staircase side walls - make them more visually distinct with different textures
+    staircase.walls.push_back(Wall(Line(Vertex(0.5f, 5.5f), Vertex(1.5f, 5.5f)), 4, -1, 5)); // Use hellish wall texture
+    
+    // Connection to elevated room
+    Wall staircaseElevatedRoomExit = Wall(Line(Vertex(1.5f, 5.5f), Vertex(1.5f, 4.5f)), 4, 3, 4);
+    staircaseElevatedRoomExit.isTransparent = true;
+    staircaseElevatedRoomExit.isSolid = false;
+    staircase.walls.push_back(staircaseElevatedRoomExit);
+    
+    // Last staircase wall - use a different texture to make it stand out
+    staircase.walls.push_back(Wall(Line(Vertex(1.5f, 4.5f), Vertex(0.25f, 4.5f)), 4, -1, 6)); // Use flesh wall texture
     
     // Elevated room sector (higher than other rooms)
     Sector elevatedRoom;
-    elevatedRoom.floorHeight = 0.5f;  // Higher floor
-    elevatedRoom.ceilingHeight = 2.5f; // Higher ceiling
+    elevatedRoom.floorHeight = 0.5f;  // Higher floor - more noticeable difference
+    elevatedRoom.ceilingHeight = 3.0f; // Much higher ceiling to make it feel more spacious
     elevatedRoom.floorTextureId = 8;   // Charred bone floor
     elevatedRoom.ceilingTextureId = 9; // Pulsating flesh ceiling
-    elevatedRoom.lightLevel = 80;      // Darker for more atmosphere
+    elevatedRoom.lightLevel = 120;     // Brighter to make it more distinct
     elevatedRoom.tag = "elevated_room";
     
     // Elevated room walls
-    // Connection to side room (portal)
-    Wall elevatedRoomEntrance = Wall(Line(Vertex(0.25f, 4.5f), Vertex(1.5f, 5.5f)), 3, 2, 4);
+    // Connection to staircase (modified to connect to staircase instead of side room)
+    Wall elevatedRoomEntrance = Wall(Line(Vertex(1.5f, 4.5f), Vertex(1.5f, 5.5f)), 3, 4, 4);
     elevatedRoomEntrance.isTransparent = true;
     elevatedRoomEntrance.isSolid = false;
     elevatedRoom.walls.push_back(elevatedRoomEntrance);
@@ -967,17 +1289,21 @@ int main(int argc, char* argv[]) {
     // Rest of elevated room walls (extending further out)
     elevatedRoom.walls.push_back(Wall(Line(Vertex(1.5f, 5.5f), Vertex(3.0f, 6.5f)), 3, -1, 7));
     elevatedRoom.walls.push_back(Wall(Line(Vertex(3.0f, 6.5f), Vertex(3.0f, 4.0f)), 3, -1, 7));
-    elevatedRoom.walls.push_back(Wall(Line(Vertex(3.0f, 4.0f), Vertex(1.0f, 3.5f)), 3, -1, 7));
-    elevatedRoom.walls.push_back(Wall(Line(Vertex(1.0f, 3.5f), Vertex(0.25f, 4.5f)), 3, -1, 7));
+    elevatedRoom.walls.push_back(Wall(Line(Vertex(3.0f, 4.0f), Vertex(1.5f, 4.5f)), 3, -1, 7));
     
     // Add sectors to the collection
     testMapSectors.push_back(mainRoom);
     testMapSectors.push_back(corridor);
     testMapSectors.push_back(sideRoom);
     testMapSectors.push_back(elevatedRoom);
+    testMapSectors.push_back(staircase);  // Add the new staircase sector
     
     // Build the BSP tree for collision detection
+    BSPTree collisionBSP;
     collisionBSP.build(testMapSectors);
+    
+    // Use all sectors for the CUDA renderer
+    cudaRenderer.useTestMapWithSectors(testMapSectors);
     
     // Main loop variables
     bool running = true;
@@ -1012,7 +1338,8 @@ int main(int argc, char* argv[]) {
     std::cout << "  - Main room (5x5) with bloody walls and portal to corridor\n";
     std::cout << "  - Hellish corridor with fiery cracks leading to side room\n";
     std::cout << "  - Flesh-walled side room with elevated floor\n";
-    std::cout << "  - Elevated room with molten rock walls and charred bone floor (access through side room portal)\n";
+    std::cout << "  - Proper staircase with 5 steps leading up to the elevated room\n";
+    std::cout << "  - Elevated room with molten rock walls and charred bone floor\n";
     std::cout << "Textures:\n";
     std::cout << "  - DOOM-style floor (ID 0)\n";
     std::cout << "  - Ember-lit ceiling (ID 1)\n";
@@ -1024,6 +1351,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  - Molten rock wall (ID 7)\n";
     std::cout << "  - Charred bone floor (ID 8)\n";
     std::cout << "  - Pulsating flesh ceiling (ID 9)\n";
+    std::cout << "  - Bloody staircase/steps (ID 10)\n";
     std::cout << "Controls:\n";
     std::cout << "  - WASD: Move around\n";
     std::cout << "  - QE: Rotate view\n";
@@ -1046,6 +1374,32 @@ int main(int argc, char* argv[]) {
         float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
         lastTime = currentTime;
         
+        // Calculate movement vector based on keyboard input
+        Vec2 movementVector(0.0f, 0.0f);
+        
+        // Movement speed affected by crouch state
+        float currentMoveSpeed = moveSpeed;
+        if (isCrouching) {
+            currentMoveSpeed *= 0.5f; // Move slower when crouched
+        }
+        
+        if (keyW) {
+            movementVector.x += currentMoveSpeed * cos(view.angle);
+            movementVector.y += currentMoveSpeed * sin(view.angle);
+        }
+        if (keyS) {
+            movementVector.x -= currentMoveSpeed * cos(view.angle);
+            movementVector.y -= currentMoveSpeed * sin(view.angle);
+        }
+        if (keyA) {
+            movementVector.x += currentMoveSpeed * cos(view.angle - M_PI / 2);
+            movementVector.y += currentMoveSpeed * sin(view.angle - M_PI / 2);
+        }
+        if (keyD) {
+            movementVector.x += currentMoveSpeed * cos(view.angle + M_PI / 2);
+            movementVector.y += currentMoveSpeed * sin(view.angle + M_PI / 2);
+        }
+        
         // Track which sector the player is in for portal transition detection
         int currentSector = collisionBSP.findSector(view.position);
         static int previousSector = -1;
@@ -1058,10 +1412,175 @@ int main(int argc, char* argv[]) {
                 case 1: sectorName = "Corridor"; break;
                 case 2: sectorName = "Side Room"; break;
                 case 3: sectorName = "Elevated Room"; break;
+                case 4: sectorName = "Staircase"; break;
                 default: sectorName = "Unknown"; break;
             }
             std::cout << "Player moved to sector: " << sectorName << " (ID: " << currentSector << ")" << std::endl;
+            
+            // If player is entering the elevated room, provide a hint about the elevation
+            if (currentSector == 3 && previousSector == 4) {
+                std::cout << "NOTICE: You have reached the top of the stairs (height 0.5)." << std::endl;
+                std::cout << "SOUND EFFECT: *footsteps on bone floor*" << std::endl;
+                
+                // Add a small screen shake when entering the elevated room
+                screenShakeAmount = 0.3f;
+            }
+            
+            // If player is entering the staircase, provide a hint
+            if (currentSector == 4 && (previousSector == 2 || previousSector == 3)) {
+                std::cout << "NOTICE: You are on the staircase. Climb " 
+                          << (previousSector == 2 ? "up" : "down") << " the steps." << std::endl;
+                std::cout << "SOUND EFFECT: *footsteps on stairs*" << std::endl;
+                
+                // Add a small screen shake when entering the staircase
+                screenShakeAmount = 0.2f;
+            }
+            
             previousSector = currentSector;
+        }
+        
+        // If player is in the side room and near the portal to the staircase, simulate a ramp effect
+        if (currentSector == 2) {
+            // Check if player is near the portal to the staircase
+            const Wall& portal = testMapSectors[2].walls[3]; // The portal wall in side room
+            float distToPortal = portal.segment.distanceToPoint(view.position);
+            
+            if (distToPortal < 1.0f) {
+                // Calculate how close the player is to the portal (0 = at portal, 1 = far from portal)
+                float portalProximity = std::min(1.0f, distToPortal);
+                
+                // Adjust player height based on proximity to portal
+                if (!isJumping) {
+                    float sideRoomHeight = 0.1f;
+                    float staircaseHeight = 0.2f;
+                    float heightDifference = staircaseHeight - sideRoomHeight;
+                    
+                    // The closer to the portal, the higher the player should be
+                    float heightAdjustment = heightDifference * (1.0f - portalProximity);
+                    view.height = PLAYER_DEFAULT_HEIGHT + heightAdjustment;
+                    
+                    // Visual feedback for climbing the first step
+                    if (heightAdjustment > 0.05f) {
+                        std::cout << "\rClimbing to staircase: " << int((1.0f - portalProximity) * 100) << "% up, height: " 
+                                  << (sideRoomHeight + heightAdjustment) << "        " << std::flush;
+                        
+                        // Add subtle screen shake for walking on stairs
+                        if (movementVector.lengthSquared() > 0.0f) {
+                            screenShakeAmount = std::max(screenShakeAmount, 0.05f);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // If player is in the staircase sector, create a stepped height effect
+        if (currentSector == 4) {
+            // Get player's position within the staircase
+            float staircaseLength = 1.5f; // Approximate length of the staircase
+            
+            // Calculate how far along the staircase the player is (0 = start, 1 = end)
+            // This is a simplified calculation - in a real game you'd use the actual path distance
+            float progressAlongStaircase = (view.position.x - 0.25f) / staircaseLength;
+            progressAlongStaircase = std::max(0.0f, std::min(1.0f, progressAlongStaircase));
+            
+            // Create 5 distinct steps with larger height changes
+            int currentStep = static_cast<int>(progressAlongStaircase * 5);
+            float stepHeight = 0.08f; // Increased height of each step for more noticeable effect
+            
+            if (!isJumping) {
+                float staircaseBaseHeight = 0.2f;
+                float stepElevation = currentStep * stepHeight;
+                
+                // Set player height based on current step - more dramatic change
+                view.height = PLAYER_DEFAULT_HEIGHT + stepElevation;
+                
+                // Visual feedback for climbing the stairs
+                std::cout << "\rOn staircase: Step " << (currentStep + 1) << " of 5, height: " 
+                          << (staircaseBaseHeight + stepElevation) << "        " << std::flush;
+                
+                // Add screen shake when moving on stairs
+                if (movementVector.lengthSquared() > 0.0f) {
+                    // More shake on step transitions
+                    float stepFraction = progressAlongStaircase * 5 - currentStep;
+                    if (stepFraction < 0.2f || stepFraction > 0.8f) {
+                        screenShakeAmount = std::max(screenShakeAmount, 0.12f); // Increased shake
+                        
+                        // Sound effect for stepping
+                        if (rand() % 100 < 15) { // Increased chance of sound
+                            std::cout << "SOUND EFFECT: *STEP*" << std::endl;
+                        }
+                    } else {
+                        screenShakeAmount = std::max(screenShakeAmount, 0.05f);
+                    }
+                }
+                
+                // Add a visual indicator for the current step
+                std::cout << "Current step: [";
+                for (int i = 0; i < 5; i++) {
+                    if (i == currentStep) {
+                        std::cout << "X"; // Current step
+                    } else if (i < currentStep) {
+                        std::cout << "="; // Completed steps
+                    } else {
+                        std::cout << "-"; // Remaining steps
+                    }
+                }
+                std::cout << "]" << std::endl;
+            }
+        }
+        
+        // If player is in the elevated room, provide visual feedback
+        if (currentSector == 3) {
+            // Check if player is near the portal to the staircase
+            const Wall& portal = testMapSectors[3].walls[0]; // The portal wall in elevated room
+            float distToPortal = portal.segment.distanceToPoint(view.position);
+            
+            if (distToPortal < 1.0f) {
+                // Calculate how close the player is to the portal (0 = at portal, 1 = far from portal)
+                float portalProximity = std::min(1.0f, distToPortal);
+                
+                // Adjust player height based on proximity to portal
+                if (!isJumping) {
+                    float staircaseTopHeight = 0.5f;
+                    float elevatedRoomHeight = 0.5f;
+                    float heightDifference = elevatedRoomHeight - staircaseTopHeight;
+                    
+                    // The closer to the portal, the lower the player should be (descending)
+                    float heightAdjustment = heightDifference * portalProximity;
+                    view.height = PLAYER_DEFAULT_HEIGHT + heightAdjustment;
+                    
+                    // Visual feedback for descending to the staircase
+                    if (heightAdjustment < heightDifference - 0.05f) {
+                        std::cout << "\rDescending to staircase: " << int(portalProximity * 100) << "% down        " << std::flush;
+                        
+                        // Add subtle screen shake for walking on stairs
+                        if (movementVector.lengthSquared() > 0.0f) {
+                            screenShakeAmount = std::max(screenShakeAmount, 0.05f);
+                        }
+                    }
+                }
+            } else {
+                // When fully in the elevated room, provide clear visual feedback
+                static int elevatedRoomTick = 0;
+                elevatedRoomTick = (elevatedRoomTick + 1) % 60; // Cycle every ~1 second at 60fps
+                
+                if (elevatedRoomTick == 0) {
+                    std::cout << "\r[ELEVATED ROOM] You are now at height 0.5 - Floor: Charred Bone - Ceiling: Pulsating Flesh" << std::flush;
+                }
+                
+                // Add occasional ambient sounds for atmosphere
+                if (rand() % 1000 < 5) {
+                    std::string sounds[] = {
+                        "*distant scream*",
+                        "*bone cracking*",
+                        "*flesh squelching*",
+                        "*demonic whisper*",
+                        "*wind howling*"
+                    };
+                    int soundIndex = rand() % 5;
+                    std::cout << "\nAMBIENT SOUND: " << sounds[soundIndex] << std::endl;
+                }
+            }
         }
         
         // Check if player is near a portal
@@ -1161,12 +1680,20 @@ int main(int argc, char* argv[]) {
                                 case 1: sectorName = "Corridor"; break;
                                 case 2: sectorName = "Side Room"; break;
                                 case 3: sectorName = "Elevated Room"; break;
+                                case 4: sectorName = "Staircase"; break;
                                 default: sectorName = "Unknown"; break;
                             }
                             std::cout << "\n==== DEBUG SECTOR INFO ====\n";
                             std::cout << "Current position: (" << view.position.x << ", " 
                                       << view.position.y << ")\n";
                             std::cout << "Current sector: " << sectorName << " (ID: " << sector << ")\n";
+                            
+                            // Show floor height information
+                            if (sector >= 0 && sector < testMapSectors.size()) {
+                                std::cout << "Floor height: " << testMapSectors[sector].floorHeight << "\n";
+                                std::cout << "Ceiling height: " << testMapSectors[sector].ceilingHeight << "\n";
+                                std::cout << "Light level: " << testMapSectors[sector].lightLevel << "\n";
+                            }
                             
                             // Find nearby portals
                             std::cout << "Nearby portals:\n";
@@ -1176,9 +1703,25 @@ int main(int argc, char* argv[]) {
                                     if (!wall.isSolid && wall.sectorBack >= 0) {
                                         float dist = wall.segment.distanceToPoint(view.position);
                                         if (dist < 2.0f) {
+                                            std::string fromSector, toSector;
+                                            switch (wall.sectorFront) {
+                                                case 0: fromSector = "Main Room"; break;
+                                                case 1: fromSector = "Corridor"; break;
+                                                case 2: fromSector = "Side Room"; break;
+                                                case 3: fromSector = "Elevated Room"; break;
+                                                case 4: fromSector = "Staircase"; break;
+                                                default: fromSector = "Unknown"; break;
+                                            }
+                                            switch (wall.sectorBack) {
+                                                case 0: toSector = "Main Room"; break;
+                                                case 1: toSector = "Corridor"; break;
+                                                case 2: toSector = "Side Room"; break;
+                                                case 3: toSector = "Elevated Room"; break;
+                                                case 4: toSector = "Staircase"; break;
+                                                default: toSector = "Unknown"; break;
+                                            }
                                             std::cout << "  Portal at distance " << dist 
-                                                      << " connecting sectors " << wall.sectorFront 
-                                                      << " and " << wall.sectorBack << std::endl;
+                                                      << " connecting " << fromSector << " to " << toSector << std::endl;
                                         }
                                     }
                                 }
@@ -1263,32 +1806,6 @@ int main(int argc, char* argv[]) {
             std::cout << "\r                                                                " << std::flush;
         }
         
-        // Calculate movement vector based on keyboard input
-        Vec2 movementVector(0.0f, 0.0f);
-        
-        // Movement speed affected by crouch state
-        float currentMoveSpeed = moveSpeed;
-        if (isCrouching) {
-            currentMoveSpeed *= 0.5f; // Move slower when crouched
-        }
-        
-        if (keyW) {
-            movementVector.x += currentMoveSpeed * cos(view.angle);
-            movementVector.y += currentMoveSpeed * sin(view.angle);
-        }
-        if (keyS) {
-            movementVector.x -= currentMoveSpeed * cos(view.angle);
-            movementVector.y -= currentMoveSpeed * sin(view.angle);
-        }
-        if (keyA) {
-            movementVector.x += currentMoveSpeed * cos(view.angle - M_PI / 2);
-            movementVector.y += currentMoveSpeed * sin(view.angle - M_PI / 2);
-        }
-        if (keyD) {
-            movementVector.x += currentMoveSpeed * cos(view.angle + M_PI / 2);
-            movementVector.y += currentMoveSpeed * sin(view.angle + M_PI / 2);
-        }
-        
         // Apply collision detection and response if we're trying to move
         if (movementVector.lengthSquared() > 0.001f) {
             // Store original position for unstick detection
@@ -1314,11 +1831,22 @@ int main(int argc, char* argv[]) {
                                 Vec2 portalBoost = wallNormal * direction * 0.15f; // Increased from 0.05f to 0.15f
                                 view.position = view.position + portalBoost;
                                 
-                                // Check if this is the portal to the elevated room (sectors 2->3)
-                                if (wall.sectorFront == 2 && wall.sectorBack == 3) {
-                                    // Apply an additional boost for the elevated room portal
+                                // Check if this is the portal between side room and elevated room
+                                if ((wall.sectorFront == 2 && wall.sectorBack == 3) || 
+                                    (wall.sectorFront == 3 && wall.sectorBack == 2)) {
+                                    // Apply an additional boost for the side room <-> elevated room portal
                                     view.position = view.position + portalBoost * 2.0f;
-                                    std::cout << "Enhanced portal assist applied for elevated room!" << std::endl;
+                                    
+                                    // Adjust height to match the destination sector's floor
+                                    if (wall.sectorFront == 2 && wall.sectorBack == 3) {
+                                        // Going from side room to elevated room
+                                        view.height = PLAYER_DEFAULT_HEIGHT + 0.4f; // Boost height to match elevated room
+                                        std::cout << "Enhanced portal assist applied for elevated room!" << std::endl;
+                                    } else {
+                                        // Going from elevated room to side room
+                                        view.height = PLAYER_DEFAULT_HEIGHT; // Reset height to match side room
+                                        std::cout << "Enhanced portal assist applied for side room!" << std::endl;
+                                    }
                                 } else {
                                     std::cout << "Portal assist applied! Boosting player through portal." << std::endl;
                                 }
@@ -1344,15 +1872,17 @@ int main(int argc, char* argv[]) {
             // Check for collisions
             CollisionInfo collision = collisionBSP.checkCollision(view.position, PLAYER_RADIUS, movementVector);
             
-            // Check if we're near the portal to the elevated room
-            bool nearElevatedRoomPortal = false;
-            for (int i = 0; i < testMapSectors.size() && !nearElevatedRoomPortal; i++) {
+            // Check if we're near the portal between side room and elevated room
+            bool nearElevationPortal = false;
+            for (int i = 0; i < testMapSectors.size() && !nearElevationPortal; i++) {
                 for (int j = 0; j < testMapSectors[i].walls.size(); j++) {
                     const Wall& wall = testMapSectors[i].walls[j];
-                    if (!wall.isSolid && wall.sectorFront == 2 && wall.sectorBack == 3) {
+                    if (!wall.isSolid && 
+                        ((wall.sectorFront == 2 && wall.sectorBack == 3) || 
+                         (wall.sectorFront == 3 && wall.sectorBack == 2))) {
                         float dist = wall.segment.distanceToPoint(view.position);
-                        if (dist < 0.5f) { // Within 0.5 units of the elevated room portal
-                            nearElevatedRoomPortal = true;
+                        if (dist < 0.5f) { // Within 0.5 units of the elevation portal
+                            nearElevationPortal = true;
                             break;
                         }
                     }
@@ -1360,11 +1890,11 @@ int main(int argc, char* argv[]) {
             }
             
             if (collision.collision) {
-                // If we're near the elevated room portal, be more lenient with collisions
-                if (nearElevatedRoomPortal && collision.distance < 1.0f) {
-                    // Reduce the collision effect for the elevated room portal
+                // If we're near the elevation portal, be more lenient with collisions
+                if (nearElevationPortal && collision.distance < 1.0f) {
+                    // Reduce the collision effect for the elevation portal
                     collision.distance *= 1.5f; // Make it seem further away
-                    std::cout << "Applying lenient collision detection near elevated room portal" << std::endl;
+                    std::cout << "Applying lenient collision detection near elevation portal" << std::endl;
                 }
                 
                 // Output collision details when a collision is detected
@@ -1540,6 +2070,82 @@ int main(int argc, char* argv[]) {
             SDL_SetRenderDrawColor(sdlRenderer, 50, 255, 50, 255);
             SDL_RenderFillRect(sdlRenderer, &stateIndicator);
         }
+        
+        // Draw height indicator
+        int baseY = 50;
+        int maxHeight = 100; // Maximum height of the indicator
+        
+        // Draw background bar
+        SDL_Rect heightBarBg = {10, baseY, 20, maxHeight};
+        SDL_SetRenderDrawColor(sdlRenderer, 50, 50, 50, 255);
+        SDL_RenderFillRect(sdlRenderer, &heightBarBg);
+        
+        // Calculate height percentage based on current sector
+        float heightPercentage = 0.0f;
+        if (currentSector >= 0 && currentSector < testMapSectors.size()) {
+            // Base the percentage on the floor height of the current sector
+            float minHeight = 0.0f;  // Main room height
+            float maxHeight = 0.5f;  // Elevated room height
+            float currentHeight = testMapSectors[currentSector].floorHeight;
+            
+            // Normalize to 0-1 range
+            heightPercentage = (currentHeight - minHeight) / (maxHeight - minHeight);
+        }
+        
+        // Draw the filled portion of the height bar
+        int filledHeight = static_cast<int>(heightPercentage * maxHeight);
+        SDL_Rect heightBarFilled = {10, baseY + maxHeight - filledHeight, 20, filledHeight};
+        
+        // Color based on height (green for low, yellow for middle, red for high)
+        if (heightPercentage < 0.33f) {
+            SDL_SetRenderDrawColor(sdlRenderer, 50, 255, 50, 255); // Green
+        } else if (heightPercentage < 0.66f) {
+            SDL_SetRenderDrawColor(sdlRenderer, 255, 255, 50, 255); // Yellow
+        } else {
+            SDL_SetRenderDrawColor(sdlRenderer, 255, 50, 50, 255); // Red
+        }
+        SDL_RenderFillRect(sdlRenderer, &heightBarFilled);
+        
+        // Draw height labels
+        SDL_Rect labelHigh = {35, baseY, 5, 5};
+        SDL_Rect labelMid = {35, baseY + maxHeight/2, 5, 5};
+        SDL_Rect labelLow = {35, baseY + maxHeight - 5, 5, 5};
+        SDL_SetRenderDrawColor(sdlRenderer, 255, 255, 255, 255);
+        SDL_RenderFillRect(sdlRenderer, &labelHigh);
+        SDL_RenderFillRect(sdlRenderer, &labelMid);
+        SDL_RenderFillRect(sdlRenderer, &labelLow);
+        
+        // Draw current sector indicator
+        SDL_Rect sectorIndicator = {45, baseY + 10, 80, 15};
+        SDL_SetRenderDrawColor(sdlRenderer, 30, 30, 30, 255);
+        SDL_RenderFillRect(sdlRenderer, &sectorIndicator);
+        
+        // Draw a different colored rectangle based on current sector
+        SDL_Rect sectorColor = {50, baseY + 15, 10, 5};
+        switch (currentSector) {
+            case 0: // Main Room
+                SDL_SetRenderDrawColor(sdlRenderer, 100, 100, 255, 255); // Blue
+                break;
+            case 1: // Corridor
+                SDL_SetRenderDrawColor(sdlRenderer, 100, 255, 100, 255); // Green
+                break;
+            case 2: // Side Room
+                SDL_SetRenderDrawColor(sdlRenderer, 255, 255, 100, 255); // Yellow
+                break;
+            case 3: // Elevated Room
+                SDL_SetRenderDrawColor(sdlRenderer, 255, 50, 50, 255); // Red
+                break;
+            case 4: // Staircase
+                SDL_SetRenderDrawColor(sdlRenderer, 255, 150, 50, 255); // Orange
+                break;
+            default:
+                SDL_SetRenderDrawColor(sdlRenderer, 200, 200, 200, 255); // Gray
+                break;
+        }
+        SDL_RenderFillRect(sdlRenderer, &sectorColor);
+        
+        // Render the minimap
+        renderMinimap(sdlRenderer, testMapSectors, Vec2(view.position.x, view.position.y), view.angle);
         
         // Present renderer
         SDL_RenderPresent(sdlRenderer);

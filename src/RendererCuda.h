@@ -75,6 +75,7 @@ public:
     
     // Test map functions for debugging
     bool useTestMap(bool enable);  // Enable or disable the test map
+    bool useTestMapWithSectors(const std::vector<Sector>& sectors);  // Enable test map with custom sectors
     void renderTestMapFrame(const ViewPosition& view, float deltaTime);  // Render a frame using the test map
     
     // Debugging helpers

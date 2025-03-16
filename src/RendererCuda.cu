@@ -2316,16 +2316,88 @@ bool RendererCuda::useTestMap(bool enable) {
     }
 }
 
+// Enable test map with custom sectors
+bool RendererCuda::useTestMapWithSectors(const std::vector<Sector>& sectors) {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return false;
+    
+    // Debug output for test map usage
+    std::cout << "--------- DEBUG TEST MAP WITH CUSTOM SECTORS ---------" << std::endl;
+    std::cout << "Current test map status: " << (m_usingTestMap ? "ENABLED" : "DISABLED") << std::endl;
+    std::cout << "Requested action: ENABLE with " << sectors.size() << " sectors" << std::endl;
+    
+    try {
+        // Disable existing test map if it's enabled
+        if (m_usingTestMap) {
+            // Free device memory for the BSP tree
+            if (m_cudaData->d_bspTree) {
+                cudaFree(m_cudaData->d_bspTree);
+                m_cudaData->d_bspTree = nullptr;
+            }
+            
+            // Free test map resources
+            freeTestMap(m_deviceBSPTree);
+            
+            // Reset BSP data
+            memset(&m_deviceBSPTree, 0, sizeof(m_deviceBSPTree));
+            m_bspUploaded = false;
+            m_usingTestMap = false;
+        }
+        
+        // Create test map from the provided sectors
+        std::cout << "Creating test map from " << sectors.size() << " sectors..." << std::endl;
+        m_deviceBSPTree = createTestMapFromSectors(sectors);
+        
+        // Check if test map creation was successful
+        if (m_deviceBSPTree.nodeCount == 0 || m_deviceBSPTree.wallCount == 0) {
+            std::cerr << "Error: Failed to create test map from sectors" << std::endl;
+            std::cout << "------------------------------------------" << std::endl;
+            return false;
+        }
+        
+        // Allocate a pointer for the tree on device
+        cudaError_t err = cudaMalloc((void**)&m_cudaData->d_bspTree, sizeof(CudaBSPTree));
+        if (err != cudaSuccess) {
+            std::cerr << "Failed to allocate memory for test map BSP tree: " << cudaGetErrorString(err) << std::endl;
+            freeTestMap(m_deviceBSPTree);
+            std::cout << "------------------------------------------" << std::endl;
+            return false;
+        }
+        
+        // Copy the structure to the device
+        err = cudaMemcpy(m_cudaData->d_bspTree, &m_deviceBSPTree, sizeof(CudaBSPTree), cudaMemcpyHostToDevice);
+        if (err != cudaSuccess) {
+            std::cerr << "Failed to copy test map BSP tree to device: " << cudaGetErrorString(err) << std::endl;
+            cudaFree(m_cudaData->d_bspTree);
+            m_cudaData->d_bspTree = nullptr;
+            freeTestMap(m_deviceBSPTree);
+            std::cout << "------------------------------------------" << std::endl;
+            return false;
+        }
+        
+        m_bspUploaded = true;
+        m_usingTestMap = true;
+        
+        std::cout << "Test map creation successful!" << std::endl;
+        std::cout << "  Nodes: " << m_deviceBSPTree.nodeCount << std::endl;
+        std::cout << "  Walls: " << m_deviceBSPTree.wallCount << std::endl;
+        std::cout << "  Sectors: " << m_deviceBSPTree.sectorCount << std::endl;
+        std::cout << "------------------------------------------" << std::endl;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error enabling test map with custom sectors: " << e.what() << std::endl;
+        std::cout << "------------------------------------------" << std::endl;
+        return false;
+    }
+}
+
 // Render a complete frame using the test map
 void RendererCuda::renderTestMapFrame(const ViewPosition& view, float deltaTime) {
     if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
     
-    // Enable test map if not already enabled
+    // Make sure we're using a test map
     if (!m_usingTestMap) {
-        if (!useTestMap(true)) {
-            std::cerr << "Failed to enable test map mode" << std::endl;
-            return;
-        }
+        std::cerr << "Test map not enabled. Please call useTestMapWithSectors() before rendering." << std::endl;
+        return;
     }
     
     // Make sure buffers are allocated
@@ -2472,31 +2544,65 @@ void RendererCuda::renderTestMapFloorCuda(const ViewPosition& view) {
         float playerHeight = view.height;
         float fov = view.fov;
         
-        // Default floor settings for the test map
-        float floorHeight = 0.0f;
-        float ceilingHeight = 2.0f;
-        int floorTextureId = 0;     // First texture for floor
-        int lightLevel = 200;       // Bright default lighting
-        
         // Use the maxViewDistance from skybox
         float maxViewDistance = m_skybox.maxViewDistance;
         
-        // If we're at position that's close to the side room, use those values
-        if (view.position.x >= -1.5f && view.position.x <= 1.5f && 
-            view.position.y >= 4.5f && view.position.y <= 5.5f) {
-            // We're in the side room
-            floorHeight = 0.1f;
-            ceilingHeight = 1.8f;
-            floorTextureId = 2;
-            lightLevel = 100;
-        }
-        // If we're in the corridor
-        else if (view.position.x >= -0.5f && view.position.x <= 0.5f && 
-                view.position.y >= 2.5f && view.position.y <= 4.5f) {
-            floorHeight = 0.0f;
-            ceilingHeight = 1.5f;
-            floorTextureId = 0;
-            lightLevel = 150;
+        // Find which sector the player is in
+        int currentSector = -1;
+        float floorHeight = 0.0f;
+        float ceilingHeight = 2.0f;
+        int floorTextureId = 0;
+        int lightLevel = 200;
+        
+        // Create a host copy of the BSP tree nodes to find the sector
+        std::vector<CudaBSPNode> nodes(m_deviceBSPTree.nodeCount);
+        cudaError_t err = cudaMemcpy(nodes.data(), m_deviceBSPTree.nodes, 
+                                    m_deviceBSPTree.nodeCount * sizeof(CudaBSPNode), 
+                                    cudaMemcpyDeviceToHost);
+        
+        if (err == cudaSuccess) {
+            // Simple BSP traversal to find the sector containing the player
+            int nodeIndex = m_deviceBSPTree.rootNodeIndex;
+            while (nodeIndex >= 0 && nodeIndex < nodes.size()) {
+                const CudaBSPNode& node = nodes[nodeIndex];
+                
+                if (node.isLeaf) {
+                    currentSector = node.sectorId;
+                    break;
+                }
+                
+                // Calculate which side of the partition line the player is on
+                float dx = node.partitioner.end.x - node.partitioner.start.x;
+                float dy = node.partitioner.end.y - node.partitioner.start.y;
+                float crossProduct = (playerX - node.partitioner.start.x) * dy - 
+                                    (playerY - node.partitioner.start.y) * dx;
+                
+                if (crossProduct >= 0) {
+                    nodeIndex = node.frontNodeIndex;
+                } else {
+                    nodeIndex = node.backNodeIndex;
+                }
+            }
+            
+            // If we found a valid sector, get its properties
+            if (currentSector >= 0 && currentSector < m_deviceBSPTree.sectorCount) {
+                // Create a host copy of the sector data
+                std::vector<CudaSector> sectors(m_deviceBSPTree.sectorCount);
+                err = cudaMemcpy(sectors.data(), m_deviceBSPTree.sectors, 
+                                m_deviceBSPTree.sectorCount * sizeof(CudaSector), 
+                                cudaMemcpyDeviceToHost);
+                
+                if (err == cudaSuccess) {
+                    const CudaSector& sector = sectors[currentSector];
+                    floorHeight = sector.floorHeight;
+                    ceilingHeight = sector.ceilingHeight;
+                    floorTextureId = sector.floorTextureId;
+                    lightLevel = sector.lightLevel;
+                    
+                    std::cout << "Player in sector " << currentSector << " with floor height " 
+                              << floorHeight << " and ceiling height " << ceilingHeight << std::endl;
+                }
+            }
         }
         
         // Determine thread block and grid sizes - use 2D grid for floor
@@ -2527,14 +2633,14 @@ void RendererCuda::renderTestMapFloorCuda(const ViewPosition& view) {
         );
         
         // Check for errors
-        cudaError_t err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            std::cerr << "CUDA error in test map floor rendering: " << cudaGetErrorString(err) << std::endl;
+        cudaError_t kernelErr = cudaGetLastError();
+        if (kernelErr != cudaSuccess) {
+            std::cerr << "CUDA error in test map floor rendering: " << cudaGetErrorString(kernelErr) << std::endl;
         } else {
             // Sync after kernel execution to catch any delayed errors
-            err = cudaDeviceSynchronize();
-            if (err != cudaSuccess) {
-                std::cerr << "CUDA sync error after test map floor rendering: " << cudaGetErrorString(err) << std::endl;
+            kernelErr = cudaDeviceSynchronize();
+            if (kernelErr != cudaSuccess) {
+                std::cerr << "CUDA sync error after test map floor rendering: " << cudaGetErrorString(kernelErr) << std::endl;
             }
         }
     } catch (const std::exception& e) {
