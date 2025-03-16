@@ -167,37 +167,59 @@ __device__ void deviceDrawPixelWithDepth(Color* frameBuffer, float* zBuffer, int
 __global__ void skyboxGradientKernel(Color* frameBuffer, float* zBuffer, int width, int height,
                                   const Color zenithColor, const Color horizonColor, 
                                   float horizonY, bool performanceMode) {
+    // Calculate the current pixel coordinates
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     
+    // Early exit if outside screen bounds
     if (x >= width || y >= height) return;
     
-    // In performance mode, process only every other line
-    if (performanceMode && (y % 2 != 0)) return;
+    // Skip if below horizon (floor will handle that part)
+    if (y >= horizonY) return;
     
-    // Calculate factor for gradient (0 at horizon, 1 at top of screen)
-    float t = 0.0f;
-    if (y < horizonY) {
-        t = 1.0f - (y / horizonY);
+    // Create a DOOM-like sky with horizontal bands
+    Color skyColor;
+    
+    // Calculate gradient factor (0 at horizon, 1 at top of screen)
+    float factor = 1.0f - (y / horizonY);
+    
+    // Color the sky with a DOOM-like gradient of purplish mountain silhouette
+    if (factor < 0.15f) {
+        // Mountain silhouette at the horizon - dark purplish gray
+        skyColor = Color(35, 30, 50, 255);
+    } else if (factor < 0.3f) {
+        // Transition to medium purple
+        float localFactor = (factor - 0.15f) / 0.15f;
+        skyColor = Color(
+            (uint8_t)(35 + localFactor * 45),  // 35 to 80
+            (uint8_t)(30 + localFactor * 30),  // 30 to 60
+            (uint8_t)(50 + localFactor * 50),  // 50 to 100
+            255
+        );
+    } else if (factor < 0.55f) {
+        // Mid-sky reddish
+        float localFactor = (factor - 0.3f) / 0.25f;
+        skyColor = Color(
+            (uint8_t)(80 + localFactor * 120),  // 80 to 200
+            (uint8_t)(60 + localFactor * 40),   // 60 to 100
+            (uint8_t)(100 + localFactor * 10),  // 100 to 110
+            255
+        );
+    } else {
+        // Upper sky - transition to dark
+        float localFactor = (factor - 0.55f) / 0.45f;
+        skyColor = Color(
+            (uint8_t)(200 - localFactor * 150),  // 200 to 50
+            (uint8_t)(100 - localFactor * 70),   // 100 to 30
+            (uint8_t)(110 - localFactor * 40),   // 110 to 70
+            255
+        );
     }
     
-    // Calculate gradient color using direct Color::blend method
-    Color skyColor = Color::blend(horizonColor, zenithColor, t);
-    
-    // Only process sky portion (top half of screen)
-    if (y < horizonY) {
-        // Set pixel and depth - always use maximum depth for sky
-        int idx = y * width + x;
-        frameBuffer[idx] = skyColor;
-        zBuffer[idx] = 1.0f;  // Sky is at infinite distance
-        
-        // In performance mode, also fill the next line if we're not at the bottom
-        if (performanceMode && y + 1 < height && y + 1 < horizonY) {
-            int idx2 = (y + 1) * width + x;
-            frameBuffer[idx2] = skyColor;
-            zBuffer[idx2] = 1.0f;
-        }
-    }
+    // Set pixel directly with 1.0 depth (farthest)
+    int idx = y * width + x;
+    frameBuffer[idx] = skyColor;
+    zBuffer[idx] = 1.0f;  // Maximum depth
 }
 
 // Kernel for rendering the sun
@@ -539,9 +561,6 @@ __global__ void floorRenderKernel(
     // Early exit if outside screen bounds
     if (x >= width || y >= height) return;
     
-    // Early exit if no textures are available
-    if (textures == nullptr) return;
-    
     // Skip if pixel is not in the floor section (below horizon)
     int horizon = height / 2;
     
@@ -566,7 +585,7 @@ __global__ void floorRenderKernel(
     float verticalAngle = (y - horizon) / (float)(height - horizon);
     
     // Avoid division by zero
-    verticalAngle = max(0.01f, verticalAngle);
+    verticalAngle = fmaxf(0.01f, verticalAngle);
     
     // Calculate the distance to the point on floor
     float heightDiff = playerHeight - floorHeight;
@@ -587,17 +606,17 @@ __global__ void floorRenderKernel(
     if (texV < 0) texV += 1.0f;
     
     // Apply a distance fog effect
-    float fogFactor = 1.0f - min(1.0f, distance / maxDistance);
+    float fogFactor = 1.0f - fminf(1.0f, distance / maxDistance);
     
     // Apply lighting factor (0-1) from current sector
-    float lightFactor = min(1.0f, max(0.2f, lightLevel / 255.0f));
+    float lightFactor = fminf(1.0f, fmaxf(0.2f, lightLevel / 255.0f));
     
     // Combined lighting and fog
     float combinedLighting = lightFactor * fogFactor;
     
     Color floorColor;
     
-    // Use actual texture if valid ID, otherwise use checkerboard pattern
+    // Use actual texture if valid ID, otherwise use DOOM-like floor pattern
     if (floorTextureId >= 0 && floorTextureId < numTextures && 
         textures[floorTextureId].pixels != nullptr && 
         textures[floorTextureId].width > 0 && 
@@ -610,20 +629,46 @@ __global__ void floorRenderKernel(
         int texY = (int)(texV * texture.height);
         
         // Ensure texture coordinates are within bounds
-        texX = max(0, min(texture.width - 1, texX));
-        texY = max(0, min(texture.height - 1, texY));
+        texX = fmaxf(0, fminf(texture.width - 1, texX));
+        texY = fmaxf(0, fminf(texture.height - 1, texY));
         
         // Get the texel color
         int texIndex = texY * texture.width + texX;
         floorColor = texture.pixels[texIndex];
     } else {
-        // Fallback to checkerboard pattern
-        bool isEvenX = (int)worldX % 2 == 0;
-        bool isEvenY = (int)worldY % 2 == 0;
-        bool isCheckerLight = isEvenX != isEvenY;
+        // Fallback to DOOM-like floor pattern instead of checkerboard
         
-        // Choose color based on checker pattern
-        floorColor = isCheckerLight ? Color(80, 80, 80) : Color(40, 40, 40);
+        // Create a small-scale grid for the floor
+        // Scale coordinates to create a tighter pattern
+        float gridScale = 8.0f;
+        float gridX = fmodf(worldX * gridScale, 1.0f);
+        float gridY = fmodf(worldY * gridScale, 1.0f);
+        
+        // Create a subtle edge highlight effect
+        bool isEdgeX = gridX < 0.05f || gridX > 0.95f;
+        bool isEdgeY = gridY < 0.05f || gridY > 0.95f;
+        
+        // Add some variation based on position to create a subtle pattern
+        float noise = fmodf(sinf(worldX * 37.0f + worldY * 23.9f) * 0.5f + 0.5f, 1.0f);
+        noise = noise * 0.15f + 0.85f; // Limit the noise effect to 15%
+        
+        // Base DOOM-like floor colors - dark grayish brown
+        uint8_t baseR = 48;
+        uint8_t baseG = 42;
+        uint8_t baseB = 35;
+        
+        // Lighter highlights for edges
+        if (isEdgeX || isEdgeY) {
+            baseR = 58;
+            baseG = 52;
+            baseB = 45;
+        }
+        
+        // Apply subtle noise variation
+        floorColor.r = (uint8_t)(baseR * noise);
+        floorColor.g = (uint8_t)(baseG * noise);
+        floorColor.b = (uint8_t)(baseB * noise);
+        floorColor.a = 255;
     }
     
     // Apply lighting and fog
