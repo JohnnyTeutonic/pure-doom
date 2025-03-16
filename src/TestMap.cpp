@@ -291,6 +291,7 @@ int main(int argc, char* argv[]) {
     // Portal to corridor
     Wall portalWall = Wall(Line(Vertex(-0.5f, 2.5f), Vertex(0.5f, 2.5f)), 0, 1, 4);
     portalWall.isTransparent = true;
+    portalWall.isSolid = false;
     mainRoom.walls.push_back(portalWall);
     
     // Rest of main room walls
@@ -312,6 +313,7 @@ int main(int argc, char* argv[]) {
     // Connection to main room
     Wall corridorEntrance = Wall(Line(Vertex(0.5f, 2.5f), Vertex(-0.5f, 2.5f)), 1, 0, 4);
     corridorEntrance.isTransparent = true;
+    corridorEntrance.isSolid = false;
     corridor.walls.push_back(corridorEntrance);
     
     // Rest of corridor walls
@@ -321,6 +323,7 @@ int main(int argc, char* argv[]) {
     // Portal to side room
     Wall sideRoomPortal = Wall(Line(Vertex(-0.25f, 4.5f), Vertex(0.25f, 4.5f)), 1, 2, 4);
     sideRoomPortal.isTransparent = true;
+    sideRoomPortal.isSolid = false;
     corridor.walls.push_back(sideRoomPortal);
     
     // Last corridor wall
@@ -340,6 +343,7 @@ int main(int argc, char* argv[]) {
     // Connection to corridor
     Wall sideRoomEntrance = Wall(Line(Vertex(0.25f, 4.5f), Vertex(-0.25f, 4.5f)), 2, 1, 4);
     sideRoomEntrance.isTransparent = true;
+    sideRoomEntrance.isSolid = false;
     sideRoom.walls.push_back(sideRoomEntrance);
     
     // Rest of side room walls
@@ -385,6 +389,46 @@ int main(int argc, char* argv[]) {
     
     // Main loop
     while (running) {
+        // Track which sector the player is in for portal transition detection
+        int currentSector = collisionBSP.findSector(view.position);
+        static int previousSector = -1;
+        
+        // Check if player moved to a different sector (through a portal)
+        if (currentSector != previousSector && currentSector >= 0) {
+            std::string sectorName;
+            switch (currentSector) {
+                case 0: sectorName = "Main Room"; break;
+                case 1: sectorName = "Corridor"; break;
+                case 2: sectorName = "Side Room"; break;
+                default: sectorName = "Unknown"; break;
+            }
+            std::cout << "Player moved to sector: " << sectorName << " (ID: " << currentSector << ")" << std::endl;
+            previousSector = currentSector;
+        }
+        
+        // Check if player is near a portal
+        bool nearPortal = false;
+        for (int i = 0; i < testMapSectors.size(); i++) {
+            for (int j = 0; j < testMapSectors[i].walls.size(); j++) {
+                const Wall& wall = testMapSectors[i].walls[j];
+                if (!wall.isSolid && wall.sectorBack >= 0) {
+                    float dist = wall.segment.distanceToPoint(view.position);
+                    if (dist < 1.0f) {
+                        nearPortal = true;
+                        // Only print once when getting near a portal
+                        static float lastPortalDist = 999.0f;
+                        if (lastPortalDist >= 1.0f) {
+                            std::cout << "Near portal connecting sectors " << wall.sectorFront 
+                                      << " and " << wall.sectorBack << " (distance: " << dist << ")" << std::endl;
+                        }
+                        lastPortalDist = dist;
+                        break;
+                    }
+                }
+            }
+            if (nearPortal) break;
+        }
+        
         // Handle events
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
@@ -424,6 +468,39 @@ int main(int argc, char* argv[]) {
                         std::cout << "  - South wall at (x, -2.5) from x=2.5 to x=-2.5\n";
                         std::cout << "  - West wall at (-2.5, y) from y=-2.5 to y=2.5\n";
                         std::cout << "=========================\n";
+                        break;
+                    case SDLK_l:
+                        {
+                            int sector = collisionBSP.findSector(view.position);
+                            std::string sectorName;
+                            switch (sector) {
+                                case 0: sectorName = "Main Room"; break;
+                                case 1: sectorName = "Corridor"; break;
+                                case 2: sectorName = "Side Room"; break;
+                                default: sectorName = "Unknown"; break;
+                            }
+                            std::cout << "\n==== DEBUG SECTOR INFO ====\n";
+                            std::cout << "Current position: (" << view.position.x << ", " 
+                                      << view.position.y << ")\n";
+                            std::cout << "Current sector: " << sectorName << " (ID: " << sector << ")\n";
+                            
+                            // Find nearby portals
+                            std::cout << "Nearby portals:\n";
+                            for (int i = 0; i < testMapSectors.size(); i++) {
+                                for (int j = 0; j < testMapSectors[i].walls.size(); j++) {
+                                    const Wall& wall = testMapSectors[i].walls[j];
+                                    if (!wall.isSolid && wall.sectorBack >= 0) {
+                                        float dist = wall.segment.distanceToPoint(view.position);
+                                        if (dist < 2.0f) {
+                                            std::cout << "  Portal at distance " << dist 
+                                                      << " connecting sectors " << wall.sectorFront 
+                                                      << " and " << wall.sectorBack << std::endl;
+                                        }
+                                    }
+                                }
+                            }
+                            std::cout << "==========================\n";
+                        }
                         break;
                 }
             } else if (event.type == SDL_KEYUP) {
@@ -474,6 +551,34 @@ int main(int argc, char* argv[]) {
         if (movementVector.lengthSquared() > 0.001f) {
             // Store original position for unstick detection
             Vec2 originalPosition = view.position;
+            
+            // Check if we're very close to a portal and trying to move through it
+            bool portalAssist = false;
+            for (int i = 0; i < testMapSectors.size() && !portalAssist; i++) {
+                for (int j = 0; j < testMapSectors[i].walls.size(); j++) {
+                    const Wall& wall = testMapSectors[i].walls[j];
+                    if (!wall.isSolid && wall.sectorBack >= 0) {
+                        float dist = wall.segment.distanceToPoint(view.position);
+                        if (dist < 0.1f) { // Very close to portal
+                            // Get wall direction and normal
+                            Vec2 wallDir = (wall.segment.end.position - wall.segment.start.position).normalized();
+                            Vec2 wallNormal(-wallDir.y, wallDir.x);
+                            
+                            // Check if we're trying to move through the portal
+                            if (std::abs(movementVector.dotProduct(wallNormal)) > 0.1f) {
+                                // If dot product of movement and normal is significant, we're trying to cross
+                                // Add a small boost in the direction of the normal to help push through
+                                float direction = movementVector.dotProduct(wallNormal) > 0 ? 1.0f : -1.0f;
+                                Vec2 portalBoost = wallNormal * direction * 0.05f;
+                                view.position = view.position + portalBoost;
+                                std::cout << "Portal assist applied! Boosting player through portal." << std::endl;
+                                portalAssist = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             
             // Check for nearby walls - debug output
             CollisionInfo nearbyWalls = collisionBSP.castRay(view.position, movementVector.normalized(), PLAYER_RADIUS * 3.0f);
