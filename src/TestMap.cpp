@@ -76,6 +76,56 @@ Texture createBrickTexture(int width, int height, Color brickColor, Color mortar
     return texture;
 }
 
+// Create a DOOM-like floor texture
+Texture createDoomFloorTexture(int width, int height) {
+    Texture texture(width, height);
+    
+    // Base color (brownish gray)
+    uint8_t baseR = 48;
+    uint8_t baseG = 42;
+    uint8_t baseB = 35;
+    
+    // Edge color (slightly lighter)
+    uint8_t edgeR = 58;
+    uint8_t edgeG = 52;
+    uint8_t edgeB = 45;
+    
+    // Grid size (how many grid cells in the texture)
+    int gridSize = 8;
+    int cellWidth = width / gridSize;
+    int cellHeight = height / gridSize;
+    
+    // Create a DOOM-like floor pattern
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // Determine if we're on a grid edge
+            bool isHorizontalEdge = (y % cellHeight) < 2 || (y % cellHeight) >= (cellHeight - 2);
+            bool isVerticalEdge = (x % cellWidth) < 2 || (x % cellWidth) >= (cellWidth - 2);
+            
+            // Add some variation for a more organic look
+            int noise = ((x * 13 + y * 7) % 20) - 10;
+            
+            if (isHorizontalEdge || isVerticalEdge) {
+                // Edge color with noise
+                texture.m_pixels[y * width + x] = Color(
+                    static_cast<uint8_t>(std::max(0, std::min(255, edgeR + noise))),
+                    static_cast<uint8_t>(std::max(0, std::min(255, edgeG + noise))),
+                    static_cast<uint8_t>(std::max(0, std::min(255, edgeB + noise)))
+                );
+            } else {
+                // Base color with noise
+                texture.m_pixels[y * width + x] = Color(
+                    static_cast<uint8_t>(std::max(0, std::min(255, baseR + noise))),
+                    static_cast<uint8_t>(std::max(0, std::min(255, baseG + noise))),
+                    static_cast<uint8_t>(std::max(0, std::min(255, baseB + noise)))
+                );
+            }
+        }
+    }
+    
+    return texture;
+}
+
 // Main function to test our CUDA test map
 int main(int argc, char* argv[]) {
     // Initialize SDL
@@ -155,14 +205,22 @@ int main(int argc, char* argv[]) {
     // Create textures for our test map
     std::vector<Texture> textures;
     
-    // 0: Floor texture (checkboard)
-    textures.push_back(createCheckerboardTexture(64, 64, Color(100, 100, 100), Color(50, 50, 50), 8));
+    // 0: Floor texture (DOOM-like floor pattern)
+    textures.push_back(createDoomFloorTexture(64, 64));
     
     // 1: Ceiling texture
     textures.push_back(createSimpleTexture(64, 64, 60, 60, 80));
     
-    // 2: Side room floor texture (red checker)
-    textures.push_back(createCheckerboardTexture(64, 64, Color(120, 40, 40), Color(80, 30, 30), 8));
+    // 2: Side room floor texture (DOOM-like reddish floor)
+    Texture sideRoomFloor = createDoomFloorTexture(64, 64);
+    // Tint it redder
+    for (int i = 0; i < sideRoomFloor.width() * sideRoomFloor.height(); i++) {
+        Color& pixel = sideRoomFloor.m_pixels[i];
+        pixel.r = std::min(255, pixel.r + 40);
+        pixel.g = std::max(0, pixel.g - 10);
+        pixel.b = std::max(0, pixel.b - 10);
+    }
+    textures.push_back(sideRoomFloor);
     
     // 3: Main room wall texture (brick)
     textures.push_back(createBrickTexture(128, 128, Color(180, 100, 80), Color(100, 100, 100)));
