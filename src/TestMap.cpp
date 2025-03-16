@@ -1,5 +1,6 @@
 #include "RendererCuda.h"
 #include "Renderer.h"
+#include "BSPTree.h"
 #include <iostream>
 #include <vector>
 #include <SDL.h>
@@ -269,6 +270,91 @@ int main(int argc, char* argv[]) {
     // Enable test map mode
     cudaRenderer.useTestMap(true);
     
+    // Create a BSP tree for collision detection
+    BSPTree collisionBSP;
+    
+    // Create sectors for the test map (matching the CUDA test map structure)
+    std::vector<Sector> testMapSectors;
+    
+    // Main room sector
+    Sector mainRoom;
+    mainRoom.floorHeight = 0.0f;
+    mainRoom.ceilingHeight = 2.0f;
+    mainRoom.floorTextureId = 0;
+    mainRoom.ceilingTextureId = 1;
+    mainRoom.lightLevel = 200;
+    mainRoom.tag = "main_room";
+    
+    // Main room walls (5x5 square, centered at origin)
+    mainRoom.walls.push_back(Wall(Line(Vertex(-2.5f, 2.5f), Vertex(-0.5f, 2.5f)), 0, -1, 3));
+    
+    // Portal to corridor
+    Wall portalWall = Wall(Line(Vertex(-0.5f, 2.5f), Vertex(0.5f, 2.5f)), 0, 1, 4);
+    portalWall.isTransparent = true;
+    mainRoom.walls.push_back(portalWall);
+    
+    // Rest of main room walls
+    mainRoom.walls.push_back(Wall(Line(Vertex(0.5f, 2.5f), Vertex(2.5f, 2.5f)), 0, -1, 3));
+    mainRoom.walls.push_back(Wall(Line(Vertex(2.5f, 2.5f), Vertex(2.5f, -2.5f)), 0, -1, 3));
+    mainRoom.walls.push_back(Wall(Line(Vertex(2.5f, -2.5f), Vertex(-2.5f, -2.5f)), 0, -1, 3));
+    mainRoom.walls.push_back(Wall(Line(Vertex(-2.5f, -2.5f), Vertex(-2.5f, 2.5f)), 0, -1, 3));
+    
+    // Corridor sector
+    Sector corridor;
+    corridor.floorHeight = 0.0f;
+    corridor.ceilingHeight = 1.5f;
+    corridor.floorTextureId = 0;
+    corridor.ceilingTextureId = 1;
+    corridor.lightLevel = 150;
+    corridor.tag = "corridor";
+    
+    // Corridor walls
+    // Connection to main room
+    Wall corridorEntrance = Wall(Line(Vertex(0.5f, 2.5f), Vertex(-0.5f, 2.5f)), 1, 0, 4);
+    corridorEntrance.isTransparent = true;
+    corridor.walls.push_back(corridorEntrance);
+    
+    // Rest of corridor walls
+    corridor.walls.push_back(Wall(Line(Vertex(-0.5f, 2.5f), Vertex(-0.5f, 4.5f)), 1, -1, 5));
+    corridor.walls.push_back(Wall(Line(Vertex(-0.5f, 4.5f), Vertex(-0.25f, 4.5f)), 1, -1, 5));
+    
+    // Portal to side room
+    Wall sideRoomPortal = Wall(Line(Vertex(-0.25f, 4.5f), Vertex(0.25f, 4.5f)), 1, 2, 4);
+    sideRoomPortal.isTransparent = true;
+    corridor.walls.push_back(sideRoomPortal);
+    
+    // Last corridor wall
+    corridor.walls.push_back(Wall(Line(Vertex(0.25f, 4.5f), Vertex(0.5f, 4.5f)), 1, -1, 5));
+    corridor.walls.push_back(Wall(Line(Vertex(0.5f, 4.5f), Vertex(0.5f, 2.5f)), 1, -1, 5));
+    
+    // Side room sector
+    Sector sideRoom;
+    sideRoom.floorHeight = 0.1f;
+    sideRoom.ceilingHeight = 1.8f;
+    sideRoom.floorTextureId = 2;
+    sideRoom.ceilingTextureId = 1;
+    sideRoom.lightLevel = 100;
+    sideRoom.tag = "side_room";
+    
+    // Side room walls
+    // Connection to corridor
+    Wall sideRoomEntrance = Wall(Line(Vertex(0.25f, 4.5f), Vertex(-0.25f, 4.5f)), 2, 1, 4);
+    sideRoomEntrance.isTransparent = true;
+    sideRoom.walls.push_back(sideRoomEntrance);
+    
+    // Rest of side room walls
+    sideRoom.walls.push_back(Wall(Line(Vertex(-0.25f, 4.5f), Vertex(-1.5f, 5.5f)), 2, -1, 6));
+    sideRoom.walls.push_back(Wall(Line(Vertex(-1.5f, 5.5f), Vertex(1.5f, 5.5f)), 2, -1, 6));
+    sideRoom.walls.push_back(Wall(Line(Vertex(1.5f, 5.5f), Vertex(0.25f, 4.5f)), 2, -1, 6));
+    
+    // Add sectors to the collection
+    testMapSectors.push_back(mainRoom);
+    testMapSectors.push_back(corridor);
+    testMapSectors.push_back(sideRoom);
+    
+    // Build the BSP tree for collision detection
+    collisionBSP.build(testMapSectors);
+    
     // Main loop variables
     bool running = true;
     bool keyW = false, keyA = false, keyS = false, keyD = false;
@@ -278,6 +364,9 @@ int main(int argc, char* argv[]) {
     // Movement speed
     const float moveSpeed = 0.1f;
     const float turnSpeed = 0.05f;
+    
+    // Player radius for collision detection
+    const float PLAYER_RADIUS = 0.3f;
     
     // Add this near the top of the main() function before the main loop
     std::cout << "\n==== DEBUGGING INFORMATION ====\n";
@@ -291,6 +380,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  - Ceiling texture (ID 1)\n";
     std::cout << "  - Side room floor (ID 2)\n";
     std::cout << "  - Wall textures (IDs 3-6)\n";
+    std::cout << "Collision detection enabled with player radius: " << PLAYER_RADIUS << "\n";
     std::cout << "===============================\n";
     
     // Main loop
@@ -360,23 +450,129 @@ int main(int argc, char* argv[]) {
             }
         }
         
-        // Update view based on keyboard input
+        // Calculate movement vector based on keyboard input
+        Vec2 movementVector(0.0f, 0.0f);
+        
         if (keyW) {
-            view.position.x += moveSpeed * cos(view.angle);
-            view.position.y += moveSpeed * sin(view.angle);
+            movementVector.x += moveSpeed * cos(view.angle);
+            movementVector.y += moveSpeed * sin(view.angle);
         }
         if (keyS) {
-            view.position.x -= moveSpeed * cos(view.angle);
-            view.position.y -= moveSpeed * sin(view.angle);
+            movementVector.x -= moveSpeed * cos(view.angle);
+            movementVector.y -= moveSpeed * sin(view.angle);
         }
         if (keyA) {
-            view.position.x += moveSpeed * cos(view.angle - M_PI / 2);
-            view.position.y += moveSpeed * sin(view.angle - M_PI / 2);
+            movementVector.x += moveSpeed * cos(view.angle - M_PI / 2);
+            movementVector.y += moveSpeed * sin(view.angle - M_PI / 2);
         }
         if (keyD) {
-            view.position.x += moveSpeed * cos(view.angle + M_PI / 2);
-            view.position.y += moveSpeed * sin(view.angle + M_PI / 2);
+            movementVector.x += moveSpeed * cos(view.angle + M_PI / 2);
+            movementVector.y += moveSpeed * sin(view.angle + M_PI / 2);
         }
+        
+        // Apply collision detection and response if we're trying to move
+        if (movementVector.lengthSquared() > 0.001f) {
+            // Store original position for unstick detection
+            Vec2 originalPosition = view.position;
+            
+            // Check for nearby walls - debug output
+            CollisionInfo nearbyWalls = collisionBSP.castRay(view.position, movementVector.normalized(), PLAYER_RADIUS * 3.0f);
+            if (nearbyWalls.collision && nearbyWalls.distance < 0.5f) {
+                // Only output when we're very close to a wall
+                std::cout << "NEARBY WALL: Player at (" << view.position.x << ", " << view.position.y 
+                          << "), Wall at " << nearbyWalls.distance * PLAYER_RADIUS * 3.0f 
+                          << " units away in direction (" << movementVector.normalized().x 
+                          << ", " << movementVector.normalized().y << ")" << std::endl;
+            }
+            
+            // Check for collisions
+            CollisionInfo collision = collisionBSP.checkCollision(view.position, PLAYER_RADIUS, movementVector);
+            
+            if (collision.collision) {
+                // Output collision details when a collision is detected
+                std::cout << "COLLISION: Distance=" << collision.distance 
+                          << ", Normal=(" << collision.normal.x << ", " << collision.normal.y 
+                          << "), SectorId=" << collision.sectorId
+                          << ", WallIndex=" << collision.wallIndex << std::endl;
+                
+                // If we're about to hit a wall
+                if (collision.distance < 1.0f) {
+                    // Move as far as we can before hitting the wall
+                    // Apply a small safety factor (0.9) to avoid getting too close
+                    Vec2 safeMovement = movementVector * (collision.distance * 0.9f);
+                    
+                    // Move up to the collision point
+                    view.position = view.position + safeMovement;
+                    
+                    // Calculate the remaining movement vector that needs to be redirected
+                    Vec2 remainingMovement = movementVector * (1.0f - collision.distance * 0.9f);
+                    
+                    // Slide along the wall (project the remaining movement onto the wall plane)
+                    Vec2 slideVector = remainingMovement - 
+                                    collision.normal * remainingMovement.dotProduct(collision.normal);
+                    
+                    // Add a significant component away from the wall to prevent sticking
+                    Vec2 awayFromWall = collision.normal * 0.01f;
+                    slideVector = slideVector + awayFromWall;
+                    
+                    // Apply the slide movement, but check for a second collision
+                    if (slideVector.lengthSquared() > 0.001f) {
+                        CollisionInfo slideCollision = collisionBSP.checkCollision(view.position, PLAYER_RADIUS, slideVector);
+                        
+                        if (slideCollision.collision && slideCollision.distance < 1.0f) {
+                            // If we'd hit another wall while sliding, move safely along the slide vector
+                            // Reduce the sliding movement to avoid getting stuck in corners
+                            float slideDistance = slideCollision.distance * 0.7f;
+                            
+                            // Add a stronger repulsion force to push away from corners
+                            Vec2 repulsionForce = slideCollision.normal * 0.025f;
+                            view.position = view.position + slideVector * slideDistance + repulsionForce;
+                            
+                            // If movement is very small, apply a larger bump in the normal direction to unstick
+                            if (slideVector.length() * slideDistance < 0.015f) {
+                                Vec2 unstickVector = collision.normal * 0.03f;
+                                view.position = view.position + unstickVector;
+                                
+                                // Debug output for unsticking
+                                std::cout << "Applying unstick vector: (" << unstickVector.x << ", " 
+                                          << unstickVector.y << ")" << std::endl;
+                            }
+                        } else {
+                            // No collision with the slide vector, apply it fully
+                            view.position = view.position + slideVector;
+                        }
+                    }
+                } else {
+                    // Collision.distance >= 1.0 means no collision during this move
+                    view.position = view.position + movementVector;
+                }
+            } else {
+                // No collision, safe to move
+                view.position = view.position + movementVector;
+            }
+            
+            // Check if we've moved at all - if not, we might be stuck
+            if ((view.position - originalPosition).lengthSquared() < 0.0001f) {
+                // We haven't moved, so apply a larger random bump to unstick
+                float randomAngle = static_cast<float>(rand()) / RAND_MAX * 2.0f * M_PI;
+                Vec2 randomDir(std::cos(randomAngle), std::sin(randomAngle));
+                view.position = view.position + randomDir * 0.05f;
+                
+                // Debug output for getting stuck
+                std::cout << "MAJOR STUCK: Player at position (" << view.position.x << ", " << view.position.y 
+                          << ") - applying stronger random bump in direction (" 
+                          << randomDir.x << ", " << randomDir.y << ")" << std::endl;
+                
+                // Try another ray cast in the random direction to see what's there
+                CollisionInfo stuckRay = collisionBSP.castRay(view.position, randomDir, PLAYER_RADIUS * 5.0f);
+                if (stuckRay.collision) {
+                    std::cout << "  Nearest obstacle in random direction at distance: " 
+                              << stuckRay.distance * PLAYER_RADIUS * 5.0f << " units" << std::endl;
+                }
+            }
+        }
+        
+        // Update view angle based on keyboard input
         if (keyQ) {
             view.angle -= turnSpeed;
             // Normalize angle
