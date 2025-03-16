@@ -127,6 +127,244 @@ Texture createDoomFloorTexture(int width, int height) {
     return texture;
 }
 
+// Create a bloody wall texture (DOOM-like)
+Texture createBloodyWallTexture(int width, int height, Color baseColor, Color bloodColor) {
+    Texture texture(width, height);
+    
+    // Create a base stone/metal texture
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // Add some noise to the base color
+            int noise = ((x * 7 + y * 13) % 30) - 15;
+            
+            Color pixelColor(
+                std::max(0, std::min(255, baseColor.r + noise)),
+                std::max(0, std::min(255, baseColor.g + noise)),
+                std::max(0, std::min(255, baseColor.b + noise))
+            );
+            
+            texture.m_pixels[y * width + x] = pixelColor;
+        }
+    }
+    
+    // Add blood streaks and splatters
+    int numStreaks = width / 8;
+    for (int i = 0; i < numStreaks; ++i) {
+        // Random starting position for the streak
+        int startX = rand() % width;
+        int startY = rand() % (height / 3);
+        
+        // Random length and width of the streak
+        int streakLength = height / 2 + rand() % (height / 2);
+        int streakWidth = 2 + rand() % 6;
+        
+        // Draw the blood streak downward
+        for (int y = 0; y < streakLength; ++y) {
+            int currentY = startY + y;
+            if (currentY >= height) break;
+            
+            // Make the streak meander slightly
+            int offsetX = (rand() % 5) - 2;
+            
+            // Vary the width as we go down
+            int currentWidth = std::max(1, streakWidth - (y / (streakLength / 3)));
+            
+            for (int w = -currentWidth/2; w <= currentWidth/2; ++w) {
+                int currentX = startX + offsetX + w;
+                if (currentX >= 0 && currentX < width) {
+                    // Fade the blood color as it goes down
+                    float fade = 1.0f - (float)y / streakLength;
+                    Color fadedBlood(
+                        std::max(0, std::min(255, int(bloodColor.r * fade))),
+                        std::max(0, std::min(255, int(bloodColor.g * fade))),
+                        std::max(0, std::min(255, int(bloodColor.b * fade)))
+                    );
+                    
+                    // Blend with existing color
+                    Color& existingColor = texture.m_pixels[currentY * width + currentX];
+                    existingColor = Color(
+                        (existingColor.r + fadedBlood.r * 2) / 3,
+                        (existingColor.g + fadedBlood.g * 2) / 3,
+                        (existingColor.b + fadedBlood.b * 2) / 3
+                    );
+                }
+            }
+        }
+    }
+    
+    // Add blood splatters
+    int numSplatters = width / 10;
+    for (int i = 0; i < numSplatters; ++i) {
+        int centerX = rand() % width;
+        int centerY = rand() % height;
+        int radius = 3 + rand() % 8;
+        
+        for (int y = -radius; y <= radius; ++y) {
+            for (int x = -radius; x <= radius; ++x) {
+                int currentX = centerX + x;
+                int currentY = centerY + y;
+                
+                if (currentX >= 0 && currentX < width && currentY >= 0 && currentY < height) {
+                    float distance = std::sqrt(x*x + y*y);
+                    if (distance <= radius) {
+                        float intensity = 1.0f - (distance / radius);
+                        
+                        // Add some randomness to the splatter edge
+                        if (rand() % 100 < intensity * 100) {
+                            Color& existingColor = texture.m_pixels[currentY * width + currentX];
+                            existingColor = Color(
+                                (existingColor.r + bloodColor.r * 3) / 4,
+                                (existingColor.g + bloodColor.g * 3) / 4,
+                                (existingColor.b + bloodColor.b * 3) / 4
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return texture;
+}
+
+// Create a hellish/fiery wall texture
+Texture createHellishWallTexture(int width, int height) {
+    Texture texture(width, height);
+    
+    // Create a base dark rock texture
+    Color darkRock(40, 30, 25);
+    Color lavaRock(80, 40, 30);
+    
+    // Create a cracked rock pattern
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // Use Perlin-like noise simulation for rock texture
+            float noiseVal = (std::sin(x * 0.1f) * std::cos(y * 0.1f) + 
+                             std::sin(x * 0.05f + y * 0.05f) * std::cos(x * 0.06f - y * 0.03f)) * 0.5f + 0.5f;
+            
+            // Add some smaller detail noise
+            float detailNoise = (std::sin(x * 0.4f) * std::cos(y * 0.4f)) * 0.2f + 0.8f;
+            noiseVal *= detailNoise;
+            
+            // Determine if this is a crack
+            bool isCrack = noiseVal < 0.4f;
+            
+            if (isCrack) {
+                // Glowing crack - more intense at the center of the crack
+                float glowIntensity = 1.0f - (noiseVal / 0.4f);
+                
+                // Create a fiery glow color
+                Color glowColor(
+                    std::min(255, int(200 * glowIntensity + 55)),
+                    std::min(255, int(100 * glowIntensity + 30)),
+                    std::min(255, int(50 * glowIntensity))
+                );
+                
+                texture.m_pixels[y * width + x] = glowColor;
+            } else {
+                // Regular rock with some variation
+                float rockBlend = (noiseVal - 0.4f) / 0.6f; // 0 to 1 range for non-crack areas
+                
+                Color rockColor(
+                    int(darkRock.r * (1.0f - rockBlend) + lavaRock.r * rockBlend),
+                    int(darkRock.g * (1.0f - rockBlend) + lavaRock.g * rockBlend),
+                    int(darkRock.b * (1.0f - rockBlend) + lavaRock.b * rockBlend)
+                );
+                
+                texture.m_pixels[y * width + x] = rockColor;
+            }
+        }
+    }
+    
+    return texture;
+}
+
+// Create a flesh/organic wall texture (very DOOM-like)
+Texture createFleshWallTexture(int width, int height) {
+    Texture texture(width, height);
+    
+    // Base flesh colors
+    Color fleshLight(180, 100, 90);
+    Color fleshDark(120, 60, 50);
+    Color veinColor(140, 20, 20);
+    
+    // Create the base flesh texture with veins
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // Create a pulsating flesh pattern
+            float baseNoise = (std::sin(x * 0.05f) * std::cos(y * 0.05f) + 
+                              std::sin((x+y) * 0.08f) * std::cos((x-y) * 0.07f)) * 0.5f + 0.5f;
+            
+            // Add some smaller detail for skin texture
+            float detailNoise = (std::sin(x * 0.2f + 10) * std::cos(y * 0.2f + 5)) * 0.3f + 0.7f;
+            float combinedNoise = baseNoise * detailNoise;
+            
+            // Determine the flesh color based on the noise
+            Color fleshColor(
+                int(fleshDark.r * (1.0f - combinedNoise) + fleshLight.r * combinedNoise),
+                int(fleshDark.g * (1.0f - combinedNoise) + fleshLight.g * combinedNoise),
+                int(fleshDark.b * (1.0f - combinedNoise) + fleshLight.b * combinedNoise)
+            );
+            
+            // Check if this should be a vein
+            float veinNoise = std::sin(x * 0.1f + y * 0.15f) * std::cos(y * 0.1f - x * 0.05f);
+            bool isVein = veinNoise > 0.7f && rand() % 10 > 5;
+            
+            if (isVein) {
+                // Add some variation to the vein color
+                int veinVariation = rand() % 30 - 15;
+                Color currentVeinColor(
+                    std::max(0, std::min(255, veinColor.r + veinVariation)),
+                    std::max(0, std::min(255, veinColor.g + veinVariation / 2)),
+                    std::max(0, std::min(255, veinColor.b + veinVariation / 2))
+                );
+                
+                texture.m_pixels[y * width + x] = currentVeinColor;
+            } else {
+                texture.m_pixels[y * width + x] = fleshColor;
+            }
+        }
+    }
+    
+    // Add some "wounds" or openings
+    int numWounds = width / 16;
+    for (int i = 0; i < numWounds; ++i) {
+        int centerX = rand() % width;
+        int centerY = rand() % height;
+        int radiusX = 5 + rand() % 10;
+        int radiusY = 5 + rand() % 10;
+        
+        for (int y = -radiusY; y <= radiusY; ++y) {
+            for (int x = -radiusX; x <= radiusX; ++x) {
+                int currentX = centerX + x;
+                int currentY = centerY + y;
+                
+                if (currentX >= 0 && currentX < width && currentY >= 0 && currentY < height) {
+                    // Create an oval shape
+                    float normalizedX = (float)x / radiusX;
+                    float normalizedY = (float)y / radiusY;
+                    float distance = std::sqrt(normalizedX*normalizedX + normalizedY*normalizedY);
+                    
+                    if (distance <= 1.0f) {
+                        // Darker in the center, redder at the edges
+                        float edgeFactor = distance * 0.7f + 0.3f;
+                        
+                        Color woundColor(
+                            int(veinColor.r * edgeFactor),
+                            int(veinColor.g * distance * distance),
+                            int(veinColor.b * distance * distance)
+                        );
+                        
+                        texture.m_pixels[currentY * width + currentX] = woundColor;
+                    }
+                }
+            }
+        }
+    }
+    
+    return texture;
+}
+
 // Main function to test our CUDA test map
 int main(int argc, char* argv[]) {
     // Initialize SDL
@@ -139,7 +377,7 @@ int main(int argc, char* argv[]) {
     const int WIDTH = 1024;
     const int HEIGHT = 768;
     SDL_Window* window = SDL_CreateWindow(
-        "CUDA Test Map",
+        "DOOM-Like Hellish Test Map",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         WIDTH, HEIGHT,
         SDL_WINDOW_SHOWN
@@ -209,31 +447,104 @@ int main(int argc, char* argv[]) {
     // 0: Floor texture (DOOM-like floor pattern)
     textures.push_back(createDoomFloorTexture(64, 64));
     
-    // 1: Ceiling texture
-    textures.push_back(createSimpleTexture(64, 64, 60, 60, 80));
+    // 1: Ceiling texture (dark with embers)
+    Texture ceilingTexture = createSimpleTexture(64, 64, 30, 25, 35);
+    // Add some ember/fire particles to the ceiling
+    for (int i = 0; i < 50; i++) {
+        int x = rand() % 64;
+        int y = rand() % 64;
+        int size = 1 + rand() % 2;
+        int brightness = 100 + rand() % 155;
+        
+        for (int dy = -size; dy <= size; dy++) {
+            for (int dx = -size; dx <= size; dx++) {
+                int px = x + dx;
+                int py = y + dy;
+                if (px >= 0 && px < 64 && py >= 0 && py < 64) {
+                    float dist = std::sqrt(dx*dx + dy*dy);
+                    if (dist <= size) {
+                        float intensity = 1.0f - (dist / size);
+                        ceilingTexture.m_pixels[py * 64 + px] = Color(
+                            brightness * intensity,
+                            brightness * intensity * 0.6f,
+                            brightness * intensity * 0.3f
+                        );
+                    }
+                }
+            }
+        }
+    }
+    textures.push_back(ceilingTexture);
     
     // 2: Side room floor texture (DOOM-like reddish floor)
     Texture sideRoomFloor = createDoomFloorTexture(64, 64);
-    // Tint it redder
+    // Tint it redder and add blood stains
     for (int i = 0; i < sideRoomFloor.width() * sideRoomFloor.height(); i++) {
         Color& pixel = sideRoomFloor.m_pixels[i];
         pixel.r = std::min(255, pixel.r + 40);
         pixel.g = std::max(0, pixel.g - 10);
         pixel.b = std::max(0, pixel.b - 10);
+        
+        // Random blood stains
+        if (rand() % 100 < 5) {
+            int stainSize = 1 + rand() % 3;
+            int x = i % sideRoomFloor.width();
+            int y = i / sideRoomFloor.width();
+            
+            for (int dy = -stainSize; dy <= stainSize; dy++) {
+                for (int dx = -stainSize; dx <= stainSize; dx++) {
+                    int px = x + dx;
+                    int py = y + dy;
+                    if (px >= 0 && px < sideRoomFloor.width() && py >= 0 && py < sideRoomFloor.height()) {
+                        float dist = std::sqrt(dx*dx + dy*dy);
+                        if (dist <= stainSize && rand() % 100 < 70) {
+                            int idx = py * sideRoomFloor.width() + px;
+                            sideRoomFloor.m_pixels[idx].r = std::min(255, sideRoomFloor.m_pixels[idx].r + 30);
+                            sideRoomFloor.m_pixels[idx].g = std::max(0, sideRoomFloor.m_pixels[idx].g - 20);
+                            sideRoomFloor.m_pixels[idx].b = std::max(0, sideRoomFloor.m_pixels[idx].b - 20);
+                        }
+                    }
+                }
+            }
+        }
     }
     textures.push_back(sideRoomFloor);
     
-    // 3: Main room wall texture (brick)
-    textures.push_back(createBrickTexture(128, 128, Color(180, 100, 80), Color(100, 100, 100)));
+    // 3: Main room wall texture (bloody wall)
+    textures.push_back(createBloodyWallTexture(128, 128, Color(80, 70, 60), Color(180, 20, 20)));
     
-    // 4: Portal texture (blue-ish)
-    textures.push_back(createSimpleTexture(64, 64, 30, 30, 150));
+    // 4: Portal texture (hellish energy)
+    Texture portalTexture(64, 64);
+    for (int y = 0; y < 64; y++) {
+        for (int x = 0; x < 64; x++) {
+            // Create swirling energy effect
+            float angle = std::atan2(y - 32, x - 32);
+            float distance = std::sqrt((x - 32) * (x - 32) + (y - 32) * (y - 32));
+            float time_factor = 0.0f; // This would animate if we could change it over time
+            
+            float swirl = (angle + distance * 0.1f + time_factor) * 3.0f;
+            float red_intensity = (std::sin(swirl) + 1.0f) * 0.5f;
+            float green_intensity = (std::sin(swirl + 2.0f) + 1.0f) * 0.2f;
+            float blue_intensity = (std::sin(swirl + 4.0f) + 1.0f) * 0.3f;
+            
+            // Fade intensity based on distance from center
+            float edge_fade = 1.0f - std::min(1.0f, distance / 32.0f);
+            edge_fade = edge_fade * edge_fade; // Square it for sharper falloff
+            
+            portalTexture.m_pixels[y * 64 + x] = Color(
+                std::min(255, int(200 * red_intensity * edge_fade + 50)),
+                std::min(255, int(100 * green_intensity * edge_fade + 10)),
+                std::min(255, int(150 * blue_intensity * edge_fade + 30))
+            );
+        }
+    }
+    textures.push_back(portalTexture);
     
-    // 5: Corridor wall texture (stone)
-    textures.push_back(createCheckerboardTexture(64, 64, Color(120, 120, 140), Color(100, 100, 120), 4));
+    // 5: Corridor wall texture (hellish wall)
+    textures.push_back(createHellishWallTexture(64, 64));
     
-    // 6: Side room wall texture (wood)
-    textures.push_back(createSimpleTexture(64, 64, 120, 80, 40));
+    // 6: Side room wall texture (flesh wall)
+    textures.push_back(createFleshWallTexture(64, 64));
     
     // Upload textures to CUDA
     cudaRenderer.uploadTextures(textures);
@@ -247,16 +558,16 @@ int main(int argc, char* argv[]) {
     
     // Configure skybox
     Skybox skybox;
-    skybox.zenithColor = Color(40, 40, 100);
-    skybox.horizonColor = Color(100, 100, 150);
+    skybox.zenithColor = Color(80, 20, 10); // Dark red at the top
+    skybox.horizonColor = Color(200, 60, 20); // Fiery orange at the horizon
     skybox.maxViewDistance = 30.0f;
     skybox.dynamicSky = true;
     skybox.sunAngle = 1.0f;  // Position in radians
-    skybox.sunHeight = 0.3f; // 0.0 = horizon, 1.0 = zenith
-    skybox.sunSize = 0.02f;  // Relative size
-    skybox.sunColor = Color(255, 240, 200);
-    skybox.sunGlowColor = Color(255, 180, 100);
-    skybox.sunGlowSize = 5.0f;
+    skybox.sunHeight = 0.2f; // Lower in the sky (0.0 = horizon, 1.0 = zenith)
+    skybox.sunSize = 0.03f;  // Slightly larger sun
+    skybox.sunColor = Color(255, 200, 50); // Bright yellow-orange sun
+    skybox.sunGlowColor = Color(255, 100, 20); // Fiery red glow
+    skybox.sunGlowSize = 8.0f; // Larger glow for more dramatic effect
     cudaRenderer.setSkybox(skybox);
     
     // Initialize view position near the center of main room
@@ -373,19 +684,22 @@ int main(int argc, char* argv[]) {
     const float PLAYER_RADIUS = 0.3f;
     
     // Add this near the top of the main() function before the main loop
-    std::cout << "\n==== DEBUGGING INFORMATION ====\n";
-    std::cout << "Test map enabled, player at: (0, 0)\n";
+    std::cout << "\n==== DOOM-LIKE TEST MAP INFORMATION ====\n";
+    std::cout << "Hellish test map enabled, player at: (0, 0)\n";
     std::cout << "Map contains:\n";
-    std::cout << "  - Main room (5x5) with portal to corridor\n";
-    std::cout << "  - Corridor from main room to side room\n";
-    std::cout << "  - Side room with slightly elevated floor\n";
+    std::cout << "  - Main room (5x5) with bloody walls and portal to corridor\n";
+    std::cout << "  - Hellish corridor with fiery cracks leading to side room\n";
+    std::cout << "  - Flesh-walled side room with elevated floor\n";
     std::cout << "Textures:\n";
-    std::cout << "  - Checker floor (ID 0)\n";
-    std::cout << "  - Ceiling texture (ID 1)\n";
-    std::cout << "  - Side room floor (ID 2)\n";
-    std::cout << "  - Wall textures (IDs 3-6)\n";
+    std::cout << "  - DOOM-style floor (ID 0)\n";
+    std::cout << "  - Ember-lit ceiling (ID 1)\n";
+    std::cout << "  - Bloody floor for side room (ID 2)\n";
+    std::cout << "  - Bloody wall texture (ID 3)\n";
+    std::cout << "  - Hellish energy portal (ID 4)\n";
+    std::cout << "  - Fiery cracked wall (ID 5)\n";
+    std::cout << "  - Flesh wall with wounds (ID 6)\n";
     std::cout << "Collision detection enabled with player radius: " << PLAYER_RADIUS << "\n";
-    std::cout << "===============================\n";
+    std::cout << "=========================================\n";
     
     // Main loop
     while (running) {
