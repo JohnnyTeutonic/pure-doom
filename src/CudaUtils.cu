@@ -201,9 +201,9 @@ __device__ CudaWallCollision castRayBSP(
     }
     
     // Stack-based BSP traversal (non-recursive)
-    const int MAX_DEPTH = 64; // Maximum tree depth - increased to handle deeper trees
+    const int MAX_DEPTH = 64; // Maximum tree depth
     
-    // Traversal stack - we store node index and distance
+    // Traversal stack - we store node index, origin, and remaining distance
     struct TraversalItem {
         int nodeIndex;
         CudaVec2 origin;
@@ -221,44 +221,44 @@ __device__ CudaWallCollision castRayBSP(
     
     // Prevent infinite loops with a traversal counter
     int traversalCount = 0;
-    const int MAX_TRAVERSALS = 2000; // Safety limit - increased to handle more complex trees
+    const int MAX_TRAVERSALS = 2000; // Safety limit
     
+    // Main BSP traversal loop
     while (stackPos > 0 && traversalCount < MAX_TRAVERSALS) {
         traversalCount++;
         
-        // Pop node from stack
-        TraversalItem current = stack[--stackPos];
+        // Pop item from the stack
+        stackPos--;
+        TraversalItem current = stack[stackPos];
         
-        // Skip if we've already found a closer intersection
-        if (current.remainingDistance >= collision.distance) {
+        // Skip if we've exceeded the max distance
+        if (current.remainingDistance <= 0.0f) {
             continue;
         }
         
-        // Get current node
-        int nodeIndex = current.nodeIndex;
-        if (nodeIndex < 0 || nodeIndex >= bsp.nodeCount) {
-            continue; // Skip invalid node index
+        // Get the node
+        if (current.nodeIndex < 0 || current.nodeIndex >= bsp.nodeCount) {
+            continue; // Invalid node index
         }
         
-        const CudaBSPNode& node = bsp.nodes[nodeIndex];
+        const CudaBSPNode& node = bsp.nodes[current.nodeIndex];
         
-        // If this is a leaf node, check all walls
+        // Check if this is a leaf node (sector)
         if (node.isLeaf) {
-            // Get sector information
-            int sectorId = node.sectorId;
-            if (sectorId < 0 || sectorId >= bsp.sectorCount) {
-                continue; // Skip invalid sector
+            // Skip if invalid sector ID
+            if (node.sectorId < 0 || node.sectorId >= bsp.sectorCount) {
+                continue;
             }
             
-            const CudaSector& sector = bsp.sectors[sectorId];
+            const CudaSector& sector = bsp.sectors[node.sectorId];
             
-            // Validate wall range for this sector
-            if (sector.wallStartIndex < 0 || sector.wallCount <= 0 || 
+            // Skip if invalid wall range
+            if (sector.wallStartIndex < 0 || 
                 sector.wallStartIndex + sector.wallCount > bsp.wallCount) {
-                continue; // Skip invalid wall range
+                continue;
             }
             
-            // Check each wall in this sector
+            // Check all walls in this sector for intersections
             for (int i = 0; i < sector.wallCount; ++i) {
                 int wallIndex = sector.wallStartIndex + i;
                 if (wallIndex < 0 || wallIndex >= bsp.wallCount) {
@@ -269,25 +269,33 @@ __device__ CudaWallCollision castRayBSP(
                 float distance, u;
                 
                 if (rayLineIntersection(current.origin, rayDir, wall.segment, distance, u)) {
-                    // Ensure the intersection is in front of the ray origin and closer than current closest hit
-                    // Calculate total distance (distance along ray from start to this intersection)
+                    // Calculate total distance from original ray origin
                     float totalDistance = vectorsEqual(current.origin, rayOrigin) ? 
                                 distance : // We're at the original ray origin
                                 (maxDistance - current.remainingDistance) + distance; // We're at a partition point
                     
+                    // Ensure the intersection is valid and closer than current closest hit
                     if (distance > 0.0001f && totalDistance < collision.distance) {
+                        // We found a valid wall hit
                         collision.collision = true;
                         collision.distance = totalDistance;
                         collision.textureId = wall.textureId;
                         collision.texCoordU = u;
                         
                         // Get sector information
-                        float wallHeight = sector.ceilingHeight - sector.floorHeight;
-                        collision.wallHeight = wallHeight;
+                        collision.wallHeight = sector.ceilingHeight - sector.floorHeight;
                         collision.floorHeight = sector.floorHeight;
                         collision.ceilingHeight = sector.ceilingHeight;
                         collision.isPortal = (wall.sectorBack >= 0);
                         collision.lightLevel = wall.lightLevel;
+                        
+                        // Store additional information for portals
+                        collision.sectorFront = wall.sectorFront;
+                        collision.sectorBack = wall.sectorBack;
+                        
+                        // If this is a portal and we want to continue through it,
+                        // we could push the back sector onto the stack here.
+                        // For now, we just stop at the first wall hit.
                     }
                 }
             }
@@ -296,151 +304,92 @@ __device__ CudaWallCollision castRayBSP(
             continue;
         }
         
-        // Check walls in the internal node if it has any
-        if (node.wallCount > 0 && node.wallStartIndex >= 0 && 
-            node.wallStartIndex + node.wallCount <= bsp.wallCount) {
+        // For internal nodes (not leaf nodes)
+        
+        // Check which sides of the partitioner to traverse
+        CudaVec2 partitionerDir = subtract(node.partitioner.end, node.partitioner.start);
+        CudaVec2 normal = CudaVec2(-partitionerDir.y, partitionerDir.x); // Perpendicular to partitioner
+        
+        // Determine which side of the partitioner the ray origin is on
+        CudaVec2 toPartStart = subtract(current.origin, node.partitioner.start);
+        float side = dotProduct(normal, toPartStart);
+        float dirSide = dotProduct(normal, rayDir);
+        
+        // Handle different cases based on ray position and direction
+        if (side >= 0.0f) {
+            // Origin is in front of the partitioner
             
-            for (int i = 0; i < node.wallCount; ++i) {
-                int wallIndex = node.wallStartIndex + i;
-                if (wallIndex < 0 || wallIndex >= bsp.wallCount) {
-                    continue; // Skip invalid wall index
+            // Process front child first
+            if (node.frontNodeIndex >= 0 && node.frontNodeIndex < bsp.nodeCount) {
+                if (stackPos < MAX_DEPTH) {
+                    stack[stackPos].nodeIndex = node.frontNodeIndex;
+                    stack[stackPos].origin = current.origin;
+                    stack[stackPos].remainingDistance = current.remainingDistance;
+                    stackPos++;
                 }
+            }
+            
+            // Check if ray points to back side
+            if (dirSide < 0.0f) {
+                // Calculate intersection with partitioner
+                float t = -side / dirSide;
                 
-                const CudaWall& wall = bsp.walls[wallIndex];
-                float distance, u;
-                
-                if (rayLineIntersection(current.origin, rayDir, wall.segment, distance, u)) {
-                    // Ensure the intersection is in front of the ray origin and closer than current closest hit
-                    // Calculate total distance (distance along ray from start to this intersection)
-                    float totalDistance = vectorsEqual(current.origin, rayOrigin) ? 
-                                distance : // We're at the original ray origin
-                                (maxDistance - current.remainingDistance) + distance; // We're at a partition point
+                if (t > 0.0f && t < current.remainingDistance) {
+                    // Calculate intersection point
+                    CudaVec2 intersectionPoint = add(current.origin, multiply(rayDir, t));
                     
-                    if (distance > 0.0001f && totalDistance < collision.distance) {
-                        collision.collision = true;
-                        collision.distance = totalDistance;
-                        collision.textureId = wall.textureId;
-                        collision.texCoordU = u;
-                        
-                        // Try to get sector information if available
-                        int sectorId = wall.sectorFront >= 0 ? wall.sectorFront : wall.sectorBack;
-                        if (sectorId >= 0 && sectorId < bsp.sectorCount) {
-                            const CudaSector& sector = bsp.sectors[sectorId];
-                            float wallHeight = sector.ceilingHeight - sector.floorHeight;
-                            collision.wallHeight = wallHeight;
-                            collision.floorHeight = sector.floorHeight;
-                            collision.ceilingHeight = sector.ceilingHeight;
-                        } else {
-                            // Default height if sector is unknown
-                            collision.wallHeight = 1.0f;
-                            collision.floorHeight = 0.0f;
-                            collision.ceilingHeight = 1.0f;
+                    // Check if intersection is within partitioner segment
+                    CudaVec2 lineDir = normalize(partitionerDir);
+                    CudaVec2 toIntersection = subtract(intersectionPoint, node.partitioner.start);
+                    float projection = dotProduct(toIntersection, lineDir);
+                    float lineLength = length(partitionerDir);
+                    
+                    if (projection >= 0.0f && projection <= lineLength) {
+                        // Process back child with updated origin and distance
+                        if (node.backNodeIndex >= 0 && node.backNodeIndex < bsp.nodeCount && stackPos < MAX_DEPTH) {
+                            stack[stackPos].nodeIndex = node.backNodeIndex;
+                            stack[stackPos].origin = intersectionPoint;
+                            stack[stackPos].remainingDistance = current.remainingDistance - t;
+                            stackPos++;
                         }
-                        
-                        collision.isPortal = (wall.sectorBack >= 0);
-                        collision.lightLevel = wall.lightLevel;
                     }
                 }
             }
-        }
-        
-        // If it's not a leaf node, traverse the BSP tree
-        if (!node.isLeaf) {
-            // Check which sides of the partitioner to traverse
-            CudaVec2 partitionerDir = subtract(node.partitioner.end, node.partitioner.start);
-            CudaVec2 normal = CudaVec2(-partitionerDir.y, partitionerDir.x); // Perpendicular to partitioner
+        } else {
+            // Origin is in back of the partitioner
             
-            // Determine which side of the partitioner the ray origin is on
-            CudaVec2 toPartStart = subtract(current.origin, node.partitioner.start);
-            float side = dotProduct(normal, toPartStart);
-            float dirSide = dotProduct(normal, rayDir);
+            // Process back child first
+            if (node.backNodeIndex >= 0 && node.backNodeIndex < bsp.nodeCount) {
+                if (stackPos < MAX_DEPTH) {
+                    stack[stackPos].nodeIndex = node.backNodeIndex;
+                    stack[stackPos].origin = current.origin;
+                    stack[stackPos].remainingDistance = current.remainingDistance;
+                    stackPos++;
+                }
+            }
             
-            // Handle different cases based on ray position and direction
-            if (side >= 0.0f) {
-                // Origin is in front of the partitioner
+            // Check if ray points to front side
+            if (dirSide > 0.0f) {
+                // Calculate intersection with partitioner
+                float t = -side / dirSide;
                 
-                // If we have a front child, push it onto the stack first (so it's processed last)
-                if (node.frontNodeIndex >= 0 && node.frontNodeIndex < bsp.nodeCount) {
-                    if (stackPos < MAX_DEPTH) {
-                        stack[stackPos].nodeIndex = node.frontNodeIndex;
-                        stack[stackPos].origin = current.origin;
-                        stack[stackPos].remainingDistance = current.remainingDistance;
-                        stackPos++;
-                    }
-                }
-                
-                // Check if we need to check the back side
-                if (dirSide < 0.0f) {
-                    // Ray is pointing to back side
-                    // Calculate intersection with partitioner
-                    float t = -side / dirSide;
+                if (t > 0.0f && t < current.remainingDistance) {
+                    // Calculate intersection point
+                    CudaVec2 intersectionPoint = add(current.origin, multiply(rayDir, t));
                     
-                    if (t > 0.0f && t < current.remainingDistance) {
-                        // Ray intersects partitioner before reaching max distance
-                        
-                        // Calculate intersection point
-                        CudaVec2 intersectionPoint = add(current.origin, multiply(rayDir, t));
-                        
-                        // Check if the intersection point is within the partitioner line segment
-                        CudaVec2 lineDir = normalize(partitionerDir);
-                        CudaVec2 toIntersection = subtract(intersectionPoint, node.partitioner.start);
-                        float projection = dotProduct(toIntersection, lineDir);
-                        float lineLength = length(partitionerDir);
-                        
-                        if (projection >= 0.0f && projection <= lineLength) {
-                            // Intersection is on the partitioner line segment
-                            
-                            // Push back side onto the stack with updated origin and remaining distance
-                            if (node.backNodeIndex >= 0 && node.backNodeIndex < bsp.nodeCount && stackPos < MAX_DEPTH) {
-                                stack[stackPos].nodeIndex = node.backNodeIndex;
-                                stack[stackPos].origin = intersectionPoint;
-                                stack[stackPos].remainingDistance = current.remainingDistance - t;
-                                stackPos++;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Origin is behind the partitioner
-                
-                // If we have a back child, push it onto the stack first (so it's processed last)
-                if (node.backNodeIndex >= 0 && node.backNodeIndex < bsp.nodeCount) {
-                    if (stackPos < MAX_DEPTH) {
-                        stack[stackPos].nodeIndex = node.backNodeIndex;
-                        stack[stackPos].origin = current.origin;
-                        stack[stackPos].remainingDistance = current.remainingDistance;
-                        stackPos++;
-                    }
-                }
-                
-                // Check if we need to check the front side
-                if (dirSide > 0.0f) {
-                    // Ray is pointing to front side
-                    // Calculate intersection with partitioner
-                    float t = -side / dirSide;
+                    // Check if intersection is within partitioner segment
+                    CudaVec2 lineDir = normalize(partitionerDir);
+                    CudaVec2 toIntersection = subtract(intersectionPoint, node.partitioner.start);
+                    float projection = dotProduct(toIntersection, lineDir);
+                    float lineLength = length(partitionerDir);
                     
-                    if (t > 0.0f && t < current.remainingDistance) {
-                        // Ray intersects partitioner before reaching max distance
-                        
-                        // Calculate intersection point
-                        CudaVec2 intersectionPoint = add(current.origin, multiply(rayDir, t));
-                        
-                        // Check if the intersection point is within the partitioner line segment
-                        CudaVec2 lineDir = normalize(partitionerDir);
-                        CudaVec2 toIntersection = subtract(intersectionPoint, node.partitioner.start);
-                        float projection = dotProduct(toIntersection, lineDir);
-                        float lineLength = length(partitionerDir);
-                        
-                        if (projection >= 0.0f && projection <= lineLength) {
-                            // Intersection is on the partitioner line segment
-                            
-                            // Push front side onto the stack with updated origin and remaining distance
-                            if (node.frontNodeIndex >= 0 && node.frontNodeIndex < bsp.nodeCount && stackPos < MAX_DEPTH) {
-                                stack[stackPos].nodeIndex = node.frontNodeIndex;
-                                stack[stackPos].origin = intersectionPoint;
-                                stack[stackPos].remainingDistance = current.remainingDistance - t;
-                                stackPos++;
-                            }
+                    if (projection >= 0.0f && projection <= lineLength) {
+                        // Process front child with updated origin and distance
+                        if (node.frontNodeIndex >= 0 && node.frontNodeIndex < bsp.nodeCount && stackPos < MAX_DEPTH) {
+                            stack[stackPos].nodeIndex = node.frontNodeIndex;
+                            stack[stackPos].origin = intersectionPoint;
+                            stack[stackPos].remainingDistance = current.remainingDistance - t;
+                            stackPos++;
                         }
                     }
                 }

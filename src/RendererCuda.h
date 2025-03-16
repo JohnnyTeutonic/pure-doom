@@ -73,6 +73,15 @@ public:
     // Check if textures need to be re-uploaded
     bool needsTextureReUpload() const { return !m_texturesUploaded; }
     
+    // Test map functions for debugging
+    bool useTestMap(bool enable);  // Enable or disable the test map
+    void renderTestMapFrame(const ViewPosition& view, float deltaTime);  // Render a frame using the test map
+    
+    // Debugging helpers
+    bool areTexturesUploaded() const { return m_texturesUploaded; }
+    int getNumTextures() const; // Implementation moved to .cu file
+    bool isBSPUploaded() const { return m_bspUploaded; }
+    
 private:
     int m_width;
     int m_height;
@@ -81,6 +90,7 @@ private:
     bool m_buffersAllocated;  // Track if GPU buffers are allocated
     bool m_texturesUploaded;  // Track if textures are uploaded
     bool m_bspUploaded;       // Track if BSP tree is uploaded
+    bool m_usingTestMap;      // Whether we're using the test map
     CudaDeviceInfo m_deviceInfo;
     Skybox m_skybox;  // Store a copy of the skybox for reference
     
@@ -96,6 +106,10 @@ private:
     
     // Free CUDA memory
     void freeCudaMemory();
+    
+    // Render using the test map's BSP data
+    void renderTestMapBSPCuda(const ViewPosition& view, float maxViewDistance);
+    void renderTestMapFloorCuda(const ViewPosition& view);
 };
 
 } // namespace PureDoom

@@ -103,22 +103,25 @@ struct CudaSector {
           floorTextureId(-1), ceilingTextureId(-1), lightLevel(255) {}
 };
 
-// Add a Wall collision data structure for the CUDA implementation
+// Wall collision information for BSP ray casting
 struct CudaWallCollision {
-    bool collision;      // Whether a wall collision occurred
-    float distance;      // Distance to the wall
-    float wallHeight;    // Height of the wall
-    int textureId;       // Texture ID for the wall
-    float texCoordU;     // Texture U coordinate
-    float floorHeight;   // Floor height of the sector
-    float ceilingHeight; // Ceiling height of the sector
-    bool isPortal;       // Whether the wall is a portal
-    int lightLevel;      // Light level for the wall
+    bool collision;         // Whether a collision occurred
+    float distance;         // Distance to collision
+    int textureId;          // Texture ID of the hit wall
+    float texCoordU;        // Texture horizontal coordinate (0-1)
+    float wallHeight;       // Height of the wall
+    float floorHeight;      // Floor height at collision point
+    float ceilingHeight;    // Ceiling height at collision point
+    bool isPortal;          // Whether the wall is a portal
+    int lightLevel;         // Light level at the wall (0-255)
+    int sectorFront;        // Front sector ID
+    int sectorBack;         // Back sector ID (-1 if not a portal)
     
     __host__ __device__ CudaWallCollision() 
-        : collision(false), distance(0.0f), wallHeight(0.0f), textureId(0),
-          texCoordU(0.0f), floorHeight(0.0f), ceilingHeight(0.0f),
-          isPortal(false), lightLevel(255) {}
+        : collision(false), distance(0.0f), textureId(0), texCoordU(0.0f),
+          wallHeight(0.0f), floorHeight(0.0f), ceilingHeight(0.0f), 
+          isPortal(false), lightLevel(255),
+          sectorFront(-1), sectorBack(-1) {}
 };
 
 // Structure to hold sprite rendering data for CUDA

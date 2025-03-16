@@ -77,7 +77,7 @@ if(CMAKE_CUDA_COMPILER)
     # Enable device code linking with proper flags to fix the linking error
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --device-link")
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --relocatable-device-code=true")
-    
+
     # Add flag to allow host code in device code
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --extended-lambda")
     
@@ -101,14 +101,25 @@ endif()
 set(CUDA_SOURCES
     src/CudaUtils.cu
     src/RendererCuda.cu
+    src/CudaTestMap.cu  # Added CudaTestMap source
 )
 
-set(CPP_SOURCES
-    src/main.cpp
+# Common C++ source files without main.cpp
+set(COMMON_CPP_SOURCES
     src/BSPTree.cpp
     src/Renderer.cpp
     src/Sprite.cpp
     src/TextureLoader.cpp
+)
+
+# Create CUDA test map executable sources
+set(TEST_MAP_SOURCES
+    src/TestMap.cpp
+)
+
+# Main executable source
+set(MAIN_SOURCE
+    src/main.cpp
 )
 
 # Add object library for CUDA files
@@ -119,19 +130,34 @@ set_target_properties(cuda_objects PROPERTIES
 )
 target_include_directories(cuda_objects PRIVATE src ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 
-# Add object library for C++ files
-add_library(cpp_objects OBJECT ${CPP_SOURCES})
-set_target_properties(cpp_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(cpp_objects PRIVATE src)
+# Add object library for common C++ files (excluding main.cpp)
+add_library(common_cpp_objects OBJECT ${COMMON_CPP_SOURCES})
+set_target_properties(common_cpp_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(common_cpp_objects PRIVATE src)
 
 # Add executable
-add_executable(PureDoom $<TARGET_OBJECTS:cuda_objects> $<TARGET_OBJECTS:cpp_objects>)
+add_executable(PureDoom ${MAIN_SOURCE} $<TARGET_OBJECTS:cuda_objects> $<TARGET_OBJECTS:common_cpp_objects>)
+
+# Add CUDA test map executable - use shared objects but not main.cpp
+add_executable(cuda_test_map ${TEST_MAP_SOURCES} $<TARGET_OBJECTS:cuda_objects> $<TARGET_OBJECTS:common_cpp_objects>)
+set_target_properties(cuda_test_map PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+target_include_directories(cuda_test_map PRIVATE src ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 
 # Include directories
 target_include_directories(PureDoom PRIVATE src ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 
 # Link libraries
 target_link_libraries(PureDoom 
+    ${SDL2_LIBRARIES}
+    ${SDL2_IMAGE_LIBRARIES}
+    ${CUDA_LIBRARIES}
+    ${CUDA_CUDA_LIBRARY}
+    ${CUDA_CUDART_LIBRARY}
+    ${CUDA_curand_LIBRARY}
+)
+
+# Link libraries for the test map executable
+target_link_libraries(cuda_test_map
     ${SDL2_LIBRARIES}
     ${SDL2_IMAGE_LIBRARIES}
     ${CUDA_LIBRARIES}
@@ -152,6 +178,12 @@ file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/textures)
 
 # Set output directory
 set_target_properties(PureDoom
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
+# Set output directory for test map
+set_target_properties(cuda_test_map
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )

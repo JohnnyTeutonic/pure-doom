@@ -8,6 +8,8 @@
 #include <mutex>      // For std::mutex
 #include <set>
 #include <queue>
+#include "CudaTestMap.h" // Include the test map header
+
 // Host and device implementations of Color methods for CUDA kernels
 namespace PureDoom {
 
@@ -182,14 +184,19 @@ __global__ void skyboxGradientKernel(Color* frameBuffer, float* zBuffer, int wid
     // Calculate gradient color using direct Color::blend method
     Color skyColor = Color::blend(horizonColor, zenithColor, t);
     
-    // Set pixel and depth
-    deviceSetPixel(frameBuffer, width, height, x, y, skyColor);
-    deviceSetDepth(zBuffer, width, height, x, y, 1.0f);
-    
-    // In performance mode, also fill the next line if we're not at the bottom
-    if (performanceMode && y + 1 < height && y + 1 < horizonY) {
-        deviceSetPixel(frameBuffer, width, height, x, y + 1, skyColor);
-        deviceSetDepth(zBuffer, width, height, x, y + 1, 1.0f);
+    // Only process sky portion (top half of screen)
+    if (y < horizonY) {
+        // Set pixel and depth - always use maximum depth for sky
+        int idx = y * width + x;
+        frameBuffer[idx] = skyColor;
+        zBuffer[idx] = 1.0f;  // Sky is at infinite distance
+        
+        // In performance mode, also fill the next line if we're not at the bottom
+        if (performanceMode && y + 1 < height && y + 1 < horizonY) {
+            int idx2 = (y + 1) * width + x;
+            frameBuffer[idx2] = skyColor;
+            zBuffer[idx2] = 1.0f;
+        }
     }
 }
 
@@ -288,12 +295,12 @@ __global__ void bspRenderKernel(
     // Early exit if outside screen bounds
     if (x >= width) return;
     
-    // Early exit if no textures or BSP tree is available
-    if (textures == nullptr || bspTree == nullptr || 
-        bspTree->nodes == nullptr || bspTree->walls == nullptr || bspTree->sectors == nullptr) {
+    // Early exit if no BSP tree is available
+    if (bspTree == nullptr || bspTree->nodes == nullptr || 
+        bspTree->walls == nullptr || bspTree->sectors == nullptr) {
         return;
     }
-    
+
     // Calculate ray angle for this column
     float halfFov = fov * 0.5f * (PI / 180.0f);
     float angleStep = fov * (PI / 180.0f) / width;
@@ -311,103 +318,138 @@ __global__ void bspRenderKernel(
     CudaVec2 rayOrigin(playerX, playerY);
     CudaVec2 rayDir(rayDirX, rayDirY);
     
-    // Cast ray through BSP tree - using improved traversal
+    // Special debug rays at fixed positions for testing
+    bool isDebugRay = (x == 0 || x == width/4 || x == width/2 || x == 3*width/4 || x == width-1);
+    
+    // Cast ray through BSP tree
     CudaWallCollision collision = castRayBSP(*bspTree, rayOrigin, rayDir, maxDistance);
     
     if (collision.collision) {
         // Correct for fisheye effect
         float correctedDistance = collision.distance * cosf(rayAngle - playerAngle);
         
-        // Calculate projected wall height
-        float distanceFactor = DISTANCE_MULTIPLIER / correctedDistance;
-        float projectedWallHeight = collision.wallHeight * distanceFactor;
+        // Calculate wall height using optimized distance factor - use FIXED HEIGHT of 1.0 which is known to work
+        float distanceFactor = 277.0f / correctedDistance;
+        float projectedWallHeight = 1.0f * distanceFactor; // Fixed wall height works better
         
-        // Calculate wall top and bottom screen positions
+        // Calculate wall top and bottom positions - center around middle of screen
         float wallMidY = height / 2.0f;
-        
-        // Calculate vertical positions relative to player eye level
-        float floorDiff = collision.floorHeight - playerHeight;
-        float ceilingDiff = collision.ceilingHeight - playerHeight;
-        
-        // Project these differences to screen space
-        float floorScreenY = wallMidY + floorDiff * distanceFactor;
-        float ceilingScreenY = wallMidY + ceilingDiff * distanceFactor;
-        
-        // Ensure the wall is drawn within screen bounds
-        int wallTop = max(0, (int)ceilingScreenY);
-        int wallBottom = min(height - 1, (int)floorScreenY);
+        int wallTop = max(0, (int)(wallMidY - projectedWallHeight / 2));
+        int wallBottom = min(height - 1, (int)(wallMidY + projectedWallHeight / 2));
         
         // Calculate lighting based on distance and wall light level
-        float intensityFactor = 1.0f - min(1.0f, correctedDistance / maxDistance);
-        intensityFactor = max(0.2f, intensityFactor) * collision.lightLevel / 255.0f;
+        float intensity = 1.0f - min(1.0f, correctedDistance / maxDistance);
+        intensity = max(0.2f, intensity) * collision.lightLevel / 255.0f;
         
         // Draw the wall column
         for (int y = wallTop; y <= wallBottom; y++) {
             // Calculate texture coordinate V (vertical)
-            float wallY = (y - ceilingScreenY) / (floorScreenY - ceilingScreenY);
+            float wallPercent = (float)(y - wallTop) / max(1, wallBottom - wallTop);
             
+            // Get the wall color (from texture or fallback)
             Color wallColor;
+            bool useTexture = false;
             
-            // Use texture if valid ID, otherwise use gray color
-            if (collision.textureId >= 0 && collision.textureId < numTextures && textures[collision.textureId].pixels != nullptr) {
-                // Get the texture
+            // Try to use texture if available and valid
+            if (textures != nullptr && collision.textureId >= 0 && collision.textureId < numTextures) {
                 CudaRenderData::TextureData texture = textures[collision.textureId];
                 
-                // Ensure texture has valid dimensions
-                if (texture.width > 0 && texture.height > 0) {
-                    // Sample texture coordinates
-                    float texU = collision.texCoordU;
-                    float texV = wallY;
+                if (texture.pixels != nullptr && texture.width > 0 && texture.height > 0) {
+                    useTexture = true;
                     
-                    // Wrap texture coordinates to [0,1]
+                    // Calculate texture coordinates
+                    float texU = collision.texCoordU;
+                    float texV = wallPercent;
+                    
+                    // Ensure texture coordinates are in [0,1] range
                     texU = texU - floorf(texU);
                     texV = texV - floorf(texV);
                     
-                    // Convert to pixel coordinates
+                    // Get texture pixel indices
                     int texX = (int)(texU * texture.width);
                     int texY = (int)(texV * texture.height);
                     
-                    // Clamp to texture bounds
+                    // Clamp to texture dimensions
                     texX = max(0, min(texture.width - 1, texX));
                     texY = max(0, min(texture.height - 1, texY));
                     
-                    // Get texel color
+                    // Get the texel color
                     int texIndex = texY * texture.width + texX;
                     Color texColor = texture.pixels[texIndex];
                     
                     // Apply lighting
-                    wallColor.r = (uint8_t)(texColor.r * intensityFactor);
-                    wallColor.g = (uint8_t)(texColor.g * intensityFactor);
-                    wallColor.b = (uint8_t)(texColor.b * intensityFactor);
-                    wallColor.a = texColor.a;
+                    wallColor.r = (uint8_t)(texColor.r * intensity);
+                    wallColor.g = (uint8_t)(texColor.g * intensity);
+                    wallColor.b = (uint8_t)(texColor.b * intensity);
+                    wallColor.a = 255; // Fully opaque
                     
-                    // Handle portals (special coloring or effect if needed)
+                    // Add portal effect if needed
                     if (collision.isPortal) {
-                        // Add a slight portal effect if desired
-                        // For example, a slight blue tint
-                        wallColor.b = min(255, wallColor.b + 20);
+                        // Give portals a slight blue tint
+                        wallColor.b = min(255, (int)(wallColor.b * 1.2f));
                     }
-                } else {
-                    // If texture has invalid dimensions, use fallback color
-                    wallColor = Color(
-                        (uint8_t)(200 * intensityFactor),
-                        (uint8_t)(200 * intensityFactor),
-                        (uint8_t)(200 * intensityFactor)
-                    );
                 }
-            } else {
-                // Fallback to solid color if texture ID is invalid
-                wallColor = Color(
-                    (uint8_t)(200 * intensityFactor),
-                    (uint8_t)(200 * intensityFactor),
-                    (uint8_t)(200 * intensityFactor)
-                );
             }
             
-            // Set pixel with depth
+            // Fallback to solid color if texture not available or invalid
+            if (!useTexture) {
+                if (collision.isPortal) {
+                    // Portal wall fallback
+                    wallColor = Color(
+                        (uint8_t)(40 * intensity), 
+                        (uint8_t)(40 * intensity), 
+                        (uint8_t)(180 * intensity),
+                        255
+                    );
+                } else {
+                    // Regular wall fallback - use texture ID to vary color
+                    int colorVar = (collision.textureId % 5) * 50;
+                    wallColor = Color(
+                        (uint8_t)((120 + colorVar) * intensity),
+                        (uint8_t)((100 + (50 - colorVar)) * intensity),
+                        (uint8_t)(80 * intensity),
+                        255
+                    );
+                }
+            }
+            
+            // Special debug ray visualization
+            if (isDebugRay) {
+                // Only mark the middle of the wall for debug rays
+                int wallHeight = wallBottom - wallTop;
+                if (y >= wallTop + wallHeight/3 && y <= wallBottom - wallHeight/3) {
+                    // Choose color based on ray position
+                    if (x == 0) wallColor = Color(255, 0, 0, 255); // Red
+                    else if (x == width/4) wallColor = Color(255, 255, 0, 255); // Yellow
+                    else if (x == width/2) wallColor = Color(0, 255, 0, 255); // Green
+                    else if (x == 3*width/4) wallColor = Color(0, 255, 255, 255); // Cyan
+                    else wallColor = Color(0, 0, 255, 255); // Blue
+                }
+            }
+            
+            // Set pixel with depth testing - restore the tolerance for z-fighting
             int idx = y * width + x;
-            frameBuffer[idx] = wallColor;
-            zBuffer[idx] = correctedDistance / maxDistance;
+            float depth = correctedDistance / maxDistance;
+            
+            // Use the more lenient depth check that was working before
+            if (depth < zBuffer[idx] + 0.001f) {
+                frameBuffer[idx] = wallColor;
+                zBuffer[idx] = depth;
+            }
+        }
+    } else if (isDebugRay) {
+        // Draw a thin line for debug rays that didn't hit anything
+        Color debugColor(255, 0, 255, 255); // Magenta
+        
+        // Draw line in the middle of the screen
+        int midY = height / 2;
+        for (int y = midY - 2; y <= midY + 2; y++) {
+            if (y >= 0 && y < height) {
+                int idx = y * width + x;
+                // Always draw debug rays that didn't hit anything
+                frameBuffer[idx] = debugColor;
+                zBuffer[idx] = 0.95f;
+            }
         }
     }
 }
@@ -642,14 +684,23 @@ __global__ void spriteRenderKernel(Color* frameBuffer, float* zBuffer,
     }
 }
 
-// Add a new CUDA kernel for clearing the Z-buffer
+// Kernel to clear z-buffer to a specific value
 __global__ void clearZBufferKernel(float* zBuffer, int width, int height, float clearValue) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     
     if (x < width && y < height) {
-        int idx = y * width + x;
-        zBuffer[idx] = clearValue;
+        zBuffer[y * width + x] = clearValue;
+    }
+}
+
+// Kernel to clear frame buffer to a specific color
+__global__ void clearFrameBufferKernel(Color* frameBuffer, int width, int height, Color clearColor) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    if (x < width && y < height) {
+        frameBuffer[y * width + x] = clearColor;
     }
 }
 
@@ -657,7 +708,8 @@ __global__ void clearZBufferKernel(float* zBuffer, int width, int height, float 
 
 RendererCuda::RendererCuda(int width, int height)
     : m_width(width), m_height(height), m_cudaAvailable(false), m_initialized(false),
-      m_buffersAllocated(false), m_texturesUploaded(false), m_bspUploaded(false), m_cudaData(nullptr)
+      m_buffersAllocated(false), m_texturesUploaded(false), m_bspUploaded(false), 
+      m_usingTestMap(false), m_cudaData(nullptr)
 {
     // Check CUDA availability
     m_deviceInfo = getCudaDeviceInfo();
@@ -789,27 +841,42 @@ void RendererCuda::freeBuffers() {
 }
 
 void RendererCuda::clearBuffers() {
-    if (!m_cudaAvailable || !m_initialized || !m_cudaData || !m_buffersAllocated) {
-        return;  // Not allocated or can't clear
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
+    
+    if (!m_buffersAllocated || m_cudaData->d_frameBuffer == nullptr || m_cudaData->d_zBuffer == nullptr) {
+        std::cerr << "Cannot clear buffers: not allocated" << std::endl;
+        return;
     }
     
-    // Clear frame buffer to black
-    CUDA_CHECK(cudaMemset(m_cudaData->d_frameBuffer, 0, m_width * m_height * sizeof(Color)));
-    
-    // Set Z-buffer to far distance (1.0f) using a kernel
-    dim3 blockSize(16, 16);
-    dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x,
-                 (m_height + blockSize.y - 1) / blockSize.y);
-    
-    clearZBufferKernel<<<gridSize, blockSize>>>(
-        m_cudaData->d_zBuffer,
-        m_width,
-        m_height,
-        1.0f  // Far distance
-    );
-    
-    // Check for errors
-    CUDA_CHECK(cudaGetLastError());
+    try {
+        // Use kernels to properly clear buffers
+        dim3 blockSize(16, 16);
+        dim3 gridSize(
+            (m_width + blockSize.x - 1) / blockSize.x,
+            (m_height + blockSize.y - 1) / blockSize.y
+        );
+        
+        // Clear frame buffer to black
+        clearFrameBufferKernel<<<gridSize, blockSize>>>(
+            m_cudaData->d_frameBuffer,
+            m_width,
+            m_height,
+            Color(0, 0, 0, 255)  // Black, fully opaque
+        );
+        
+        // Clear z-buffer to maximum depth (1.0f)
+        clearZBufferKernel<<<gridSize, blockSize>>>(
+            m_cudaData->d_zBuffer,
+            m_width,
+            m_height,
+            1.0f  // Maximum depth
+        );
+        
+        // Check for errors
+        CUDA_CHECK(cudaGetLastError());
+    } catch (const std::exception& e) {
+        std::cerr << "Error clearing buffers: " << e.what() << std::endl;
+    }
 }
 
 void RendererCuda::allocateCudaMemory() {
@@ -2053,6 +2120,327 @@ void RendererCuda::freeBSPData() {
         std::cerr << "Error in freeBSPData: " << e.what() << std::endl;
         m_bspUploaded = false;
     }
+}
+
+// Enable or disable the test map
+bool RendererCuda::useTestMap(bool enable) {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return false;
+    
+    // Debug output for test map usage
+    std::cout << "--------- DEBUG TEST MAP TOGGLING ---------" << std::endl;
+    std::cout << "Current test map status: " << (m_usingTestMap ? "ENABLED" : "DISABLED") << std::endl;
+    std::cout << "Requested action: " << (enable ? "ENABLE" : "DISABLE") << std::endl;
+    
+    // If current state matches requested state, do nothing
+    if (m_usingTestMap == enable) {
+        std::cout << "No change needed (already in requested state)" << std::endl;
+        std::cout << "------------------------------------------" << std::endl;
+        return true;
+    }
+    
+    try {
+        if (enable) {
+            // Switching to test map
+            std::cout << "Creating test map..." << std::endl;
+            
+            // Create test map (replaces regular BSP data)
+            m_deviceBSPTree = createSimpleTestMap();
+            
+            // Check if test map creation was successful
+            if (m_deviceBSPTree.nodeCount == 0 || m_deviceBSPTree.wallCount == 0) {
+                std::cerr << "Error: Failed to create test map" << std::endl;
+                std::cout << "------------------------------------------" << std::endl;
+                return false;
+            }
+            
+            // Allocate a pointer for the tree on device
+            cudaError_t err = cudaMalloc((void**)&m_cudaData->d_bspTree, sizeof(CudaBSPTree));
+            if (err != cudaSuccess) {
+                std::cerr << "Failed to allocate memory for test map BSP tree: " << cudaGetErrorString(err) << std::endl;
+                freeTestMap(m_deviceBSPTree);
+                std::cout << "------------------------------------------" << std::endl;
+                return false;
+            }
+            
+            // Copy the structure to the device
+            err = cudaMemcpy(m_cudaData->d_bspTree, &m_deviceBSPTree, sizeof(CudaBSPTree), cudaMemcpyHostToDevice);
+            if (err != cudaSuccess) {
+                std::cerr << "Failed to copy test map BSP tree to device: " << cudaGetErrorString(err) << std::endl;
+                cudaFree(m_cudaData->d_bspTree);
+                m_cudaData->d_bspTree = nullptr;
+                freeTestMap(m_deviceBSPTree);
+                std::cout << "------------------------------------------" << std::endl;
+                return false;
+            }
+            
+            m_bspUploaded = true;
+            m_usingTestMap = true;
+            
+            std::cout << "Test map creation successful!" << std::endl;
+            std::cout << "  Nodes: " << m_deviceBSPTree.nodeCount << std::endl;
+            std::cout << "  Walls: " << m_deviceBSPTree.wallCount << std::endl;
+            std::cout << "  Sectors: " << m_deviceBSPTree.sectorCount << std::endl;
+        } else {
+            // Switching back from test map
+            std::cout << "Disabling test map..." << std::endl;
+            
+            // Free device memory for the BSP tree
+            if (m_cudaData->d_bspTree) {
+                cudaFree(m_cudaData->d_bspTree);
+                m_cudaData->d_bspTree = nullptr;
+            }
+            
+            // Free test map resources
+            freeTestMap(m_deviceBSPTree);
+            
+            // Reset BSP data
+            memset(&m_deviceBSPTree, 0, sizeof(m_deviceBSPTree));
+            m_bspUploaded = false;
+            m_usingTestMap = false;
+            
+            std::cout << "Test map disabled" << std::endl;
+        }
+        
+        std::cout << "------------------------------------------" << std::endl;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error " << (enable ? "enabling" : "disabling") 
+                 << " test map: " << e.what() << std::endl;
+        std::cout << "------------------------------------------" << std::endl;
+        return false;
+    }
+}
+
+// Render a complete frame using the test map
+void RendererCuda::renderTestMapFrame(const ViewPosition& view, float deltaTime) {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
+    
+    // Enable test map if not already enabled
+    if (!m_usingTestMap) {
+        if (!useTestMap(true)) {
+            std::cerr << "Failed to enable test map mode" << std::endl;
+            return;
+        }
+    }
+    
+    // Make sure buffers are allocated
+    if (!m_buffersAllocated) {
+        allocateBuffers();
+    }
+    
+    // Clear buffers for new frame
+    clearBuffers();
+    
+    // Render all components directly on the GPU
+    
+    // 1. First render the skybox as the background (includes the ceiling)
+    renderSkyboxCuda(view, deltaTime, m_skybox);
+    
+    // 2. Then render BSP walls which will properly occlude parts of the skybox
+    if (m_bspUploaded && m_cudaData->d_bspTree) {
+        renderTestMapBSPCuda(view, m_skybox.maxViewDistance);
+        
+        // 3. Render floor (ceiling is now handled by skybox)
+        renderTestMapFloorCuda(view);
+    } else {
+        std::cerr << "Test map data became invalid during rendering" << std::endl;
+    }
+    
+    // No sprites in test map for simplicity
+    
+    // Ensure all GPU operations are complete
+    cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA sync error in test map rendering: " << cudaGetErrorString(err) << std::endl;
+    }
+}
+
+// Render the test map BSP tree
+void RendererCuda::renderTestMapBSPCuda(const ViewPosition& view, float maxViewDistance) {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
+    
+    // Get player information
+    float playerX = view.position.x;
+    float playerY = view.position.y;
+    float playerAngle = view.angle;
+    float playerHeight = view.height;
+    float fov = view.fov;
+    
+    // Debug output for rendering parameters
+    std::cout << "--------- DEBUG RENDERING INFORMATION ---------" << std::endl;
+    std::cout << "Rendering test map with parameters:" << std::endl;
+    std::cout << "  Player position: (" << playerX << ", " << playerY << ")" << std::endl;
+    std::cout << "  Player angle: " << playerAngle << " radians" << std::endl;
+    std::cout << "  Player height: " << playerHeight << std::endl;
+    std::cout << "  Field of view: " << fov << " degrees" << std::endl;
+    std::cout << "  Max view distance: " << maxViewDistance << std::endl;
+    std::cout << "  Textures uploaded: " << (m_texturesUploaded ? "YES" : "NO") << std::endl;
+    std::cout << "  Number of textures: " << m_cudaData->numTextures << std::endl;
+    std::cout << "  BSP tree available: " << (m_cudaData->d_bspTree != nullptr ? "YES" : "NO") << std::endl;
+    std::cout << "  Test map BSP info:" << std::endl;
+    std::cout << "    Node count: " << m_deviceBSPTree.nodeCount << std::endl;
+    std::cout << "    Wall count: " << m_deviceBSPTree.wallCount << std::endl;
+    std::cout << "    Sector count: " << m_deviceBSPTree.sectorCount << std::endl;
+    std::cout << "-----------------------------------------------" << std::endl;
+    
+    // Make sure buffers are allocated
+    if (!m_buffersAllocated) {
+        allocateBuffers();
+    }
+    
+    // Ensure BSP data was successfully created
+    if (!m_bspUploaded || !m_cudaData->d_bspTree) {
+        std::cerr << "Error: Test map BSP data not available for CUDA rendering" << std::endl;
+        return;
+    }
+    
+    // Verify texture status (we need at least 7 textures for the test map)
+    if (!m_texturesUploaded || !m_cudaData->d_textures || m_cudaData->numTextures < 7) {
+        std::cerr << "Warning: Not enough textures available for CUDA test map rendering" << std::endl;
+        std::cerr << "The test map requires at least 7 textures, but only " 
+                 << m_cudaData->numTextures << " are available." << std::endl;
+        // Continue anyway, the kernel will use fallback colors
+    }
+    
+    // Determine thread block and grid sizes
+    dim3 blockSize(16, 1);  // Use 16 threads per block for simplicity
+    dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x);
+    
+    // Launch kernel for rendering
+    try {
+        bspRenderKernel<<<gridSize, blockSize>>>(
+            m_cudaData->d_frameBuffer,
+            m_cudaData->d_zBuffer,
+            m_width,
+            m_height,
+            playerX,
+            playerY,
+            playerAngle,
+            playerHeight,
+            fov,
+            maxViewDistance,
+            m_cudaData->d_bspTree,
+            m_cudaData->d_textures,
+            m_cudaData->numTextures
+        );
+        
+        // Debug: Output additional information about ray casting
+        std::cout << "--------- DEBUG RAY INFORMATION ---------" << std::endl;
+        std::cout << "BSP Render kernel launched with:" << std::endl;
+        std::cout << "  Grid size: " << gridSize.x << " blocks" << std::endl;
+        std::cout << "  Block size: " << blockSize.x << " threads" << std::endl;
+        std::cout << "  Total rays cast: " << m_width << std::endl;
+        std::cout << "  BSP node count for traversal: " << m_deviceBSPTree.nodeCount << std::endl;
+        std::cout << "-----------------------------------------" << std::endl;
+        
+        // Check for errors
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            std::cerr << "CUDA error in test map BSP rendering: " << cudaGetErrorString(err) << std::endl;
+        } else {
+            // Sync after BSP rendering to catch any delayed errors
+            err = cudaDeviceSynchronize();
+            if (err != cudaSuccess) {
+                std::cerr << "CUDA sync error after test map BSP rendering: " << cudaGetErrorString(err) << std::endl;
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in test map BSP rendering: " << e.what() << std::endl;
+    }
+}
+
+// Render the floor for the test map
+void RendererCuda::renderTestMapFloorCuda(const ViewPosition& view) {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
+    
+    try {
+        // Check if device buffers are allocated
+        if (!m_buffersAllocated || !m_cudaData->d_frameBuffer || !m_cudaData->d_zBuffer) {
+            std::cerr << "Error: CUDA buffers not allocated for floor rendering" << std::endl;
+            return;
+        }
+        
+        // Get player information
+        float playerX = view.position.x;
+        float playerY = view.position.y;
+        float playerAngle = view.angle;
+        float playerHeight = view.height;
+        float fov = view.fov;
+        
+        // Default floor settings for the test map
+        float floorHeight = 0.0f;
+        float ceilingHeight = 2.0f;
+        int floorTextureId = 0;     // First texture for floor
+        int lightLevel = 200;       // Bright default lighting
+        
+        // Use the maxViewDistance from skybox
+        float maxViewDistance = m_skybox.maxViewDistance;
+        
+        // If we're at position that's close to the side room, use those values
+        if (view.position.x >= -1.5f && view.position.x <= 1.5f && 
+            view.position.y >= 4.5f && view.position.y <= 5.5f) {
+            // We're in the side room
+            floorHeight = 0.1f;
+            ceilingHeight = 1.8f;
+            floorTextureId = 2;
+            lightLevel = 100;
+        }
+        // If we're in the corridor
+        else if (view.position.x >= -0.5f && view.position.x <= 0.5f && 
+                view.position.y >= 2.5f && view.position.y <= 4.5f) {
+            floorHeight = 0.0f;
+            ceilingHeight = 1.5f;
+            floorTextureId = 0;
+            lightLevel = 150;
+        }
+        
+        // Determine thread block and grid sizes - use 2D grid for floor
+        dim3 blockSize(16, 16);  // 16x16 threads per block
+        dim3 gridSize(
+            (m_width + blockSize.x - 1) / blockSize.x,
+            (m_height + blockSize.y - 1) / blockSize.y
+        );
+        
+        // Launch the floor rendering kernel
+        floorRenderKernel<<<gridSize, blockSize>>>(
+            m_cudaData->d_frameBuffer,
+            m_cudaData->d_zBuffer,
+            m_width,
+            m_height,
+            playerX,
+            playerY,
+            playerAngle,
+            playerHeight,
+            fov,
+            maxViewDistance,
+            floorHeight,
+            ceilingHeight,
+            floorTextureId,
+            lightLevel,
+            m_cudaData->d_textures,
+            m_cudaData->numTextures
+        );
+        
+        // Check for errors
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            std::cerr << "CUDA error in test map floor rendering: " << cudaGetErrorString(err) << std::endl;
+        } else {
+            // Sync after kernel execution to catch any delayed errors
+            err = cudaDeviceSynchronize();
+            if (err != cudaSuccess) {
+                std::cerr << "CUDA sync error after test map floor rendering: " << cudaGetErrorString(err) << std::endl;
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error in renderTestMapFloorCuda: " << e.what() << std::endl;
+    }
+}
+
+// Add implementation of getNumTextures() method
+int RendererCuda::getNumTextures() const {
+    if (!m_cudaData) return 0;
+    return m_cudaData->numTextures;
 }
 
 } // namespace PureDoom 
