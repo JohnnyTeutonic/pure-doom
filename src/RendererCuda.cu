@@ -2443,23 +2443,6 @@ void RendererCuda::renderTestMapBSPCuda(const ViewPosition& view, float maxViewD
     float playerHeight = view.height;
     float fov = view.fov;
     
-    // Debug output for rendering parameters
-    std::cout << "--------- DEBUG RENDERING INFORMATION ---------" << std::endl;
-    std::cout << "Rendering test map with parameters:" << std::endl;
-    std::cout << "  Player position: (" << playerX << ", " << playerY << ")" << std::endl;
-    std::cout << "  Player angle: " << playerAngle << " radians" << std::endl;
-    std::cout << "  Player height: " << playerHeight << std::endl;
-    std::cout << "  Field of view: " << fov << " degrees" << std::endl;
-    std::cout << "  Max view distance: " << maxViewDistance << std::endl;
-    std::cout << "  Textures uploaded: " << (m_texturesUploaded ? "YES" : "NO") << std::endl;
-    std::cout << "  Number of textures: " << m_cudaData->numTextures << std::endl;
-    std::cout << "  BSP tree available: " << (m_cudaData->d_bspTree != nullptr ? "YES" : "NO") << std::endl;
-    std::cout << "  Test map BSP info:" << std::endl;
-    std::cout << "    Node count: " << m_deviceBSPTree.nodeCount << std::endl;
-    std::cout << "    Wall count: " << m_deviceBSPTree.wallCount << std::endl;
-    std::cout << "    Sector count: " << m_deviceBSPTree.sectorCount << std::endl;
-    std::cout << "-----------------------------------------------" << std::endl;
-    
     // Make sure buffers are allocated
     if (!m_buffersAllocated) {
         allocateBuffers();
@@ -2501,14 +2484,6 @@ void RendererCuda::renderTestMapBSPCuda(const ViewPosition& view, float maxViewD
             m_cudaData->numTextures
         );
         
-        // Debug: Output additional information about ray casting
-        std::cout << "--------- DEBUG RAY INFORMATION ---------" << std::endl;
-        std::cout << "BSP Render kernel launched with:" << std::endl;
-        std::cout << "  Grid size: " << gridSize.x << " blocks" << std::endl;
-        std::cout << "  Block size: " << blockSize.x << " threads" << std::endl;
-        std::cout << "  Total rays cast: " << m_width << std::endl;
-        std::cout << "  BSP node count for traversal: " << m_deviceBSPTree.nodeCount << std::endl;
-        std::cout << "-----------------------------------------" << std::endl;
         
         // Check for errors
         cudaError_t err = cudaGetLastError();
