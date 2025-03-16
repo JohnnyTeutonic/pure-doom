@@ -365,6 +365,278 @@ Texture createFleshWallTexture(int width, int height) {
     return texture;
 }
 
+// Create a molten rock wall texture for the elevated room
+Texture createMoltenRockTexture(int width, int height) {
+    Texture texture(width, height);
+    
+    // Base dark rock color
+    Color darkRock(30, 20, 15);
+    Color moltenRock(180, 60, 20);
+    
+    // Create the base rock texture with molten cracks
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // Create a noise pattern for the rock
+            float noiseVal = (std::sin(x * 0.15f) * std::cos(y * 0.15f) + 
+                             std::sin((x+y) * 0.1f) * std::cos((x-y) * 0.08f)) * 0.5f + 0.5f;
+            
+            // Add some smaller detail for rock texture
+            float detailNoise = (std::sin(x * 0.3f + 5) * std::cos(y * 0.3f + 7)) * 0.3f + 0.7f;
+            float combinedNoise = noiseVal * detailNoise;
+            
+            // Determine if this is a molten crack
+            bool isMolten = combinedNoise < 0.3f;
+            
+            if (isMolten) {
+                // Molten lava effect - brighter in the center of the crack
+                float glowIntensity = 1.0f - (combinedNoise / 0.3f);
+                glowIntensity = glowIntensity * glowIntensity; // Square for more contrast
+                
+                // Create a molten glow color
+                Color glowColor(
+                    std::min(255, int(moltenRock.r * glowIntensity + 75)),
+                    std::min(255, int(moltenRock.g * glowIntensity + 20)),
+                    std::min(255, int(moltenRock.b * glowIntensity))
+                );
+                
+                texture.m_pixels[y * width + x] = glowColor;
+            } else {
+                // Regular rock with some variation
+                float rockBlend = (combinedNoise - 0.3f) / 0.7f; // 0 to 1 range for non-molten areas
+                rockBlend = std::min(1.0f, std::max(0.0f, rockBlend)); // Clamp to 0-1
+                
+                // Add some variation to the rock color
+                int variation = ((x * 7 + y * 13) % 20) - 10;
+                
+                Color rockColor(
+                    std::max(0, std::min(255, int(darkRock.r + variation))),
+                    std::max(0, std::min(255, int(darkRock.g + variation))),
+                    std::max(0, std::min(255, int(darkRock.b + variation)))
+                );
+                
+                texture.m_pixels[y * width + x] = rockColor;
+            }
+        }
+    }
+    
+    // Add some glowing embers/sparks
+    int numEmbers = width / 4;
+    for (int i = 0; i < numEmbers; i++) {
+        int centerX = rand() % width;
+        int centerY = rand() % height;
+        int size = 1 + rand() % 2;
+        
+        for (int y = -size; y <= size; y++) {
+            for (int x = -size; x <= size; x++) {
+                int currentX = centerX + x;
+                int currentY = centerY + y;
+                
+                if (currentX >= 0 && currentX < width && currentY >= 0 && currentY < height) {
+                    float distance = std::sqrt(x*x + y*y);
+                    if (distance <= size) {
+                        float intensity = 1.0f - (distance / size);
+                        
+                        // Only add embers with some randomness
+                        if (rand() % 100 < 70) {
+                            Color& pixel = texture.m_pixels[currentY * width + currentX];
+                            pixel.r = std::min(255, int(pixel.r * 0.5f + 255 * intensity * 0.5f));
+                            pixel.g = std::min(255, int(pixel.g * 0.5f + 180 * intensity * 0.5f));
+                            pixel.b = std::min(255, int(pixel.b * 0.5f + 50 * intensity * 0.5f));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return texture;
+}
+
+// Create a charred bone floor texture for the elevated room
+Texture createCharredBoneFloorTexture(int width, int height) {
+    Texture texture(width, height);
+    
+    // Base bone color (off-white)
+    Color boneColor(220, 210, 190);
+    // Charred color (dark gray with slight red tint)
+    Color charredColor(40, 30, 25);
+    
+    // Create a grid pattern for bone tiles
+    int gridSize = 8;
+    int cellWidth = width / gridSize;
+    int cellHeight = height / gridSize;
+    
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // Determine grid cell
+            int cellX = x / cellWidth;
+            int cellY = y / cellHeight;
+            
+            // Create a pattern of bone tiles
+            float noiseVal = (std::sin(cellX * 1.5f) * std::cos(cellY * 1.5f) + 
+                             std::sin((cellX+cellY) * 2.0f) * std::cos((cellX-cellY) * 1.7f)) * 0.5f + 0.5f;
+            
+            // Add some smaller detail noise
+            float detailNoise = (std::sin(x * 0.2f) * std::cos(y * 0.2f)) * 0.3f + 0.7f;
+            float combinedNoise = noiseVal * detailNoise;
+            
+            // Determine if this is a bone or charred area
+            bool isCharred = combinedNoise < 0.4f;
+            
+            // Determine if we're on a grid edge (cracks between bones)
+            bool isHorizontalCrack = (y % cellHeight) < 2 || (y % cellHeight) >= (cellHeight - 2);
+            bool isVerticalCrack = (x % cellWidth) < 2 || (x % cellWidth) >= (cellWidth - 2);
+            bool isCrack = isHorizontalCrack || isVerticalCrack;
+            
+            // Add some variation for a more organic look
+            int noise = ((x * 13 + y * 7) % 20) - 10;
+            
+            if (isCrack) {
+                // Cracks are always charred/dark
+                texture.m_pixels[y * width + x] = Color(
+                    std::max(0, std::min(255, charredColor.r + noise / 2)),
+                    std::max(0, std::min(255, charredColor.g + noise / 2)),
+                    std::max(0, std::min(255, charredColor.b + noise / 2))
+                );
+            } else if (isCharred) {
+                // Charred bone areas
+                texture.m_pixels[y * width + x] = Color(
+                    std::max(0, std::min(255, charredColor.r + noise)),
+                    std::max(0, std::min(255, charredColor.g + noise)),
+                    std::max(0, std::min(255, charredColor.b + noise))
+                );
+            } else {
+                // Regular bone areas
+                texture.m_pixels[y * width + x] = Color(
+                    std::max(0, std::min(255, boneColor.r + noise)),
+                    std::max(0, std::min(255, boneColor.g + noise)),
+                    std::max(0, std::min(255, boneColor.b + noise))
+                );
+            }
+            
+            // Add some small red spots (blood stains)
+            if (rand() % 100 < 5) {
+                int stainSize = 1 + rand() % 2;
+                
+                for (int dy = -stainSize; dy <= stainSize; dy++) {
+                    for (int dx = -stainSize; dx <= stainSize; dx++) {
+                        int px = x + dx;
+                        int py = y + dy;
+                        if (px >= 0 && px < width && py >= 0 && py < height) {
+                            float dist = std::sqrt(dx*dx + dy*dy);
+                            if (dist <= stainSize && rand() % 100 < 70) {
+                                int idx = py * width + px;
+                                texture.m_pixels[idx].r = std::min(255, texture.m_pixels[idx].r + 40);
+                                texture.m_pixels[idx].g = std::max(0, texture.m_pixels[idx].g - 20);
+                                texture.m_pixels[idx].b = std::max(0, texture.m_pixels[idx].b - 20);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return texture;
+}
+
+// Create a pulsating flesh ceiling texture for the elevated room
+Texture createPulsatingFleshCeilingTexture(int width, int height) {
+    Texture texture(width, height);
+    
+    // Base flesh colors
+    Color fleshDark(120, 40, 40);
+    Color fleshLight(180, 80, 70);
+    Color veinColor(90, 10, 10);
+    
+    // Create the base flesh texture with veins and pulsating areas
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // Create a pulsating pattern
+            float baseNoise = (std::sin(x * 0.07f) * std::cos(y * 0.07f) + 
+                              std::sin((x+y) * 0.05f) * std::cos((x-y) * 0.06f)) * 0.5f + 0.5f;
+            
+            // Add some smaller detail for flesh texture
+            float detailNoise = (std::sin(x * 0.3f + 10) * std::cos(y * 0.3f + 5)) * 0.3f + 0.7f;
+            float combinedNoise = baseNoise * detailNoise;
+            
+            // Create pulsating effect (would animate if we could change it over time)
+            float pulseEffect = std::sin(combinedNoise * 5.0f) * 0.5f + 0.5f;
+            
+            // Determine the flesh color based on the noise
+            Color fleshColor(
+                int(fleshDark.r * (1.0f - pulseEffect) + fleshLight.r * pulseEffect),
+                int(fleshDark.g * (1.0f - pulseEffect) + fleshLight.g * pulseEffect),
+                int(fleshDark.b * (1.0f - pulseEffect) + fleshLight.b * pulseEffect)
+            );
+            
+            // Check if this should be a vein
+            float veinNoise = std::sin(x * 0.15f + y * 0.2f) * std::cos(y * 0.15f - x * 0.1f);
+            bool isVein = veinNoise > 0.7f && rand() % 10 > 6;
+            
+            if (isVein) {
+                // Add some variation to the vein color
+                int veinVariation = rand() % 20 - 10;
+                Color currentVeinColor(
+                    std::max(0, std::min(255, veinColor.r + veinVariation)),
+                    std::max(0, std::min(255, veinColor.g + veinVariation / 2)),
+                    std::max(0, std::min(255, veinColor.b + veinVariation / 2))
+                );
+                
+                texture.m_pixels[y * width + x] = currentVeinColor;
+            } else {
+                texture.m_pixels[y * width + x] = fleshColor;
+            }
+        }
+    }
+    
+    // Add some "pustules" or bulging areas
+    int numPustules = width / 8;
+    for (int i = 0; i < numPustules; ++i) {
+        int centerX = rand() % width;
+        int centerY = rand() % height;
+        int radiusX = 3 + rand() % 6;
+        int radiusY = 3 + rand() % 6;
+        
+        for (int y = -radiusY; y <= radiusY; ++y) {
+            for (int x = -radiusX; x <= radiusX; ++x) {
+                int currentX = centerX + x;
+                int currentY = centerY + y;
+                
+                if (currentX >= 0 && currentX < width && currentY >= 0 && currentY < height) {
+                    // Create an oval shape
+                    float normalizedX = (float)x / radiusX;
+                    float normalizedY = (float)y / radiusY;
+                    float distance = std::sqrt(normalizedX*normalizedX + normalizedY*normalizedY);
+                    
+                    if (distance <= 1.0f) {
+                        // Lighter in the center, darker at the edges
+                        float edgeFactor = 1.0f - distance;
+                        edgeFactor = edgeFactor * edgeFactor; // Square for more contrast
+                        
+                        Color pustuleColor(
+                            std::min(255, int(fleshLight.r + 40 * edgeFactor)),
+                            std::min(255, int(fleshLight.g + 20 * edgeFactor)),
+                            std::min(255, int(fleshLight.b + 10 * edgeFactor))
+                        );
+                        
+                        // Blend with existing color based on distance
+                        Color& existingColor = texture.m_pixels[currentY * width + currentX];
+                        float blendFactor = 0.7f * edgeFactor;
+                        existingColor = Color(
+                            int(existingColor.r * (1.0f - blendFactor) + pustuleColor.r * blendFactor),
+                            int(existingColor.g * (1.0f - blendFactor) + pustuleColor.g * blendFactor),
+                            int(existingColor.b * (1.0f - blendFactor) + pustuleColor.b * blendFactor)
+                        );
+                    }
+                }
+            }
+        }
+    }
+    
+    return texture;
+}
+
 // Main function to test our CUDA test map
 int main(int argc, char* argv[]) {
     // Initialize SDL
@@ -546,6 +818,15 @@ int main(int argc, char* argv[]) {
     // 6: Side room wall texture (flesh wall)
     textures.push_back(createFleshWallTexture(64, 64));
     
+    // 7: Elevated room wall texture (molten rock)
+    textures.push_back(createMoltenRockTexture(64, 64));
+    
+    // 8: Elevated room floor texture (charred bone)
+    textures.push_back(createCharredBoneFloorTexture(64, 64));
+    
+    // 9: Elevated room ceiling texture (pulsating flesh)
+    textures.push_back(createPulsatingFleshCeilingTexture(64, 64));
+    
     // Upload textures to CUDA
     cudaRenderer.uploadTextures(textures);
     
@@ -659,13 +940,41 @@ int main(int argc, char* argv[]) {
     
     // Rest of side room walls
     sideRoom.walls.push_back(Wall(Line(Vertex(-0.25f, 4.5f), Vertex(-1.5f, 5.5f)), 2, -1, 6));
-    sideRoom.walls.push_back(Wall(Line(Vertex(-1.5f, 5.5f), Vertex(1.5f, 5.5f)), 2, -1, 6));
     sideRoom.walls.push_back(Wall(Line(Vertex(1.5f, 5.5f), Vertex(0.25f, 4.5f)), 2, -1, 6));
+    
+    // Portal to elevated room
+    Wall elevatedRoomPortal = Wall(Line(Vertex(1.5f, 5.5f), Vertex(0.25f, 4.5f)), 2, 3, 4);
+    elevatedRoomPortal.isTransparent = true;
+    elevatedRoomPortal.isSolid = false;
+    sideRoom.walls.push_back(elevatedRoomPortal);
+    
+    // Elevated room sector (higher than other rooms)
+    Sector elevatedRoom;
+    elevatedRoom.floorHeight = 0.5f;  // Higher floor
+    elevatedRoom.ceilingHeight = 2.5f; // Higher ceiling
+    elevatedRoom.floorTextureId = 8;   // Charred bone floor
+    elevatedRoom.ceilingTextureId = 9; // Pulsating flesh ceiling
+    elevatedRoom.lightLevel = 80;      // Darker for more atmosphere
+    elevatedRoom.tag = "elevated_room";
+    
+    // Elevated room walls
+    // Connection to side room (portal)
+    Wall elevatedRoomEntrance = Wall(Line(Vertex(0.25f, 4.5f), Vertex(1.5f, 5.5f)), 3, 2, 4);
+    elevatedRoomEntrance.isTransparent = true;
+    elevatedRoomEntrance.isSolid = false;
+    elevatedRoom.walls.push_back(elevatedRoomEntrance);
+    
+    // Rest of elevated room walls (extending further out)
+    elevatedRoom.walls.push_back(Wall(Line(Vertex(1.5f, 5.5f), Vertex(3.0f, 6.5f)), 3, -1, 7));
+    elevatedRoom.walls.push_back(Wall(Line(Vertex(3.0f, 6.5f), Vertex(3.0f, 4.0f)), 3, -1, 7));
+    elevatedRoom.walls.push_back(Wall(Line(Vertex(3.0f, 4.0f), Vertex(1.0f, 3.5f)), 3, -1, 7));
+    elevatedRoom.walls.push_back(Wall(Line(Vertex(1.0f, 3.5f), Vertex(0.25f, 4.5f)), 3, -1, 7));
     
     // Add sectors to the collection
     testMapSectors.push_back(mainRoom);
     testMapSectors.push_back(corridor);
     testMapSectors.push_back(sideRoom);
+    testMapSectors.push_back(elevatedRoom);
     
     // Build the BSP tree for collision detection
     collisionBSP.build(testMapSectors);
@@ -703,6 +1012,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  - Main room (5x5) with bloody walls and portal to corridor\n";
     std::cout << "  - Hellish corridor with fiery cracks leading to side room\n";
     std::cout << "  - Flesh-walled side room with elevated floor\n";
+    std::cout << "  - Elevated room with molten rock walls and charred bone floor (access through side room portal)\n";
     std::cout << "Textures:\n";
     std::cout << "  - DOOM-style floor (ID 0)\n";
     std::cout << "  - Ember-lit ceiling (ID 1)\n";
@@ -711,6 +1021,9 @@ int main(int argc, char* argv[]) {
     std::cout << "  - Hellish energy portal (ID 4)\n";
     std::cout << "  - Fiery cracked wall (ID 5)\n";
     std::cout << "  - Flesh wall with wounds (ID 6)\n";
+    std::cout << "  - Molten rock wall (ID 7)\n";
+    std::cout << "  - Charred bone floor (ID 8)\n";
+    std::cout << "  - Pulsating flesh ceiling (ID 9)\n";
     std::cout << "Controls:\n";
     std::cout << "  - WASD: Move around\n";
     std::cout << "  - QE: Rotate view\n";
@@ -744,6 +1057,7 @@ int main(int argc, char* argv[]) {
                 case 0: sectorName = "Main Room"; break;
                 case 1: sectorName = "Corridor"; break;
                 case 2: sectorName = "Side Room"; break;
+                case 3: sectorName = "Elevated Room"; break;
                 default: sectorName = "Unknown"; break;
             }
             std::cout << "Player moved to sector: " << sectorName << " (ID: " << currentSector << ")" << std::endl;
@@ -846,6 +1160,7 @@ int main(int argc, char* argv[]) {
                                 case 0: sectorName = "Main Room"; break;
                                 case 1: sectorName = "Corridor"; break;
                                 case 2: sectorName = "Side Room"; break;
+                                case 3: sectorName = "Elevated Room"; break;
                                 default: sectorName = "Unknown"; break;
                             }
                             std::cout << "\n==== DEBUG SECTOR INFO ====\n";
@@ -994,11 +1309,20 @@ int main(int argc, char* argv[]) {
                             // Check if we're trying to move through the portal
                             if (std::abs(movementVector.dotProduct(wallNormal)) > 0.1f) {
                                 // If dot product of movement and normal is significant, we're trying to cross
-                                // Add a small boost in the direction of the normal to help push through
+                                // Add a stronger boost in the direction of the normal to help push through
                                 float direction = movementVector.dotProduct(wallNormal) > 0 ? 1.0f : -1.0f;
-                                Vec2 portalBoost = wallNormal * direction * 0.05f;
+                                Vec2 portalBoost = wallNormal * direction * 0.15f; // Increased from 0.05f to 0.15f
                                 view.position = view.position + portalBoost;
-                                std::cout << "Portal assist applied! Boosting player through portal." << std::endl;
+                                
+                                // Check if this is the portal to the elevated room (sectors 2->3)
+                                if (wall.sectorFront == 2 && wall.sectorBack == 3) {
+                                    // Apply an additional boost for the elevated room portal
+                                    view.position = view.position + portalBoost * 2.0f;
+                                    std::cout << "Enhanced portal assist applied for elevated room!" << std::endl;
+                                } else {
+                                    std::cout << "Portal assist applied! Boosting player through portal." << std::endl;
+                                }
+                                
                                 portalAssist = true;
                                 break;
                             }
@@ -1020,7 +1344,29 @@ int main(int argc, char* argv[]) {
             // Check for collisions
             CollisionInfo collision = collisionBSP.checkCollision(view.position, PLAYER_RADIUS, movementVector);
             
+            // Check if we're near the portal to the elevated room
+            bool nearElevatedRoomPortal = false;
+            for (int i = 0; i < testMapSectors.size() && !nearElevatedRoomPortal; i++) {
+                for (int j = 0; j < testMapSectors[i].walls.size(); j++) {
+                    const Wall& wall = testMapSectors[i].walls[j];
+                    if (!wall.isSolid && wall.sectorFront == 2 && wall.sectorBack == 3) {
+                        float dist = wall.segment.distanceToPoint(view.position);
+                        if (dist < 0.5f) { // Within 0.5 units of the elevated room portal
+                            nearElevatedRoomPortal = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            
             if (collision.collision) {
+                // If we're near the elevated room portal, be more lenient with collisions
+                if (nearElevatedRoomPortal && collision.distance < 1.0f) {
+                    // Reduce the collision effect for the elevated room portal
+                    collision.distance *= 1.5f; // Make it seem further away
+                    std::cout << "Applying lenient collision detection near elevated room portal" << std::endl;
+                }
+                
                 // Output collision details when a collision is detected
                 std::cout << "COLLISION: Distance=" << collision.distance 
                           << ", Normal=(" << collision.normal.x << ", " << collision.normal.y 
