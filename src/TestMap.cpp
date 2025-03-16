@@ -674,6 +674,7 @@ int main(int argc, char* argv[]) {
     bool running = true;
     bool keyW = false, keyA = false, keyS = false, keyD = false;
     bool keyQ = false, keyE = false;
+    bool keySpace = false, keyC = false; // For jumping and crouching
     SDL_Event event;
     
     // Movement speed
@@ -682,6 +683,18 @@ int main(int argc, char* argv[]) {
     
     // Player radius for collision detection
     const float PLAYER_RADIUS = 0.3f;
+    
+    // Jump physics variables
+    const float PLAYER_DEFAULT_HEIGHT = 0.8f;
+    const float PLAYER_CROUCH_HEIGHT = 0.4f;
+    const float JUMP_INITIAL_VELOCITY = 0.08f;
+    const float GRAVITY = 0.004f;
+    float verticalVelocity = 0.0f;
+    bool isJumping = false;
+    bool isCrouching = false;
+    
+    // For calculating deltaTime
+    auto lastTime = std::chrono::high_resolution_clock::now();
     
     // Add this near the top of the main() function before the main loop
     std::cout << "\n==== DOOM-LIKE TEST MAP INFORMATION ====\n";
@@ -698,11 +711,28 @@ int main(int argc, char* argv[]) {
     std::cout << "  - Hellish energy portal (ID 4)\n";
     std::cout << "  - Fiery cracked wall (ID 5)\n";
     std::cout << "  - Flesh wall with wounds (ID 6)\n";
+    std::cout << "Controls:\n";
+    std::cout << "  - WASD: Move around\n";
+    std::cout << "  - QE: Rotate view\n";
+    std::cout << "  - SPACE: Jump\n";
+    std::cout << "  - C: Crouch\n";
+    std::cout << "  - P: Debug wall info\n";
+    std::cout << "  - L: Debug sector info\n";
+    std::cout << "  - ESC: Quit\n";
     std::cout << "Collision detection enabled with player radius: " << PLAYER_RADIUS << "\n";
     std::cout << "=========================================\n";
     
+    // Add these variables near the top of the main loop
+    float screenShakeAmount = 0.0f;
+    float screenShakeDecay = 0.9f;
+    
     // Main loop
     while (running) {
+        // Calculate deltaTime for smooth movement and physics
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
+        lastTime = currentTime;
+        
         // Track which sector the player is in for portal transition detection
         int currentSector = collisionBSP.findSector(view.position);
         static int previousSector = -1;
@@ -769,6 +799,31 @@ int main(int argc, char* argv[]) {
                         break;
                     case SDLK_e:
                         keyE = true;
+                        break;
+                    case SDLK_SPACE:
+                        // Jump if on the ground
+                        if (!isJumping && !isCrouching) {
+                            isJumping = true;
+                            verticalVelocity = JUMP_INITIAL_VELOCITY;
+                            std::cout << "Player jumped!" << std::endl;
+                            
+                            // Sound effect simulation for jumping
+                            std::cout << "\a"; // System beep as jump sound
+                            std::cout << "SOUND EFFECT: *WHOOSH*" << std::endl;
+                        }
+                        keySpace = true;
+                        break;
+                    case SDLK_c:
+                        // Toggle crouch
+                        if (!isJumping) {
+                            isCrouching = !isCrouching;
+                            if (isCrouching) {
+                                std::cout << "Player crouched" << std::endl;
+                            } else {
+                                std::cout << "Player stood up" << std::endl;
+                            }
+                        }
+                        keyC = true;
                         break;
                     // Add a debug key to manually print wall information
                     case SDLK_p:
@@ -837,28 +892,86 @@ int main(int argc, char* argv[]) {
                     case SDLK_e:
                         keyE = false;
                         break;
+                    case SDLK_SPACE:
+                        keySpace = false;
+                        break;
+                    case SDLK_c:
+                        keyC = false;
+                        break;
                 }
             }
+        }
+        
+        // Update player height based on crouch state (with smooth transition)
+        float targetHeight = isCrouching ? PLAYER_CROUCH_HEIGHT : PLAYER_DEFAULT_HEIGHT;
+        if (!isJumping) {
+            // Smoothly interpolate to target height when not jumping
+            view.height = view.height + (targetHeight - view.height) * deltaTime * 5.0f;
+        }
+        
+        // Apply jumping physics
+        if (isJumping) {
+            // Update height based on vertical velocity
+            view.height += verticalVelocity;
+            
+            // Apply gravity
+            verticalVelocity -= GRAVITY;
+            
+            // Check if landing
+            if (view.height <= targetHeight) {
+                // Calculate fall distance for screen shake
+                float fallDistance = PLAYER_DEFAULT_HEIGHT - view.height + verticalVelocity;
+                
+                view.height = targetHeight;
+                verticalVelocity = 0.0f;
+                isJumping = false;
+                std::cout << "Player landed" << std::endl;
+                
+                // Sound effect simulation for landing
+                std::cout << "\a"; // System beep as landing sound
+                std::cout << "SOUND EFFECT: *THUD*" << std::endl;
+                
+                // Add screen shake based on fall distance
+                if (fallDistance > 0.05f) {
+                    screenShakeAmount = fallDistance * 10.0f;
+                    std::cout << "Screen shake: " << screenShakeAmount << std::endl;
+                }
+            }
+            
+            // Visual feedback for jumping
+            std::cout << "\rJumping! Height: " << view.height << " Velocity: " << verticalVelocity << "        " << std::flush;
+        } else if (isCrouching) {
+            // Visual feedback for crouching
+            std::cout << "\rCrouching! Height: " << view.height << "        " << std::flush;
+        } else if (std::abs(view.height - PLAYER_DEFAULT_HEIGHT) < 0.01f) {
+            // Clear status line when standing normally and fully upright
+            std::cout << "\r                                                                " << std::flush;
         }
         
         // Calculate movement vector based on keyboard input
         Vec2 movementVector(0.0f, 0.0f);
         
+        // Movement speed affected by crouch state
+        float currentMoveSpeed = moveSpeed;
+        if (isCrouching) {
+            currentMoveSpeed *= 0.5f; // Move slower when crouched
+        }
+        
         if (keyW) {
-            movementVector.x += moveSpeed * cos(view.angle);
-            movementVector.y += moveSpeed * sin(view.angle);
+            movementVector.x += currentMoveSpeed * cos(view.angle);
+            movementVector.y += currentMoveSpeed * sin(view.angle);
         }
         if (keyS) {
-            movementVector.x -= moveSpeed * cos(view.angle);
-            movementVector.y -= moveSpeed * sin(view.angle);
+            movementVector.x -= currentMoveSpeed * cos(view.angle);
+            movementVector.y -= currentMoveSpeed * sin(view.angle);
         }
         if (keyA) {
-            movementVector.x += moveSpeed * cos(view.angle - M_PI / 2);
-            movementVector.y += moveSpeed * sin(view.angle - M_PI / 2);
+            movementVector.x += currentMoveSpeed * cos(view.angle - M_PI / 2);
+            movementVector.y += currentMoveSpeed * sin(view.angle - M_PI / 2);
         }
         if (keyD) {
-            movementVector.x += moveSpeed * cos(view.angle + M_PI / 2);
-            movementVector.y += moveSpeed * sin(view.angle + M_PI / 2);
+            movementVector.x += currentMoveSpeed * cos(view.angle + M_PI / 2);
+            movementVector.y += currentMoveSpeed * sin(view.angle + M_PI / 2);
         }
         
         // Apply collision detection and response if we're trying to move
@@ -1007,8 +1120,25 @@ int main(int argc, char* argv[]) {
             }
         }
         
-        // Render frame using test map
-        cudaRenderer.renderTestMapFrame(view, 0.016f); // ~60fps
+        // Before rendering the frame, apply screen shake
+        // Apply screen shake if active
+        ViewPosition shakingView = view;
+        if (screenShakeAmount > 0.001f) {
+            // Apply random offset to view position and height
+            float shakeX = ((rand() % 1000) / 500.0f - 1.0f) * screenShakeAmount;
+            float shakeY = ((rand() % 1000) / 500.0f - 1.0f) * screenShakeAmount;
+            float shakeHeight = ((rand() % 1000) / 500.0f - 1.0f) * screenShakeAmount * 0.5f;
+            
+            shakingView.position.x += shakeX * 0.01f;
+            shakingView.position.y += shakeY * 0.01f;
+            shakingView.height += shakeHeight * 0.01f;
+            
+            // Decay the shake amount
+            screenShakeAmount *= screenShakeDecay;
+        }
+        
+        // Render frame using test map with the potentially shaking view
+        cudaRenderer.renderTestMapFrame(shakingView, 0.016f); // ~60fps
         
         // Get the rendered frame back
         cudaRenderer.retrieveRenderingResults(frameBuffer, zBuffer);
@@ -1022,6 +1152,48 @@ int main(int argc, char* argv[]) {
         
         // Draw the texture
         SDL_RenderCopy(sdlRenderer, frameTexture, NULL, NULL);
+        
+        // Draw player state indicator
+        SDL_Rect stateIndicator = {10, 10, 20, 20};
+        if (isJumping) {
+            // Red for jumping
+            SDL_SetRenderDrawColor(sdlRenderer, 255, 50, 50, 255);
+            SDL_RenderFillRect(sdlRenderer, &stateIndicator);
+            
+            // Draw jump height bar
+            int jumpHeight = static_cast<int>((view.height - PLAYER_DEFAULT_HEIGHT) * 100);
+            SDL_Rect jumpBar = {40, 10, 10, jumpHeight > 0 ? jumpHeight : 1};
+            SDL_SetRenderDrawColor(sdlRenderer, 255, 150, 50, 255);
+            SDL_RenderFillRect(sdlRenderer, &jumpBar);
+            
+            // Draw "JUMPING" label using small rectangles (pixel art style)
+            // J
+            SDL_Rect j1 = {70, 10, 3, 15};
+            SDL_Rect j2 = {75, 10, 10, 3};
+            SDL_Rect j3 = {75, 22, 10, 3};
+            SDL_SetRenderDrawColor(sdlRenderer, 255, 255, 255, 255);
+            SDL_RenderFillRect(sdlRenderer, &j1);
+            SDL_RenderFillRect(sdlRenderer, &j2);
+            SDL_RenderFillRect(sdlRenderer, &j3);
+        } else if (isCrouching) {
+            // Blue for crouching
+            SDL_SetRenderDrawColor(sdlRenderer, 50, 50, 255, 255);
+            SDL_RenderFillRect(sdlRenderer, &stateIndicator);
+            
+            // Draw "CROUCH" label using small rectangles (pixel art style)
+            // C
+            SDL_Rect c1 = {70, 10, 3, 15};
+            SDL_Rect c2 = {73, 10, 10, 3};
+            SDL_Rect c3 = {73, 22, 10, 3};
+            SDL_SetRenderDrawColor(sdlRenderer, 255, 255, 255, 255);
+            SDL_RenderFillRect(sdlRenderer, &c1);
+            SDL_RenderFillRect(sdlRenderer, &c2);
+            SDL_RenderFillRect(sdlRenderer, &c3);
+        } else {
+            // Green for normal
+            SDL_SetRenderDrawColor(sdlRenderer, 50, 255, 50, 255);
+            SDL_RenderFillRect(sdlRenderer, &stateIndicator);
+        }
         
         // Present renderer
         SDL_RenderPresent(sdlRenderer);
