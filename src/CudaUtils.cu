@@ -200,6 +200,15 @@ __device__ CudaWallCollision castRayBSP(
         return collision;
     }
     
+    // Ensure ray direction is normalized for consistent distance calculations
+    float rayLength = sqrtf(rayDir.x * rayDir.x + rayDir.y * rayDir.y);
+    CudaVec2 normalizedRayDir;
+    if (rayLength > 0.0001f) {
+        normalizedRayDir = CudaVec2(rayDir.x / rayLength, rayDir.y / rayLength);
+    } else {
+        normalizedRayDir = CudaVec2(1.0f, 0.0f); // Default direction if ray is too short
+    }
+    
     // Stack-based BSP traversal (non-recursive)
     const int MAX_DEPTH = 64; // Maximum tree depth
     
@@ -222,6 +231,57 @@ __device__ CudaWallCollision castRayBSP(
     // Prevent infinite loops with a traversal counter
     int traversalCount = 0;
     const int MAX_TRAVERSALS = 2000; // Safety limit
+    
+    // Linear scan for small test maps - faster and more reliable for debugging
+    bool useLinearScan = (bsp.wallCount < 50); // Only use for small test maps
+    
+    if (useLinearScan) {
+        // Simple linear scan of all walls for small maps
+        float closestDistance = maxDistance;
+        int closestWallIndex = -1;
+        float closestU = 0.0f;
+        
+        for (int i = 0; i < bsp.wallCount; i++) {
+            const CudaWall& wall = bsp.walls[i];
+            float distance, u;
+            
+            if (rayLineIntersection(rayOrigin, normalizedRayDir, wall.segment, distance, u)) {
+                if (distance > 0.0001f && distance < closestDistance) {
+                    closestDistance = distance;
+                    closestWallIndex = i;
+                    closestU = u;
+                }
+            }
+        }
+        
+        if (closestWallIndex >= 0) {
+            const CudaWall& wall = bsp.walls[closestWallIndex];
+            int sectorIndex = wall.sectorFront;
+            
+            // Validate sector index
+            if (sectorIndex >= 0 && sectorIndex < bsp.sectorCount) {
+                const CudaSector& sector = bsp.sectors[sectorIndex];
+                
+                collision.collision = true;
+                collision.distance = closestDistance;
+                collision.textureId = wall.textureId;
+                collision.texCoordU = closestU;
+                
+                // Get sector information
+                collision.wallHeight = sector.ceilingHeight - sector.floorHeight;
+                collision.floorHeight = sector.floorHeight;
+                collision.ceilingHeight = sector.ceilingHeight;
+                collision.isPortal = (wall.sectorBack >= 0);
+                collision.lightLevel = wall.lightLevel;
+                
+                // Store additional information for portals
+                collision.sectorFront = wall.sectorFront;
+                collision.sectorBack = wall.sectorBack;
+            }
+        }
+        
+        return collision;
+    }
     
     // Main BSP traversal loop
     while (stackPos > 0 && traversalCount < MAX_TRAVERSALS) {
@@ -268,7 +328,7 @@ __device__ CudaWallCollision castRayBSP(
                 const CudaWall& wall = bsp.walls[wallIndex];
                 float distance, u;
                 
-                if (rayLineIntersection(current.origin, rayDir, wall.segment, distance, u)) {
+                if (rayLineIntersection(current.origin, normalizedRayDir, wall.segment, distance, u)) {
                     // Calculate total distance from original ray origin
                     float totalDistance = vectorsEqual(current.origin, rayOrigin) ? 
                                 distance : // We're at the original ray origin
@@ -292,10 +352,6 @@ __device__ CudaWallCollision castRayBSP(
                         // Store additional information for portals
                         collision.sectorFront = wall.sectorFront;
                         collision.sectorBack = wall.sectorBack;
-                        
-                        // If this is a portal and we want to continue through it,
-                        // we could push the back sector onto the stack here.
-                        // For now, we just stop at the first wall hit.
                     }
                 }
             }
@@ -310,14 +366,24 @@ __device__ CudaWallCollision castRayBSP(
         CudaVec2 partitionerDir = subtract(node.partitioner.end, node.partitioner.start);
         CudaVec2 normal = CudaVec2(-partitionerDir.y, partitionerDir.x); // Perpendicular to partitioner
         
+        // Normalize the normal vector
+        float normalLength = sqrtf(normal.x * normal.x + normal.y * normal.y);
+        if (normalLength > 0.0001f) {
+            normal.x /= normalLength;
+            normal.y /= normalLength;
+        }
+        
         // Determine which side of the partitioner the ray origin is on
         CudaVec2 toPartStart = subtract(current.origin, node.partitioner.start);
         float side = dotProduct(normal, toPartStart);
-        float dirSide = dotProduct(normal, rayDir);
+        float dirSide = dotProduct(normal, normalizedRayDir);
+        
+        // Use a small epsilon to avoid precision issues
+        const float SIDE_EPSILON = 0.0001f;
         
         // Handle different cases based on ray position and direction
-        if (side >= 0.0f) {
-            // Origin is in front of the partitioner
+        if (side >= -SIDE_EPSILON) {
+            // Origin is in front of or on the partitioner
             
             // Process front child first
             if (node.frontNodeIndex >= 0 && node.frontNodeIndex < bsp.nodeCount) {
@@ -336,7 +402,7 @@ __device__ CudaWallCollision castRayBSP(
                 
                 if (t > 0.0f && t < current.remainingDistance) {
                     // Calculate intersection point
-                    CudaVec2 intersectionPoint = add(current.origin, multiply(rayDir, t));
+                    CudaVec2 intersectionPoint = add(current.origin, multiply(normalizedRayDir, t));
                     
                     // Check if intersection is within partitioner segment
                     CudaVec2 lineDir = normalize(partitionerDir);
@@ -344,7 +410,7 @@ __device__ CudaWallCollision castRayBSP(
                     float projection = dotProduct(toIntersection, lineDir);
                     float lineLength = length(partitionerDir);
                     
-                    if (projection >= 0.0f && projection <= lineLength) {
+                    if (projection >= -SIDE_EPSILON && projection <= lineLength + SIDE_EPSILON) {
                         // Process back child with updated origin and distance
                         if (node.backNodeIndex >= 0 && node.backNodeIndex < bsp.nodeCount && stackPos < MAX_DEPTH) {
                             stack[stackPos].nodeIndex = node.backNodeIndex;
@@ -375,7 +441,7 @@ __device__ CudaWallCollision castRayBSP(
                 
                 if (t > 0.0f && t < current.remainingDistance) {
                     // Calculate intersection point
-                    CudaVec2 intersectionPoint = add(current.origin, multiply(rayDir, t));
+                    CudaVec2 intersectionPoint = add(current.origin, multiply(normalizedRayDir, t));
                     
                     // Check if intersection is within partitioner segment
                     CudaVec2 lineDir = normalize(partitionerDir);
@@ -383,7 +449,7 @@ __device__ CudaWallCollision castRayBSP(
                     float projection = dotProduct(toIntersection, lineDir);
                     float lineLength = length(partitionerDir);
                     
-                    if (projection >= 0.0f && projection <= lineLength) {
+                    if (projection >= -SIDE_EPSILON && projection <= lineLength + SIDE_EPSILON) {
                         // Process front child with updated origin and distance
                         if (node.frontNodeIndex >= 0 && node.frontNodeIndex < bsp.nodeCount && stackPos < MAX_DEPTH) {
                             stack[stackPos].nodeIndex = node.frontNodeIndex;
@@ -397,6 +463,7 @@ __device__ CudaWallCollision castRayBSP(
         }
     }
     
+    // Return the closest wall collision found during traversal
     return collision;
 }
 

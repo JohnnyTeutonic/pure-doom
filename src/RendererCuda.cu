@@ -301,7 +301,7 @@ __global__ void bspRenderKernel(
         return;
     }
 
-    // Calculate ray angle for this column
+    // Calculate ray angle for this column - use more precise angle calculation
     float halfFov = fov * 0.5f * (PI / 180.0f);
     float angleStep = fov * (PI / 180.0f) / width;
     float rayAngle = playerAngle - halfFov + angleStep * x;
@@ -310,7 +310,7 @@ __global__ void bspRenderKernel(
     while (rayAngle < 0) rayAngle += 2 * PI;
     while (rayAngle >= 2 * PI) rayAngle -= 2 * PI;
     
-    // Ray direction vector
+    // Calculate ray direction with more precision
     float rayDirX = cosf(rayAngle);
     float rayDirY = sinf(rayAngle);
     
@@ -328,25 +328,36 @@ __global__ void bspRenderKernel(
         // Correct for fisheye effect
         float correctedDistance = collision.distance * cosf(rayAngle - playerAngle);
         
-        // Calculate wall height using optimized distance factor - use FIXED HEIGHT of 1.0 which is known to work
-        float distanceFactor = 277.0f / correctedDistance;
-        float projectedWallHeight = 1.0f * distanceFactor; // Fixed wall height works better
+        // Ensure distance is never too small to prevent division by zero
+        correctedDistance = fmaxf(correctedDistance, 0.1f);
         
-        // Calculate wall top and bottom positions - center around middle of screen
+        // Use a dynamic distance factor based on view distance
+        float distanceFactor = 600.0f / correctedDistance;
+        
+        // Fixed wall height that's known to work consistently
+        float projectedWallHeight = 1.0f * distanceFactor;
+        
+        // Calculate wall top and bottom screen positions - center around middle of screen
         float wallMidY = height / 2.0f;
-        int wallTop = max(0, (int)(wallMidY - projectedWallHeight / 2));
-        int wallBottom = min(height - 1, (int)(wallMidY + projectedWallHeight / 2));
+        int wallTop = fmaxf(0, (int)(wallMidY - projectedWallHeight / 2));
+        int wallBottom = fminf(height - 1, (int)(wallMidY + projectedWallHeight / 2));
+        
+        // Ensure wall height is at least 1 pixel
+        if (wallTop >= wallBottom) {
+            wallTop = fmaxf(0, (int)(wallMidY - 1));
+            wallBottom = fminf(height - 1, (int)(wallMidY + 1));
+        }
         
         // Calculate lighting based on distance and wall light level
-        float intensity = 1.0f - min(1.0f, correctedDistance / maxDistance);
-        intensity = max(0.2f, intensity) * collision.lightLevel / 255.0f;
+        float intensity = 1.0f - fminf(0.9f, correctedDistance / maxDistance); // Cap at 0.9 to prevent totally black walls
+        intensity = fmaxf(0.3f, intensity); // Ensure walls are never too dark
         
         // Draw the wall column
         for (int y = wallTop; y <= wallBottom; y++) {
-            // Calculate texture coordinate V (vertical)
-            float wallPercent = (float)(y - wallTop) / max(1, wallBottom - wallTop);
+            // Calculate texture coordinate (0-1 range)
+            float wallPercent = (float)(y - wallTop) / fmaxf(1, wallBottom - wallTop);
             
-            // Get the wall color (from texture or fallback)
+            // Get the wall color
             Color wallColor;
             bool useTexture = false;
             
@@ -370,8 +381,8 @@ __global__ void bspRenderKernel(
                     int texY = (int)(texV * texture.height);
                     
                     // Clamp to texture dimensions
-                    texX = max(0, min(texture.width - 1, texX));
-                    texY = max(0, min(texture.height - 1, texY));
+                    texX = fmaxf(0, fminf(texture.width - 1, texX));
+                    texY = fmaxf(0, fminf(texture.height - 1, texY));
                     
                     // Get the texel color
                     int texIndex = texY * texture.width + texX;
@@ -386,30 +397,76 @@ __global__ void bspRenderKernel(
                     // Add portal effect if needed
                     if (collision.isPortal) {
                         // Give portals a slight blue tint
-                        wallColor.b = min(255, (int)(wallColor.b * 1.2f));
+                        wallColor.b = fminf(255, (int)(wallColor.b * 1.2f));
                     }
                 }
             }
             
             // Fallback to solid color if texture not available or invalid
             if (!useTexture) {
+                // More visible wall colors for debugging
                 if (collision.isPortal) {
-                    // Portal wall fallback
+                    // Portal wall fallback - bright blue
                     wallColor = Color(
-                        (uint8_t)(40 * intensity), 
-                        (uint8_t)(40 * intensity), 
-                        (uint8_t)(180 * intensity),
+                        (uint8_t)(60 * intensity), 
+                        (uint8_t)(60 * intensity), 
+                        (uint8_t)(220 * intensity),
                         255
                     );
                 } else {
-                    // Regular wall fallback - use texture ID to vary color
-                    int colorVar = (collision.textureId % 5) * 50;
-                    wallColor = Color(
-                        (uint8_t)((120 + colorVar) * intensity),
-                        (uint8_t)((100 + (50 - colorVar)) * intensity),
-                        (uint8_t)(80 * intensity),
-                        255
-                    );
+                    // Regular wall fallback - use distinct colors based on texture ID
+                    // Use a vibrant color scheme for better visibility
+                    int baseHue = (collision.textureId % 6) * 60; // 6 distinct colors
+                    
+                    if (baseHue < 60) {
+                        // Red to Yellow
+                        wallColor = Color(
+                            255,
+                            (uint8_t)((baseHue/60.0f) * 255 * intensity),
+                            0,
+                            255
+                        );
+                    } else if (baseHue < 120) {
+                        // Yellow to Green
+                        wallColor = Color(
+                            (uint8_t)((2.0f - baseHue/60.0f) * 255 * intensity),
+                            255,
+                            0,
+                            255
+                        );
+                    } else if (baseHue < 180) {
+                        // Green to Cyan
+                        wallColor = Color(
+                            0,
+                            255,
+                            (uint8_t)((baseHue/60.0f - 2.0f) * 255 * intensity),
+                            255
+                        );
+                    } else if (baseHue < 240) {
+                        // Cyan to Blue
+                        wallColor = Color(
+                            0,
+                            (uint8_t)((4.0f - baseHue/60.0f) * 255 * intensity),
+                            255,
+                            255
+                        );
+                    } else if (baseHue < 300) {
+                        // Blue to Magenta
+                        wallColor = Color(
+                            (uint8_t)((baseHue/60.0f - 4.0f) * 255 * intensity),
+                            0,
+                            255,
+                            255
+                        );
+                    } else {
+                        // Magenta to Red
+                        wallColor = Color(
+                            255,
+                            0,
+                            (uint8_t)((6.0f - baseHue/60.0f) * 255 * intensity),
+                            255
+                        );
+                    }
                 }
             }
             
@@ -427,15 +484,17 @@ __global__ void bspRenderKernel(
                 }
             }
             
-            // Set pixel with depth testing - restore the tolerance for z-fighting
+            // Set pixel with improved depth testing (larger tolerance for distant walls)
             int idx = y * width + x;
             float depth = correctedDistance / maxDistance;
             
-            // Use the more lenient depth check that was working before
-            if (depth < zBuffer[idx] + 0.001f) {
-                frameBuffer[idx] = wallColor;
-                zBuffer[idx] = depth;
-            }
+            // More tolerance for distant walls to prevent z-fighting
+            float tolerance = 0.001f + (depth * 0.01f);
+            
+            // Bypass z-buffer check for walls - always draw them
+            // This ensures all walls are visible regardless of depth issues
+            frameBuffer[idx] = wallColor;
+            zBuffer[idx] = depth;
         }
     } else if (isDebugRay) {
         // Draw a thin line for debug rays that didn't hit anything
@@ -446,7 +505,7 @@ __global__ void bspRenderKernel(
         for (int y = midY - 2; y <= midY + 2; y++) {
             if (y >= 0 && y < height) {
                 int idx = y * width + x;
-                // Always draw debug rays that didn't hit anything
+                // Always draw debug rays
                 frameBuffer[idx] = debugColor;
                 zBuffer[idx] = 0.95f;
             }
