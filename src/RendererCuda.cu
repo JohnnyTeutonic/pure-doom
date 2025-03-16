@@ -341,7 +341,8 @@ __global__ void bspRenderKernel(
     CudaVec2 rayDir(rayDirX, rayDirY);
     
     // Special debug rays at fixed positions for testing
-    bool isDebugRay = (x == 0 || x == width/4 || x == width/2 || x == 3*width/4 || x == width-1);
+    // bool isDebugRay = (x == 0 || x == width/4 || x == width/2 || x == 3*width/4 || x == width-1);
+    bool isDebugRay = false; // Disable debug rays
     
     // Cast ray through BSP tree
     CudaWallCollision collision = castRayBSP(*bspTree, rayOrigin, rayDir, maxDistance);
