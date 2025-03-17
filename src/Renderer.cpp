@@ -2161,11 +2161,16 @@ void Renderer::renderPlatforms(const BSPTree& bsp, const ViewPosition& view) {
     // Get all platforms from the BSP tree
     const std::vector<Platform>& platforms = bsp.getPlatforms();
     
+    // Get the player's current sector
+    int playerSector = bsp.findSector(view.position);
+    
     // Render each platform
     for (const Platform& platform : platforms) {
         // Check if the platform is in the current sector or a visible sector
         int sectorId = platform.sectorId;
-        if (sectorId >= 0 && bsp.isSectorVisible(sectorId, view.position, view.angle, view.fov)) {
+        
+        // Always render platforms in the player's current sector, regardless of view angle
+        if (sectorId == playerSector || (sectorId >= 0 && bsp.isSectorVisible(sectorId, view.position, view.angle, view.fov))) {
             renderPlatform(platform, view);
         }
     }

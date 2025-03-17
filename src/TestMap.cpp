@@ -1163,6 +1163,36 @@ std::vector<Platform> createDoomStairs(const Vec2& start, const Vec2& end, float
     return stairs;
 }
 
+// Create a large platform that covers the entire room
+Platform createRoomPlatform(float height, int topTex, int bottomTex, int sideTex, int light, int sector) {
+    // Create a rectangular platform covering the main room
+    std::vector<Vec2> platformVertices;
+    
+    // Define the platform shape (rectangular, counter-clockwise order)
+    // Using larger dimensions to cover the entire room
+    platformVertices.push_back(Vec2(-5.0f, -5.0f));  // Bottom-left
+    platformVertices.push_back(Vec2(5.0f, -5.0f));   // Bottom-right
+    platformVertices.push_back(Vec2(5.0f, 5.0f));    // Top-right
+    platformVertices.push_back(Vec2(-5.0f, 5.0f));   // Top-left
+    
+    // Create the platform with appropriate parameters
+    Platform platform(
+        platformVertices,    // Vertices defining the platform shape
+        height,             // Height above the floor
+        0.2f,               // Thickness of the platform
+        topTex,             // Top texture ID
+        bottomTex,          // Bottom texture ID
+        sideTex,            // Side texture ID
+        light,              // Light level
+        sector              // Sector ID
+    );
+    
+    // Set a tag for the platform
+    platform.tag = "room_platform";
+    
+    return platform;
+}
+
 // Main function to test our CUDA test map
 int main(int argc, char* argv[]) {
     // Initialize SDL
@@ -1598,29 +1628,36 @@ int main(int argc, char* argv[]) {
     float stairsStepHeight = 0.4f;   // Increased height of each step (was 0.3f)
     int stairsNumSteps = 5;          // Number of steps
     
-    std::vector<Platform> doomStairs = createDoomStairs(
-        stairsStart, stairsEnd, stairsBaseHeight, stairsStepHeight, stairsNumSteps,
-        3,  // Top texture (valid texture ID)
-        3,  // Bottom texture (valid texture ID)
-        3,  // Side texture (valid texture ID)
-        255,// Light level (maximum brightness for better visibility)
-        0   // Sector ID (main room)
-    );
+    // Instead of stairs, create multiple platforms covering the entire room at different heights
+    std::vector<Platform> roomPlatforms;
     
-    // Add each stair step to the BSP tree
-    for (const Platform& stair : doomStairs) {
-        collisionBSP.addPlatform(stair);
+    // Create platforms at different heights
+    for (int i = 0; i < 5; i++) {
+        float platformHeight = 0.2f + (i * 0.4f); // Increasing heights
+        Platform roomPlatform = createRoomPlatform(
+            platformHeight,
+            3,  // Top texture (valid texture ID)
+            3,  // Bottom texture (valid texture ID)
+            3,  // Side texture (valid texture ID)
+            255 - (i * 20), // Light level (decreasing brightness for higher platforms)
+            0   // Sector ID (main room)
+        );
+        roomPlatforms.push_back(roomPlatform);
+    }
+    
+    // Add each platform to the BSP tree
+    for (const Platform& platform : roomPlatforms) {
+        collisionBSP.addPlatform(platform);
     }
     
     // Add the center platform to the BSP tree
     collisionBSP.addPlatform(centerPlatform);
     
     // Print a helpful message about the platforms
-    std::cout << "Added " << stairsNumSteps << " DOOM-like stair steps in the main room." << std::endl;
-    std::cout << "The stairs are located slightly in front of the south wall and rise to a height of " 
-              << (stairsBaseHeight + stairsNumSteps * stairsStepHeight) << " units." << std::endl;
-    std::cout << "Look for the bright fiery cracked texture to find the stairs." << std::endl;
-    std::cout << "Added a large center platform in the main room at height 0.5 units." << std::endl;
+    std::cout << "\n=== ROOM-COVERING PLATFORMS GUIDE ===\n";
+    std::cout << "Multiple room-covering platforms have been added to the main room.\n";
+    std::cout << "These platforms are stacked at different heights from 0.2 to 1.8 units.\n";
+    std::cout << "Unlike the stair illusion textures, these are actual elevated platforms that you can walk on.\n";
     
     // Print a helpful message about the elevated platform
     std::cout << "Added an elevated platform in the main room at height " << elevatedPlatform.height 
@@ -1628,7 +1665,7 @@ int main(int argc, char* argv[]) {
     std::cout << "The platform is located near the center of the main room." << std::endl;
     
     // Print a helpful message about the stairs and platforms
-    std::cout << "\n=== DOOM-LIKE STAIRS AND PLATFORMS GUIDE ===\n";
+    std::cout << "\n=== ROOM-COVERING PLATFORMS GUIDE ===\n";
     std::cout << "Real 3D stairs have been added to the south wall of the main room.\n";
     std::cout << "These stairs consist of " << stairsNumSteps << " steps rising to a height of " 
               << (stairsBaseHeight + stairsNumSteps * stairsStepHeight) << " units.\n";
@@ -1638,11 +1675,11 @@ int main(int argc, char* argv[]) {
     std::cout << "This platform is 6x6 units in size and rises 0.5 units above the floor.\n";
     std::cout << "It's positioned in the center of the room with plenty of space around it.\n";
     
-    std::cout << "\nTo use the stairs:\n";
-    std::cout << "1. From the starting position, turn around (180 degrees)\n";
-    std::cout << "2. Walk toward the south wall\n";
-    std::cout << "3. Walk up the stairs by moving forward\n";
-    std::cout << "4. Each step will raise you higher as you climb\n";
+    std::cout << "\nTo explore the platforms:\n";
+    std::cout << "1. From the starting position, look around to see the different platform levels\n";
+    std::cout << "2. Move onto a platform to change your height\n";
+    std::cout << "3. Try jumping between different platform heights\n";
+    std::cout << "4. Notice how each platform covers the entire room at a different height\n";
     
     // Print a helpful message about the stair illusion
     std::cout << "\n=== STAIR ILLUSION GUIDE ===\n";
@@ -2300,13 +2337,12 @@ int main(int argc, char* argv[]) {
                     
                     // If this is a stair platform, provide visual feedback
                     if (platform.type == PlatformType::STAIR) {
-                        std::cout << "\rOn stair step " << (platform.stairIndex + 1) 
-                                  << " of " << platform.stairCount 
+                        std::cout << "\rOn room-covering platform"
                                   << ", height: " << platform.getTopHeight() 
                                   << ", position: (" << view.position.x << ", " << view.position.y << ")"
                                   << "        " << std::flush;
                         
-                        // Add subtle screen shake for walking on stairs
+                        // Add subtle screen shake for walking on elevated surfaces
                         if (movementVector.lengthSquared() > 0.0f) {
                             screenShakeAmount = std::max(screenShakeAmount, 0.05f);
                         }
@@ -2328,7 +2364,7 @@ int main(int argc, char* argv[]) {
                     if (collisionBSP.isPointOnPlatform(checkPos, view.height - PLAYER_DEFAULT_HEIGHT, nearbyPlatformIndex)) {
                         const Platform& nearbyPlatform = collisionBSP.getPlatforms()[nearbyPlatformIndex];
                         std::cout << "Nearby platform detected at (" << checkPos.x << ", " << checkPos.y 
-                                  << "), type: " << (nearbyPlatform.type == PlatformType::STAIR ? "STAIR" : "OTHER")
+                                  << "), type: " << (nearbyPlatform.type == PlatformType::STAIR ? "ELEVATED" : "OTHER")
                                   << ", height: " << nearbyPlatform.getTopHeight() << std::endl;
                         foundNearbyPlatform = true;
                     }

@@ -2805,9 +2805,8 @@ __global__ void renderPlatformsKernel(
         float angleDiff = fabsf(angleToPlatform - viewAngle);
         while (angleDiff > M_PI) angleDiff = 2.0f * M_PI - angleDiff;
         
-        // Skip if platform is outside the field of view with some margin
-        // Use a wider margin to ensure platforms at the edge of view are still rendered
-        if (angleDiff > (view.fov * 0.6f * DEG_TO_RAD)) continue;
+        // We're removing the FOV check to ensure platforms are always rendered
+        // regardless of the view angle
         
         // Improved ray-polygon intersection test
         for (int j = 0; j < platform.vertexCount; j++) {
