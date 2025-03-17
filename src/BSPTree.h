@@ -306,9 +306,6 @@ public:
     // Collision detection for moving objects (returns collision info)
     CollisionInfo checkCollision(const Vec2& position, float radius, const Vec2& velocity) const;
     
-    // Render the scene from a viewpoint
-    void render(const Vec2& viewPosition, float viewAngle, float fov) const;
-    
     // Check if a point is inside a sector
     int findSector(const Vec2& point) const;
     

@@ -419,33 +419,6 @@ bool BSPTree::traceRayRecursive(const BSPNode* node, const Vec2& origin, const V
     return false;
 }
 
-// Render the scene from a viewpoint
-void BSPTree::render(const Vec2& viewPosition, float viewAngle, float fov) const {
-    if (!m_root) {
-        std::cout << "No BSP tree to render!" << std::endl;
-        return;
-    }
-    
-    // This function would typically interface with a rendering engine
-    // For demonstration purposes, we'll just print some information
-    std::cout << "Rendering from position (" << viewPosition.x << ", " << viewPosition.y << ") "
-              << "at angle " << viewAngle << " with FOV " << fov << std::endl;
-    
-    // In an actual implementation, we would traverse the BSP tree in back-to-front order
-    // and render each node's walls with proper perspective projection
-    
-    // Find which sector the viewer is in
-    int sectorId = findSector(viewPosition);
-    if (sectorId >= 0) {
-        std::cout << "Viewer is in sector " << sectorId << std::endl;
-    } else {
-        std::cout << "Viewer is not in any sector" << std::endl;
-    }
-    
-    // Perform a back-to-front traversal to render the scene
-    renderRecursive(m_root.get(), viewPosition, viewAngle, fov);
-}
-
 // Recursive function to render the scene
 void BSPTree::renderRecursive(const BSPNode* node, const Vec2& viewPosition, 
                             float viewAngle, float fov) const {
