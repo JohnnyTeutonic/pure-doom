@@ -612,12 +612,17 @@ __global__ void floorRenderKernel(
     // Floor rendering - calculate distance based on screen Y
     float verticalAngle = (y - horizon) / (float)(height - horizon);
     
-    // Avoid division by zero
-    verticalAngle = fmaxf(0.01f, verticalAngle);
+    // Avoid division by zero and ensure minimum visibility
+    verticalAngle = fmaxf(0.005f, verticalAngle);
     
     // Calculate the distance to the point on floor
     float heightDiff = playerHeight - floorHeight;
+    
+    // Improved distance calculation with better scaling
     float distance = heightDiff / verticalAngle * DISTANCE_MULTIPLIER / height;
+    
+    // Ensure minimum distance for better visibility
+    distance = fmaxf(0.1f, distance);
     
     // If too far, don't render (fog)
     if (distance > maxDistance) return;
@@ -626,18 +631,19 @@ __global__ void floorRenderKernel(
     float worldX = playerX + rayDirX * distance;
     float worldY = playerY + rayDirY * distance;
     
-    // Simple texture coordinates based on world position
-    float texU = fmodf(worldX, 1.0f);
-    float texV = fmodf(worldY, 1.0f);
+    // Improved texture coordinates with scaling for better detail
+    float texScale = 1.0f; // Adjust this value to change texture scale
+    float texU = fmodf(worldX * texScale, 1.0f);
+    float texV = fmodf(worldY * texScale, 1.0f);
     
     if (texU < 0) texU += 1.0f;
     if (texV < 0) texV += 1.0f;
     
-    // Apply a distance fog effect
-    float fogFactor = 1.0f - fminf(1.0f, distance / maxDistance);
+    // Apply a distance fog effect with improved visibility
+    float fogFactor = 1.0f - fminf(0.95f, distance / maxDistance); // Cap at 0.95 to ensure some visibility
     
-    // Apply lighting factor (0-1) from current sector
-    float lightFactor = fminf(1.0f, fmaxf(0.2f, lightLevel / 255.0f));
+    // Apply lighting factor (0-1) from current sector with minimum brightness
+    float lightFactor = fminf(1.0f, fmaxf(0.3f, lightLevel / 255.0f)); // Increased minimum brightness
     
     // Combined lighting and fog
     float combinedLighting = lightFactor * fogFactor;
@@ -2746,6 +2752,9 @@ __global__ void renderPlatformsKernel(
     for (int i = 0; i < platformCount; i++) {
         CudaPlatform& platform = platforms[i];
         
+        // Skip if platform has no vertices
+        if (platform.vertexCount < 3) continue;
+        
         // Calculate the world space position for this pixel
         float rayAngle = view.angle - (view.fov * 0.5f * DEG_TO_RAD) + (x / (float)width) * (view.fov * DEG_TO_RAD);
         float rayDirX = cosf(rayAngle);
@@ -2753,10 +2762,46 @@ __global__ void renderPlatformsKernel(
         
         // Check if this ray intersects with the platform
         bool intersects = false;
-        float intersectionDistance = 1000000.0f; // Use a large value instead of FLT_MAX
+        float intersectionDistance = FLT_MAX; // Use FLT_MAX for better precision
         float intersectionHeight = 0.0f;
         
-        // Simple ray-polygon intersection test
+        // First, do a quick check if the platform is potentially visible
+        // Calculate platform center
+        float centerX = 0.0f, centerY = 0.0f;
+        for (int j = 0; j < platform.vertexCount; j++) {
+            centerX += platform.vertices[j][0];
+            centerY += platform.vertices[j][1];
+        }
+        centerX /= platform.vertexCount;
+        centerY /= platform.vertexCount;
+        
+        // Calculate vector from player to platform center
+        float toCenterX = centerX - view.position.x;
+        float toCenterY = centerY - view.position.y;
+        
+        // Calculate distance to platform center
+        float distToCenter = sqrtf(toCenterX * toCenterX + toCenterY * toCenterY);
+        
+        // Skip if platform is too far away
+        if (distToCenter > 20.0f) continue;
+        
+        // Calculate angle to platform center
+        float angleToPlatform = atan2f(toCenterY, toCenterX);
+        
+        // Normalize angles to [0, 2π)
+        while (angleToPlatform < 0) angleToPlatform += 2.0f * M_PI;
+        float viewAngle = view.angle;
+        while (viewAngle < 0) viewAngle += 2.0f * M_PI;
+        
+        // Calculate angle difference
+        float angleDiff = fabsf(angleToPlatform - viewAngle);
+        while (angleDiff > M_PI) angleDiff = 2.0f * M_PI - angleDiff;
+        
+        // Skip if platform is outside the field of view with some margin
+        // Use a wider margin to ensure platforms at the edge of view are still rendered
+        if (angleDiff > (view.fov * 0.6f * DEG_TO_RAD)) continue;
+        
+        // Improved ray-polygon intersection test
         for (int j = 0; j < platform.vertexCount; j++) {
             int k = (j + 1) % platform.vertexCount;
             
@@ -2770,7 +2815,9 @@ __global__ void renderPlatformsKernel(
             // Edge equation: (x1,y1) + s * ((x2,y2) - (x1,y1))
             
             float denominator = (y2 - y1) * rayDirX - (x2 - x1) * rayDirY;
-            if (fabsf(denominator) < 0.0001f) continue; // Parallel
+            
+            // Use a smaller epsilon for better precision
+            if (fabsf(denominator) < 0.000001f) continue; // Parallel
             
             float t = ((x2 - x1) * (view.position.y - y1) - (y2 - y1) * (view.position.x - x1)) / denominator;
             float s = (rayDirX * (view.position.y - y1) - rayDirY * (view.position.x - x1)) / denominator;
@@ -2794,37 +2841,41 @@ __global__ void renderPlatformsKernel(
             // Calculate the screen space y-coordinate for the platform bottom
             float bottomScreenY = height / 2.0f - (platform.height - platform.thickness - view.height) * DISTANCE_MULTIPLIER / intersectionDistance;
             
-            // Only render if the platform is visible
+            // Only render if the platform is visible and within screen bounds
             if (screenY < bottomScreenY && screenY < height && bottomScreenY >= 0) {
                 // Clamp to screen bounds
                 int startY = max(0, (int)screenY);
                 int endY = min(height - 1, (int)bottomScreenY);
                 
-                // Calculate texture coordinates
-                float u = fmodf(worldX, 1.0f);
+                // Calculate texture coordinates with better scaling
+                float texScale = 1.0f; // Adjust for texture detail
+                float u = fmodf(worldX * texScale, 1.0f);
                 if (u < 0.0f) u += 1.0f;
                 
-                float v = fmodf(worldY, 1.0f);
+                float v = fmodf(worldY * texScale, 1.0f);
                 if (v < 0.0f) v += 1.0f;
                 
                 // Check if texture ID is valid
-                if (platform.topTextureId < 0) continue;
+                if (platform.topTextureId < 0 || platform.topTextureId >= 32) continue; // Avoid invalid texture IDs
                 
                 // Get the texture
                 CudaRenderData::TextureData& texture = textures[platform.topTextureId];
                 
-                // Render the platform
+                // Render the platform with z-buffer check for each pixel
                 for (int py = startY; py <= endY; py++) {
+                    // Calculate z-buffer value with slight offset to avoid z-fighting
+                    float zValue = intersectionDistance * 0.99f; // Slight bias to ensure visibility
+                    
                     // Skip if this pixel is behind something else
-                    if (intersectionDistance >= zBuffer[py * width + x]) continue;
+                    if (zValue >= zBuffer[py * width + x]) continue;
                     
                     // Sample the texture
                     int tx = (int)(u * texture.width) % texture.width;
                     int ty = (int)(v * texture.height) % texture.height;
                     Color color = texture.pixels[ty * texture.width + tx];
                     
-                    // Apply lighting
-                    float lightFactor = platform.lightLevel / 255.0f;
+                    // Apply lighting with minimum brightness
+                    float lightFactor = fmaxf(0.3f, platform.lightLevel / 255.0f);
                     color.r = (uint8_t)(color.r * lightFactor);
                     color.g = (uint8_t)(color.g * lightFactor);
                     color.b = (uint8_t)(color.b * lightFactor);
@@ -2833,7 +2884,7 @@ __global__ void renderPlatformsKernel(
                     frameBuffer[py * width + x] = color;
                     
                     // Update z-buffer
-                    zBuffer[py * width + x] = intersectionDistance;
+                    zBuffer[py * width + x] = zValue;
                 }
             }
         }
