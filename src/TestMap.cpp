@@ -1120,6 +1120,80 @@ int main(int argc, char* argv[]) {
     // Create sectors for the test map (matching the CUDA test map structure)
     std::vector<Sector> testMapSectors;
     
+    // Create a proper staircase in front of the player (DOOM-style)
+    // In DOOM, stairs are created using sectors with different floor heights connected by portals
+    
+    // First stair step (lowest)
+    Sector stairStep1;
+    stairStep1.floorHeight = 0.0f;     // Same as ground level
+    stairStep1.ceilingHeight = 2.0f;   // Same as main room ceiling
+    stairStep1.floorTextureId = 10;    // Staircase texture
+    stairStep1.ceilingTextureId = 1;   // Same as main room ceiling
+    stairStep1.lightLevel = 220;
+    stairStep1.tag = "stair_step_1";
+    
+    // Second stair step (middle height)
+    Sector stairStep2;
+    stairStep2.floorHeight = 0.2f;     // Higher than first step
+    stairStep2.ceilingHeight = 2.0f;   // Same ceiling height
+    stairStep2.floorTextureId = 10;    // Staircase texture
+    stairStep2.ceilingTextureId = 1;   // Same ceiling texture
+    stairStep2.lightLevel = 220;
+    stairStep2.tag = "stair_step_2";
+    
+    // Third stair step (highest)
+    Sector stairStep3;
+    stairStep3.floorHeight = 0.4f;     // Higher than second step
+    stairStep3.ceilingHeight = 2.0f;   // Same ceiling height
+    stairStep3.floorTextureId = 10;    // Staircase texture
+    stairStep3.ceilingTextureId = 1;   // Same ceiling texture
+    stairStep3.lightLevel = 220;
+    stairStep3.tag = "stair_step_3";
+    
+    // Define stair step sectors and connect them with portals
+    
+    // First step walls (connects to main room and second step)
+    // South wall (facing the player)
+    stairStep1.walls.push_back(Wall(Line(Vertex(-1.0f, 1.0f), Vertex(1.0f, 1.0f)), 5, 0, 10));
+    // East wall
+    stairStep1.walls.push_back(Wall(Line(Vertex(1.0f, 1.0f), Vertex(1.0f, 1.3f)), 5, -1, 3));
+    // Portal to second step
+    Wall portal1to2 = Wall(Line(Vertex(1.0f, 1.3f), Vertex(-1.0f, 1.3f)), 5, 6, 10);
+    portal1to2.isTransparent = true;
+    portal1to2.isSolid = false;
+    stairStep1.walls.push_back(portal1to2);
+    // West wall
+    stairStep1.walls.push_back(Wall(Line(Vertex(-1.0f, 1.3f), Vertex(-1.0f, 1.0f)), 5, -1, 3));
+    
+    // Second step walls (connects to first and third steps)
+    // Portal to first step
+    Wall portal2to1 = Wall(Line(Vertex(-1.0f, 1.3f), Vertex(1.0f, 1.3f)), 6, 5, 10);
+    portal2to1.isTransparent = true;
+    portal2to1.isSolid = false;
+    stairStep2.walls.push_back(portal2to1);
+    // East wall
+    stairStep2.walls.push_back(Wall(Line(Vertex(1.0f, 1.3f), Vertex(1.0f, 1.6f)), 6, -1, 3));
+    // Portal to third step
+    Wall portal2to3 = Wall(Line(Vertex(1.0f, 1.6f), Vertex(-1.0f, 1.6f)), 6, 7, 10);
+    portal2to3.isTransparent = true;
+    portal2to3.isSolid = false;
+    stairStep2.walls.push_back(portal2to3);
+    // West wall
+    stairStep2.walls.push_back(Wall(Line(Vertex(-1.0f, 1.6f), Vertex(-1.0f, 1.3f)), 6, -1, 3));
+    
+    // Third step walls (connects to second step and ends at the top)
+    // Portal to second step
+    Wall portal3to2 = Wall(Line(Vertex(-1.0f, 1.6f), Vertex(1.0f, 1.6f)), 7, 6, 10);
+    portal3to2.isTransparent = true;
+    portal3to2.isSolid = false;
+    stairStep3.walls.push_back(portal3to2);
+    // East wall
+    stairStep3.walls.push_back(Wall(Line(Vertex(1.0f, 1.6f), Vertex(1.0f, 1.9f)), 7, -1, 3));
+    // North wall (back wall of the staircase)
+    stairStep3.walls.push_back(Wall(Line(Vertex(1.0f, 1.9f), Vertex(-1.0f, 1.9f)), 7, -1, 3));
+    // West wall
+    stairStep3.walls.push_back(Wall(Line(Vertex(-1.0f, 1.9f), Vertex(-1.0f, 1.6f)), 7, -1, 3));
+    
     // Main room sector
     Sector mainRoom;
     mainRoom.floorHeight = 0.0f;
@@ -1143,6 +1217,15 @@ int main(int argc, char* argv[]) {
     mainRoom.walls.push_back(Wall(Line(Vertex(2.5f, 2.5f), Vertex(2.5f, -2.5f)), 0, -1, 3));
     mainRoom.walls.push_back(Wall(Line(Vertex(2.5f, -2.5f), Vertex(-2.5f, -2.5f)), 0, -1, 3));
     mainRoom.walls.push_back(Wall(Line(Vertex(-2.5f, -2.5f), Vertex(-2.5f, 2.5f)), 0, -1, 3));
+    
+    // West wall of main room, with a gap for the first stair step
+    mainRoom.walls.push_back(Wall(Line(Vertex(-2.5f, -2.5f), Vertex(-2.5f, 2.5f)), 0, -1, 3));
+    
+    // Portal to first stair step
+    Wall portalToStairs = Wall(Line(Vertex(1.0f, 1.0f), Vertex(-1.0f, 1.0f)), 0, 5, 10);
+    portalToStairs.isTransparent = true;
+    portalToStairs.isSolid = false;
+    mainRoom.walls.push_back(portalToStairs);
     
     // Corridor sector - make it much larger
     Sector corridor;
@@ -1259,6 +1342,9 @@ int main(int argc, char* argv[]) {
     testMapSectors.push_back(sideRoom);
     testMapSectors.push_back(elevatedRoom);
     testMapSectors.push_back(staircase);  // Add the new staircase sector
+    testMapSectors.push_back(stairStep1); // Add the first stair step
+    testMapSectors.push_back(stairStep2); // Add the second stair step
+    testMapSectors.push_back(stairStep3); // Add the third stair step
     
     // Build the BSP tree for collision detection
     BSPTree collisionBSP;
@@ -1273,6 +1359,18 @@ int main(int argc, char* argv[]) {
     std::cout << "4. Climb the staircase to reach the elevated room\n";
     std::cout << "5. The elevated room has a charred bone floor and pulsating flesh ceiling\n";
     std::cout << "NOTE: All rooms have been made much larger for easier navigation\n";
+    std::cout << "======================\n\n";
+    
+    // Add information about the new stair steps
+    std::cout << "\n=== NEW FEATURES ===\n";
+    std::cout << "A proper DOOM-style staircase has been added directly in front of your starting position.\n";
+    std::cout << "The staircase consists of three connected sectors with increasing floor heights:\n";
+    std::cout << "  - First step: Height 0.0 (ground level)\n";
+    std::cout << "  - Second step: Height 0.2 (middle level)\n";
+    std::cout << "  - Third step: Height 0.4 (highest level)\n";
+    std::cout << "Each step is connected to the adjacent steps by portals, allowing you to walk\n";
+    std::cout << "smoothly between them and experience proper DOOM-style stairs.\n";
+    std::cout << "The staircase uses the same texture as the main staircase that connects to the elevated room.\n";
     std::cout << "======================\n\n";
     
     // Use all sectors for the CUDA renderer
@@ -1313,6 +1411,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  - Flesh-walled side room with elevated floor\n";
     std::cout << "  - Proper staircase with 5 steps leading up to the elevated room\n";
     std::cout << "  - Elevated room with molten rock walls and charred bone floor\n";
+    std::cout << "  - Three-step DOOM-style staircase directly in front of your starting position\n";
     std::cout << "Textures:\n";
     std::cout << "  - DOOM-style floor (ID 0)\n";
     std::cout << "  - Ember-lit ceiling (ID 1)\n";
@@ -1386,9 +1485,22 @@ int main(int argc, char* argv[]) {
                 case 2: sectorName = "Side Room"; break;
                 case 3: sectorName = "Elevated Room"; break;
                 case 4: sectorName = "Staircase"; break;
+                case 5: sectorName = "Stair Step 1 (Lowest)"; break;
+                case 6: sectorName = "Stair Step 2 (Middle)"; break;
+                case 7: sectorName = "Stair Step 3 (Highest)"; break;
                 default: sectorName = "Unknown"; break;
             }
             std::cout << "Player moved to sector: " << sectorName << " (ID: " << currentSector << ")" << std::endl;
+            
+            // Special messages for stair steps
+            if (currentSector >= 5 && currentSector <= 7) {
+                std::cout << "NOTICE: You are on stair step " << (currentSector - 4) 
+                          << " of 3 (height: " << (currentSector == 5 ? 0.0f : (currentSector == 6 ? 0.2f : 0.4f)) << ")" << std::endl;
+                std::cout << "SOUND EFFECT: *footstep on stair*" << std::endl;
+                
+                // Add a small screen shake when stepping on stairs
+                screenShakeAmount = 0.1f;
+            }
             
             // If player is entering the elevated room, provide a hint about the elevation
             if (currentSector == 3 && previousSector == 4) {
@@ -1654,6 +1766,9 @@ int main(int argc, char* argv[]) {
                                 case 2: sectorName = "Side Room"; break;
                                 case 3: sectorName = "Elevated Room"; break;
                                 case 4: sectorName = "Staircase"; break;
+                                case 5: sectorName = "Stair Step 1 (Lowest)"; break;
+                                case 6: sectorName = "Stair Step 2 (Middle)"; break;
+                                case 7: sectorName = "Stair Step 3 (Highest)"; break;
                                 default: sectorName = "Unknown"; break;
                             }
                             std::cout << "\n==== DEBUG SECTOR INFO ====\n";
@@ -1683,6 +1798,9 @@ int main(int argc, char* argv[]) {
                                                 case 2: fromSector = "Side Room"; break;
                                                 case 3: fromSector = "Elevated Room"; break;
                                                 case 4: fromSector = "Staircase"; break;
+                                                case 5: fromSector = "Stair Step 1 (Lowest)"; break;
+                                                case 6: fromSector = "Stair Step 2 (Middle)"; break;
+                                                case 7: fromSector = "Stair Step 3 (Highest)"; break;
                                                 default: fromSector = "Unknown"; break;
                                             }
                                             switch (wall.sectorBack) {
@@ -1691,6 +1809,9 @@ int main(int argc, char* argv[]) {
                                                 case 2: toSector = "Side Room"; break;
                                                 case 3: toSector = "Elevated Room"; break;
                                                 case 4: toSector = "Staircase"; break;
+                                                case 5: toSector = "Stair Step 1 (Lowest)"; break;
+                                                case 6: toSector = "Stair Step 2 (Middle)"; break;
+                                                case 7: toSector = "Stair Step 3 (Highest)"; break;
                                                 default: toSector = "Unknown"; break;
                                             }
                                             std::cout << "  Portal at distance " << dist 
@@ -2139,6 +2260,15 @@ int main(int argc, char* argv[]) {
                 break;
             case 4: // Staircase
                 SDL_SetRenderDrawColor(sdlRenderer, 255, 150, 50, 255); // Orange
+                break;
+            case 5: // Stair Step 1 (Lowest)
+                SDL_SetRenderDrawColor(sdlRenderer, 200, 200, 50, 255); // Light yellow
+                break;
+            case 6: // Stair Step 2 (Middle)
+                SDL_SetRenderDrawColor(sdlRenderer, 150, 150, 50, 255); // Olive
+                break;
+            case 7: // Stair Step 3 (Highest)
+                SDL_SetRenderDrawColor(sdlRenderer, 100, 100, 50, 255); // Dark olive
                 break;
             default:
                 SDL_SetRenderDrawColor(sdlRenderer, 200, 200, 200, 255); // Gray
