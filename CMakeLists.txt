@@ -110,6 +110,7 @@ set(COMMON_CPP_SOURCES
     src/Renderer.cpp
     src/Sprite.cpp
     src/TextureLoader.cpp
+    src/Platform.cpp
 )
 
 # Create CUDA test map executable sources

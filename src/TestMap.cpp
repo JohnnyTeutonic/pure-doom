@@ -1,6 +1,7 @@
 #include "RendererCuda.h"
 #include "Renderer.h"
 #include "BSPTree.h"
+#include "Platform.h" // Include Platform.h
 #include <iostream>
 #include <vector>
 #include <SDL.h>
@@ -777,7 +778,7 @@ void drawPathToElevatedRoom(SDL_Renderer* renderer, const Vec2& playerPos, int m
 }
 
 // Render a minimap to help navigate
-void renderMinimap(SDL_Renderer* renderer, const std::vector<Sector>& sectors, const Vec2& playerPos, float playerAngle) {
+void renderMinimap(SDL_Renderer* renderer, const std::vector<Sector>& sectors, const BSPTree& bsp, const Vec2& playerPos, float playerAngle) {
     // Define minimap position and size
     int minimapSize = 150;
     int minimapX = 10;
@@ -890,6 +891,276 @@ void renderMinimap(SDL_Renderer* renderer, const std::vector<Sector>& sectors, c
         
         entryY += 12;
     }
+    
+    // Draw platforms on the minimap
+    const std::vector<Platform>& platforms = bsp.getPlatforms();
+    for (const Platform& platform : platforms) {
+        // Set color based on platform type
+        if (platform.type == PlatformType::STAIR) {
+            // Bright yellow for stairs
+            SDL_SetRenderDrawColor(renderer, 255, 255, 0, 255);
+        } else {
+            // Cyan for other platforms
+            SDL_SetRenderDrawColor(renderer, 0, 255, 255, 255);
+        }
+        
+        // Draw platform outline
+        for (size_t i = 0; i < platform.vertices.size(); i++) {
+            size_t j = (i + 1) % platform.vertices.size();
+            
+            // Convert world coordinates to minimap coordinates (player-relative)
+            int x1 = centerX + (platform.vertices[i].x - playerPos.x) * MINIMAP_SCALE;
+            int y1 = centerY - (platform.vertices[i].y - playerPos.y) * MINIMAP_SCALE;
+            int x2 = centerX + (platform.vertices[j].x - playerPos.x) * MINIMAP_SCALE;
+            int y2 = centerY - (platform.vertices[j].y - playerPos.y) * MINIMAP_SCALE;
+            
+            // Draw the line
+            SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
+        }
+        
+        // Fill platform with semi-transparent color
+        std::vector<SDL_Point> points;
+        for (const Vec2& vertex : platform.vertices) {
+            SDL_Point point;
+            point.x = centerX + (vertex.x - playerPos.x) * MINIMAP_SCALE;
+            point.y = centerY - (vertex.y - playerPos.y) * MINIMAP_SCALE;
+            points.push_back(point);
+        }
+        
+        // Draw filled polygon (simplified - just draw lines between points)
+        for (size_t i = 0; i < points.size(); i++) {
+            size_t j = (i + 1) % points.size();
+            SDL_RenderDrawLine(renderer, points[i].x, points[i].y, points[j].x, points[j].y);
+        }
+    }
+    
+    // Draw player position and direction
+    // ... existing code ...
+}
+
+// Create an elevated platform for the test map
+Platform createElevatedPlatform() {
+    // Create a rectangular platform in the main room
+    std::vector<Vec2> platformVertices;
+    
+    // Define the platform shape (rectangular, counter-clockwise order)
+    platformVertices.push_back(Vec2(-1.5f, -1.5f));  // Bottom-left
+    platformVertices.push_back(Vec2(1.5f, -1.5f));   // Bottom-right
+    platformVertices.push_back(Vec2(1.5f, 0.0f));    // Top-right
+    platformVertices.push_back(Vec2(-1.5f, 0.0f));   // Top-left
+    
+    // Create the platform with appropriate parameters
+    Platform platform(
+        platformVertices,    // Vertices defining the platform shape
+        0.5f,               // Height above the floor (0.5 units)
+        0.2f,               // Thickness of the platform (0.2 units)
+        0,                  // Top texture ID (floor texture)
+        1,                  // Bottom texture ID (ceiling texture)
+        3,                  // Side texture ID (wall texture)
+        180,                // Light level
+        0                   // Sector ID (main room)
+    );
+    
+    // Set a tag for the platform
+    platform.tag = "main_room_platform";
+    
+    return platform;
+}
+
+// Create a texture that gives the illusion of stairs
+Texture createStairIllusionTexture(int width, int height, int numSteps) {
+    Texture texture(width, height);
+    
+    // Calculate step height
+    int stepHeight = height / numSteps;
+    
+    // Colors for steps
+    Color stepColor(100, 90, 80);       // Base step color
+    Color stepEdgeColor(140, 130, 120); // Lighter color for step edges
+    Color shadowColor(60, 50, 40);      // Darker color for shadows
+    
+    // Draw the steps
+    for (int step = 0; step < numSteps; step++) {
+        int yStart = step * stepHeight;
+        int yEnd = (step + 1) * stepHeight;
+        
+        // Draw the horizontal part of the step (top surface)
+        for (int y = yStart; y < yStart + stepHeight * 0.7; y++) {
+            for (int x = 0; x < width; x++) {
+                // Add some noise to the texture
+                int noise = rand() % 20 - 10;
+                
+                // Add a gradient from back to front
+                float gradient = 1.0f - (float)(y - yStart) / (stepHeight * 0.7f);
+                
+                // Calculate pixel color with noise and gradient
+                Color pixelColor = stepColor;
+                pixelColor.r = std::min(255, std::max(0, pixelColor.r + noise + int(gradient * 30)));
+                pixelColor.g = std::min(255, std::max(0, pixelColor.g + noise + int(gradient * 30)));
+                pixelColor.b = std::min(255, std::max(0, pixelColor.b + noise + int(gradient * 20)));
+                
+                // Add horizontal lines for step detail
+                if ((x + step * 5) % 10 < 2) {
+                    pixelColor.r = std::max(0, pixelColor.r - 10);
+                    pixelColor.g = std::max(0, pixelColor.g - 10);
+                    pixelColor.b = std::max(0, pixelColor.b - 10);
+                }
+                
+                texture.m_pixels[y * width + x] = pixelColor;
+            }
+        }
+        
+        // Draw the vertical part of the step (riser)
+        for (int y = yStart + stepHeight * 0.7; y < yEnd; y++) {
+            for (int x = 0; x < width; x++) {
+                // Add some noise to the texture
+                int noise = rand() % 15 - 7;
+                
+                // Shadow effect for the riser
+                Color pixelColor = shadowColor;
+                pixelColor.r = std::min(255, std::max(0, pixelColor.r + noise));
+                pixelColor.g = std::min(255, std::max(0, pixelColor.g + noise));
+                pixelColor.b = std::min(255, std::max(0, pixelColor.b + noise));
+                
+                texture.m_pixels[y * width + x] = pixelColor;
+            }
+        }
+        
+        // Draw a highlight line at the edge of each step
+        int edgeY = yStart + stepHeight * 0.7 - 1;
+        for (int x = 0; x < width; x++) {
+            texture.m_pixels[edgeY * width + x] = stepEdgeColor;
+        }
+    }
+    
+    return texture;
+}
+
+// Create a texture that gives the illusion of looking up/down stairs from first-person view
+Texture createStairPerspectiveTexture(int width, int height, bool lookingUp, int numSteps) {
+    Texture texture(width, height);
+    
+    // Background color (dark)
+    Color backgroundColor(30, 25, 20);
+    
+    // Fill with background color first
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            texture.m_pixels[y * width + x] = backgroundColor;
+        }
+    }
+    
+    // Colors for steps
+    Color stepColor(100, 90, 80);       // Base step color
+    Color stepEdgeColor(140, 130, 120); // Lighter color for step edges
+    Color shadowColor(60, 50, 40);      // Darker color for shadows
+    
+    // Calculate perspective parameters
+    float vanishingPointY = lookingUp ? height * 0.3f : height * 0.7f;
+    float stepWidthFactor = width * 0.8f;
+    
+    // Draw steps with perspective
+    for (int step = 0; step < numSteps; step++) {
+        // Calculate step position with perspective
+        float distanceFactor = (float)(step + 1) / numSteps;
+        float perspectiveFactor = lookingUp ? distanceFactor : 1.0f - distanceFactor;
+        
+        // Calculate step dimensions with perspective
+        int stepWidth = stepWidthFactor * (1.0f - perspectiveFactor * 0.7f);
+        int stepHeight = height * 0.1f * (1.0f - perspectiveFactor * 0.7f);
+        
+        // Calculate step position
+        int stepX = (width - stepWidth) / 2;
+        int stepY;
+        
+        if (lookingUp) {
+            // When looking up, steps appear higher with distance
+            stepY = (int)(vanishingPointY - step * stepHeight * 1.5f);
+        } else {
+            // When looking down, steps appear lower with distance
+            stepY = (int)(vanishingPointY + step * stepHeight * 1.5f);
+        }
+        
+        // Draw the step (horizontal part)
+        for (int y = stepY; y < stepY + stepHeight; y++) {
+            if (y < 0 || y >= height) continue;
+            
+            for (int x = stepX; x < stepX + stepWidth; x++) {
+                if (x < 0 || x >= width) continue;
+                
+                // Add some noise and lighting
+                int noise = rand() % 15 - 7;
+                float lightFactor = lookingUp ? 
+                    1.0f - (float)(y - stepY) / stepHeight : 
+                    (float)(y - stepY) / stepHeight;
+                
+                Color pixelColor = stepColor;
+                pixelColor.r = std::min(255, std::max(0, pixelColor.r + noise + int(lightFactor * 30)));
+                pixelColor.g = std::min(255, std::max(0, pixelColor.g + noise + int(lightFactor * 30)));
+                pixelColor.b = std::min(255, std::max(0, pixelColor.b + noise + int(lightFactor * 20)));
+                
+                texture.m_pixels[y * width + x] = pixelColor;
+            }
+        }
+        
+        // Draw step edge (highlight)
+        int edgeY = lookingUp ? stepY + stepHeight - 1 : stepY;
+        for (int x = stepX; x < stepX + stepWidth; x++) {
+            if (edgeY >= 0 && edgeY < height && x >= 0 && x < width) {
+                texture.m_pixels[edgeY * width + x] = stepEdgeColor;
+            }
+        }
+        
+        // Draw vertical part (riser)
+        int riserStartY, riserEndY;
+        if (lookingUp) {
+            riserStartY = stepY + stepHeight;
+            riserEndY = (step < numSteps - 1) ? 
+                (int)(vanishingPointY - (step + 1) * stepHeight * 1.5f) : 
+                riserStartY + stepHeight;
+        } else {
+            riserEndY = stepY;
+            riserStartY = (step < numSteps - 1) ? 
+                (int)(vanishingPointY + (step + 1) * stepHeight * 1.5f) : 
+                riserEndY - stepHeight;
+        }
+        
+        for (int y = riserStartY; y < riserEndY; y++) {
+            if (y < 0 || y >= height) continue;
+            
+            for (int x = stepX; x < stepX + stepWidth; x++) {
+                if (x < 0 || x >= width) continue;
+                
+                // Add some noise
+                int noise = rand() % 10 - 5;
+                
+                Color pixelColor = shadowColor;
+                pixelColor.r = std::min(255, std::max(0, pixelColor.r + noise));
+                pixelColor.g = std::min(255, std::max(0, pixelColor.g + noise));
+                pixelColor.b = std::min(255, std::max(0, pixelColor.b + noise));
+                
+                texture.m_pixels[y * width + x] = pixelColor;
+            }
+        }
+    }
+    
+    return texture;
+}
+
+// Create a set of DOOM-like stairs using platforms
+std::vector<Platform> createDoomStairs(const Vec2& start, const Vec2& end, float baseHeight, 
+                                      float stepHeight, int numSteps, 
+                                      int topTex, int bottomTex, int sideTex, int light, int sector) {
+    std::vector<Platform> stairs;
+    
+    // Create each stair step as a separate platform
+    for (int i = 0; i < numSteps; ++i) {
+        Platform step = Platform::createStair(start, end, baseHeight, stepHeight, i, numSteps, 
+                                             topTex, bottomTex, sideTex, light, sector);
+        stairs.push_back(step);
+    }
+    
+    return stairs;
 }
 
 // Main function to test our CUDA test map
@@ -964,12 +1235,28 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
+    // Create texture vector
+    std::vector<Texture> textures;
+    
+    // Set skybox properties
+    Skybox skybox;
+    skybox.zenithColor = Color(80, 20, 10); // Dark red at the top
+    skybox.horizonColor = Color(200, 60, 20); // Fiery orange at the horizon
+    skybox.maxViewDistance = 30.0f;
+    skybox.dynamicSky = true;
+    skybox.sunAngle = 1.0f;  // Position in radians
+    skybox.sunHeight = 0.2f; // Lower in the sky (0.0 = horizon, 1.0 = zenith)
+    skybox.sunSize = 0.03f;  // Slightly larger sun
+    skybox.sunColor = Color(255, 200, 50); // Bright yellow-orange sun
+    skybox.sunGlowColor = Color(255, 100, 20); // Fiery red glow
+    skybox.sunGlowSize = 8.0f; // Larger glow for more dramatic effect
+    cudaRenderer.setSkybox(skybox);
+    
     // Create frame buffer and z-buffer
     std::vector<Color> frameBuffer(WIDTH * HEIGHT, Color(0, 0, 0));
     std::vector<float> zBuffer(WIDTH * HEIGHT, 1.0f);
     
     // Create textures for our test map
-    std::vector<Texture> textures;
     
     // 0: Floor texture (DOOM-like floor pattern)
     textures.push_back(createDoomFloorTexture(64, 64));
@@ -1082,11 +1369,17 @@ int main(int argc, char* argv[]) {
     // 9: Elevated room ceiling texture (pulsating flesh)
     textures.push_back(createPulsatingFleshCeilingTexture(64, 64));
     
-    // 10: Ramp/staircase texture for transition between side room and elevated room
+    // 10: Staircase texture (ramp-like)
     textures.push_back(createRampTexture(64, 64));
     
-    // Upload textures to CUDA
-    cudaRenderer.uploadTextures(textures);
+    // 11: Stair illusion texture (side view)
+    textures.push_back(createStairIllusionTexture(128, 128, 8));
+    
+    // 12: Stair perspective texture (looking up)
+    textures.push_back(createStairPerspectiveTexture(128, 128, true, 8));
+    
+    // 13: Stair perspective texture (looking down)
+    textures.push_back(createStairPerspectiveTexture(128, 128, false, 8));
     
     // Debug output for texture upload status
     std::cout << "--------- DEBUG TEXTURE INFORMATION ---------" << std::endl;
@@ -1094,20 +1387,6 @@ int main(int argc, char* argv[]) {
     std::cout << "Number of textures created: " << textures.size() << std::endl;
     std::cout << "Number of textures uploaded: " << cudaRenderer.getNumTextures() << std::endl;
     std::cout << "--------------------------------------------" << std::endl;
-    
-    // Configure skybox
-    Skybox skybox;
-    skybox.zenithColor = Color(80, 20, 10); // Dark red at the top
-    skybox.horizonColor = Color(200, 60, 20); // Fiery orange at the horizon
-    skybox.maxViewDistance = 30.0f;
-    skybox.dynamicSky = true;
-    skybox.sunAngle = 1.0f;  // Position in radians
-    skybox.sunHeight = 0.2f; // Lower in the sky (0.0 = horizon, 1.0 = zenith)
-    skybox.sunSize = 0.03f;  // Slightly larger sun
-    skybox.sunColor = Color(255, 200, 50); // Bright yellow-orange sun
-    skybox.sunGlowColor = Color(255, 100, 20); // Fiery red glow
-    skybox.sunGlowSize = 8.0f; // Larger glow for more dramatic effect
-    cudaRenderer.setSkybox(skybox);
     
     // Initialize view position near the center of main room
     ViewPosition view;
@@ -1123,77 +1402,6 @@ int main(int argc, char* argv[]) {
     // Create a proper staircase in front of the player (DOOM-style)
     // In DOOM, stairs are created using sectors with different floor heights connected by portals
     
-    // First stair step (lowest)
-    Sector stairStep1;
-    stairStep1.floorHeight = 0.0f;     // Same as ground level
-    stairStep1.ceilingHeight = 2.0f;   // Same as main room ceiling
-    stairStep1.floorTextureId = 10;    // Staircase texture
-    stairStep1.ceilingTextureId = 1;   // Same as main room ceiling
-    stairStep1.lightLevel = 220;
-    stairStep1.tag = "stair_step_1";
-    
-    // Second stair step (middle height)
-    Sector stairStep2;
-    stairStep2.floorHeight = 0.2f;     // Higher than first step
-    stairStep2.ceilingHeight = 2.0f;   // Same ceiling height
-    stairStep2.floorTextureId = 10;    // Staircase texture
-    stairStep2.ceilingTextureId = 1;   // Same ceiling texture
-    stairStep2.lightLevel = 220;
-    stairStep2.tag = "stair_step_2";
-    
-    // Third stair step (highest)
-    Sector stairStep3;
-    stairStep3.floorHeight = 0.4f;     // Higher than second step
-    stairStep3.ceilingHeight = 2.0f;   // Same ceiling height
-    stairStep3.floorTextureId = 10;    // Staircase texture
-    stairStep3.ceilingTextureId = 1;   // Same ceiling texture
-    stairStep3.lightLevel = 220;
-    stairStep3.tag = "stair_step_3";
-    
-    // Define stair step sectors and connect them with portals
-    
-    // First step walls (connects to main room and second step)
-    // South wall (facing the player)
-    stairStep1.walls.push_back(Wall(Line(Vertex(-1.0f, 1.0f), Vertex(1.0f, 1.0f)), 5, 0, 10));
-    // East wall
-    stairStep1.walls.push_back(Wall(Line(Vertex(1.0f, 1.0f), Vertex(1.0f, 1.3f)), 5, -1, 3));
-    // Portal to second step
-    Wall portal1to2 = Wall(Line(Vertex(1.0f, 1.3f), Vertex(-1.0f, 1.3f)), 5, 6, 10);
-    portal1to2.isTransparent = true;
-    portal1to2.isSolid = false;
-    stairStep1.walls.push_back(portal1to2);
-    // West wall
-    stairStep1.walls.push_back(Wall(Line(Vertex(-1.0f, 1.3f), Vertex(-1.0f, 1.0f)), 5, -1, 3));
-    
-    // Second step walls (connects to first and third steps)
-    // Portal to first step
-    Wall portal2to1 = Wall(Line(Vertex(-1.0f, 1.3f), Vertex(1.0f, 1.3f)), 6, 5, 10);
-    portal2to1.isTransparent = true;
-    portal2to1.isSolid = false;
-    stairStep2.walls.push_back(portal2to1);
-    // East wall
-    stairStep2.walls.push_back(Wall(Line(Vertex(1.0f, 1.3f), Vertex(1.0f, 1.6f)), 6, -1, 3));
-    // Portal to third step
-    Wall portal2to3 = Wall(Line(Vertex(1.0f, 1.6f), Vertex(-1.0f, 1.6f)), 6, 7, 10);
-    portal2to3.isTransparent = true;
-    portal2to3.isSolid = false;
-    stairStep2.walls.push_back(portal2to3);
-    // West wall
-    stairStep2.walls.push_back(Wall(Line(Vertex(-1.0f, 1.6f), Vertex(-1.0f, 1.3f)), 6, -1, 3));
-    
-    // Third step walls (connects to second step and ends at the top)
-    // Portal to second step
-    Wall portal3to2 = Wall(Line(Vertex(-1.0f, 1.6f), Vertex(1.0f, 1.6f)), 7, 6, 10);
-    portal3to2.isTransparent = true;
-    portal3to2.isSolid = false;
-    stairStep3.walls.push_back(portal3to2);
-    // East wall
-    stairStep3.walls.push_back(Wall(Line(Vertex(1.0f, 1.6f), Vertex(1.0f, 1.9f)), 7, -1, 3));
-    // North wall (back wall of the staircase)
-    stairStep3.walls.push_back(Wall(Line(Vertex(1.0f, 1.9f), Vertex(-1.0f, 1.9f)), 7, -1, 3));
-    // West wall
-    stairStep3.walls.push_back(Wall(Line(Vertex(-1.0f, 1.9f), Vertex(-1.0f, 1.6f)), 7, -1, 3));
-    
     // Main room sector
     Sector mainRoom;
     mainRoom.floorHeight = 0.0f;
@@ -1203,29 +1411,61 @@ int main(int argc, char* argv[]) {
     mainRoom.lightLevel = 200;
     mainRoom.tag = "main_room";
     
-    // Main room walls (5x5 square, centered at origin)
-    mainRoom.walls.push_back(Wall(Line(Vertex(-2.5f, 2.5f), Vertex(-1.0f, 2.5f)), 0, -1, 3));
+    // Main room walls (10x10 square, centered at origin)
+    mainRoom.walls.push_back(Wall(Line(Vertex(-5.0f, 5.0f), Vertex(-1.0f, 5.0f)), 0, -1, 3));
     
     // Portal to corridor - make it wider
-    Wall portalWall = Wall(Line(Vertex(-1.0f, 2.5f), Vertex(1.0f, 2.5f)), 0, 1, 4);
+    Wall portalWall = Wall(Line(Vertex(-1.0f, 5.0f), Vertex(1.0f, 5.0f)), 0, 1, 4);
     portalWall.isTransparent = true;
     portalWall.isSolid = false;
     mainRoom.walls.push_back(portalWall);
     
     // Rest of main room walls
-    mainRoom.walls.push_back(Wall(Line(Vertex(1.0f, 2.5f), Vertex(2.5f, 2.5f)), 0, -1, 3));
-    mainRoom.walls.push_back(Wall(Line(Vertex(2.5f, 2.5f), Vertex(2.5f, -2.5f)), 0, -1, 3));
-    mainRoom.walls.push_back(Wall(Line(Vertex(2.5f, -2.5f), Vertex(-2.5f, -2.5f)), 0, -1, 3));
-    mainRoom.walls.push_back(Wall(Line(Vertex(-2.5f, -2.5f), Vertex(-2.5f, 2.5f)), 0, -1, 3));
+    mainRoom.walls.push_back(Wall(Line(Vertex(1.0f, 5.0f), Vertex(5.0f, 5.0f)), 0, -1, 3));
+    mainRoom.walls.push_back(Wall(Line(Vertex(5.0f, 5.0f), Vertex(5.0f, -5.0f)), 0, -1, 3));
+    mainRoom.walls.push_back(Wall(Line(Vertex(5.0f, -5.0f), Vertex(-5.0f, -5.0f)), 0, -1, 3));
     
-    // West wall of main room, with a gap for the first stair step
-    mainRoom.walls.push_back(Wall(Line(Vertex(-2.5f, -2.5f), Vertex(-2.5f, 2.5f)), 0, -1, 3));
+    // South wall with stair illusion textures
+    // Left section
+    mainRoom.walls.push_back(Wall(Line(Vertex(-5.0f, -5.0f), Vertex(-2.0f, -5.0f)), 0, -1, 3));
     
-    // Portal to first stair step
-    Wall portalToStairs = Wall(Line(Vertex(1.0f, 1.0f), Vertex(-1.0f, 1.0f)), 0, 5, 10);
-    portalToStairs.isTransparent = true;
-    portalToStairs.isSolid = false;
-    mainRoom.walls.push_back(portalToStairs);
+    // Middle section with stair illusion texture (looking up)
+    Wall stairWallUp = Wall(Line(Vertex(-2.0f, -5.0f), Vertex(-1.0f, -5.0f)), 0, -1, 12);
+    stairWallUp.textureOffsetY = 0.0f; // Adjust texture alignment
+    mainRoom.walls.push_back(stairWallUp);
+    
+    // Middle section with side view stair texture
+    Wall stairWallSide = Wall(Line(Vertex(-1.0f, -5.0f), Vertex(1.0f, -5.0f)), 0, -1, 11);
+    stairWallSide.textureOffsetY = 0.0f; // Adjust texture alignment
+    mainRoom.walls.push_back(stairWallSide);
+    
+    // Middle section with stair illusion texture (looking down)
+    Wall stairWallDown = Wall(Line(Vertex(1.0f, -5.0f), Vertex(2.0f, -5.0f)), 0, -1, 13);
+    stairWallDown.textureOffsetY = 0.0f; // Adjust texture alignment
+    mainRoom.walls.push_back(stairWallDown);
+    
+    // Right section
+    mainRoom.walls.push_back(Wall(Line(Vertex(2.0f, -5.0f), Vertex(5.0f, -5.0f)), 0, -1, 3));
+    
+    // Add the main room to sectors
+    testMapSectors.push_back(mainRoom);
+    
+    // Create a large platform in the center of the main room
+    Platform centerPlatform;
+    
+    // Define the platform shape (rectangular, counter-clockwise order)
+    std::vector<Vec2> platformVertices;
+    platformVertices.push_back(Vec2(-3.0f, -3.0f));  // Bottom-left
+    platformVertices.push_back(Vec2(3.0f, -3.0f));   // Bottom-right
+    platformVertices.push_back(Vec2(3.0f, 3.0f));    // Top-right
+    platformVertices.push_back(Vec2(-3.0f, 3.0f));   // Top-left
+    
+    // Create the platform with a much greater height to ensure visibility
+    centerPlatform = Platform(platformVertices, 1.5f, 0.2f, 3, 3, 3, 255, 0);
+    centerPlatform.type = PlatformType::STATIC;
+    centerPlatform.isVisible = true;
+    centerPlatform.isSolid = true;
+    centerPlatform.tag = "center_platform";
     
     // Corridor sector - make it much larger
     Sector corridor;
@@ -1342,13 +1582,81 @@ int main(int argc, char* argv[]) {
     testMapSectors.push_back(sideRoom);
     testMapSectors.push_back(elevatedRoom);
     testMapSectors.push_back(staircase);  // Add the new staircase sector
-    testMapSectors.push_back(stairStep1); // Add the first stair step
-    testMapSectors.push_back(stairStep2); // Add the second stair step
-    testMapSectors.push_back(stairStep3); // Add the third stair step
     
     // Build the BSP tree for collision detection
     BSPTree collisionBSP;
     collisionBSP.build(testMapSectors);
+    
+    // Create and add the elevated platform to the BSP tree
+    Platform elevatedPlatform = createElevatedPlatform();
+    collisionBSP.addPlatform(elevatedPlatform);
+    
+    // Create and add DOOM-like stairs to the BSP tree
+    Vec2 stairsStart(-1.5f, -2.3f);  // Start position (slightly in front of south wall)
+    Vec2 stairsEnd(1.5f, -2.3f);     // End position (wider and slightly in front of wall)
+    float stairsBaseHeight = 0.0f;   // Start at floor level
+    float stairsStepHeight = 0.4f;   // Increased height of each step (was 0.3f)
+    int stairsNumSteps = 5;          // Number of steps
+    
+    std::vector<Platform> doomStairs = createDoomStairs(
+        stairsStart, stairsEnd, stairsBaseHeight, stairsStepHeight, stairsNumSteps,
+        3,  // Top texture (valid texture ID)
+        3,  // Bottom texture (valid texture ID)
+        3,  // Side texture (valid texture ID)
+        255,// Light level (maximum brightness for better visibility)
+        0   // Sector ID (main room)
+    );
+    
+    // Add each stair step to the BSP tree
+    for (const Platform& stair : doomStairs) {
+        collisionBSP.addPlatform(stair);
+    }
+    
+    // Add the center platform to the BSP tree
+    collisionBSP.addPlatform(centerPlatform);
+    
+    // Print a helpful message about the platforms
+    std::cout << "Added " << stairsNumSteps << " DOOM-like stair steps in the main room." << std::endl;
+    std::cout << "The stairs are located slightly in front of the south wall and rise to a height of " 
+              << (stairsBaseHeight + stairsNumSteps * stairsStepHeight) << " units." << std::endl;
+    std::cout << "Look for the bright fiery cracked texture to find the stairs." << std::endl;
+    std::cout << "Added a large center platform in the main room at height 0.5 units." << std::endl;
+    
+    // Print a helpful message about the elevated platform
+    std::cout << "Added an elevated platform in the main room at height " << elevatedPlatform.height 
+              << " units above the floor." << std::endl;
+    std::cout << "The platform is located near the center of the main room." << std::endl;
+    
+    // Print a helpful message about the stairs and platforms
+    std::cout << "\n=== DOOM-LIKE STAIRS AND PLATFORMS GUIDE ===\n";
+    std::cout << "Real 3D stairs have been added to the south wall of the main room.\n";
+    std::cout << "These stairs consist of " << stairsNumSteps << " steps rising to a height of " 
+              << (stairsBaseHeight + stairsNumSteps * stairsStepHeight) << " units.\n";
+    std::cout << "Unlike the stair illusion textures, these are actual elevated platforms that you can walk on.\n";
+    
+    std::cout << "\nA large center platform has been added to the main room.\n";
+    std::cout << "This platform is 6x6 units in size and rises 0.5 units above the floor.\n";
+    std::cout << "It's positioned in the center of the room with plenty of space around it.\n";
+    
+    std::cout << "\nTo use the stairs:\n";
+    std::cout << "1. From the starting position, turn around (180 degrees)\n";
+    std::cout << "2. Walk toward the south wall\n";
+    std::cout << "3. Walk up the stairs by moving forward\n";
+    std::cout << "4. Each step will raise you higher as you climb\n";
+    
+    // Print a helpful message about the stair illusion
+    std::cout << "\n=== STAIR ILLUSION GUIDE ===\n";
+    std::cout << "In addition to the real 3D stairs, we've also created an illusion of stairs\n";
+    std::cout << "using special textures on the south wall of the main room.\n";
+    std::cout << "The wall has three sections with different stair perspectives:\n";
+    std::cout << "1. Left section: Stairs going up (first-person perspective)\n";
+    std::cout << "2. Middle section: Side view of stairs\n";
+    std::cout << "3. Right section: Stairs going down (first-person perspective)\n";
+    std::cout << "This demonstrates how to create the illusion of 3D elements in a 2.5D engine.\n";
+    std::cout << "Compare these texture-based illusions with the real 3D stairs you can walk on!\n";
+    
+    // Create sprites for the test map
+    std::vector<Sprite> testSprites;
     
     // Print a helpful message about the elevated room
     std::cout << "\n=== NAVIGATION GUIDE ===\n";
@@ -1357,21 +1665,10 @@ int main(int argc, char* argv[]) {
     std::cout << "2. From the corridor, enter the large side room to the north\n";
     std::cout << "3. In the side room, look for the staircase entrance in the eastern part of the room\n";
     std::cout << "4. Climb the staircase to reach the elevated room\n";
-    std::cout << "5. The elevated room has a charred bone floor and pulsating flesh ceiling\n";
-    std::cout << "NOTE: All rooms have been made much larger for easier navigation\n";
-    std::cout << "======================\n\n";
-    
-    // Add information about the new stair steps
-    std::cout << "\n=== NEW FEATURES ===\n";
-    std::cout << "A proper DOOM-style staircase has been added directly in front of your starting position.\n";
-    std::cout << "The staircase consists of three connected sectors with increasing floor heights:\n";
-    std::cout << "  - First step: Height 0.0 (ground level)\n";
-    std::cout << "  - Second step: Height 0.2 (middle level)\n";
-    std::cout << "  - Third step: Height 0.4 (highest level)\n";
-    std::cout << "Each step is connected to the adjacent steps by portals, allowing you to walk\n";
-    std::cout << "smoothly between them and experience proper DOOM-style stairs.\n";
-    std::cout << "The staircase uses the same texture as the main staircase that connects to the elevated room.\n";
-    std::cout << "======================\n\n";
+    std::cout << "\nTo find the stair illusion:\n";
+    std::cout << "1. From the starting position, turn around (180 degrees)\n";
+    std::cout << "2. Look at the south wall of the main room\n";
+    std::cout << "3. You'll see three sections with different stair perspectives\n";
     
     // Use all sectors for the CUDA renderer
     cudaRenderer.useTestMapWithSectors(testMapSectors);
@@ -1411,7 +1708,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  - Flesh-walled side room with elevated floor\n";
     std::cout << "  - Proper staircase with 5 steps leading up to the elevated room\n";
     std::cout << "  - Elevated room with molten rock walls and charred bone floor\n";
-    std::cout << "  - Three-step DOOM-style staircase directly in front of your starting position\n";
+    std::cout << "  - Stair illusion textures on the south wall of the main room\n";
     std::cout << "Textures:\n";
     std::cout << "  - DOOM-style floor (ID 0)\n";
     std::cout << "  - Ember-lit ceiling (ID 1)\n";
@@ -1431,6 +1728,8 @@ int main(int argc, char* argv[]) {
     std::cout << "  - C: Crouch\n";
     std::cout << "  - P: Debug wall info\n";
     std::cout << "  - L: Debug sector info\n";
+    std::cout << "  - T: Teleport to stairs (for testing)\n";
+    std::cout << "  - O: Teleport to center platform (for testing)\n";
     std::cout << "  - ESC: Quit\n";
     std::cout << "Collision detection enabled with player radius: " << PLAYER_RADIUS << "\n";
     std::cout << "=========================================\n";
@@ -1438,6 +1737,9 @@ int main(int argc, char* argv[]) {
     // Add these variables near the top of the main loop
     float screenShakeAmount = 0.0f;
     float screenShakeDecay = 0.9f;
+    
+    // Upload textures to CUDA renderer after all textures have been created
+    cudaRenderer.uploadTextures(textures);
     
     // Main loop
     while (running) {
@@ -1485,25 +1787,32 @@ int main(int argc, char* argv[]) {
                 case 2: sectorName = "Side Room"; break;
                 case 3: sectorName = "Elevated Room"; break;
                 case 4: sectorName = "Staircase"; break;
-                case 5: sectorName = "Stair Step 1 (Lowest)"; break;
-                case 6: sectorName = "Stair Step 2 (Middle)"; break;
-                case 7: sectorName = "Stair Step 3 (Highest)"; break;
-                default: sectorName = "Unknown"; break;
+                default: sectorName = "Unknown Sector"; break;
             }
-            std::cout << "Player moved to sector: " << sectorName << " (ID: " << currentSector << ")" << std::endl;
+            std::cout << "You are in sector: " << sectorName << " (ID: " << currentSector << ")\n";
             
-            // Special messages for stair steps
-            if (currentSector >= 5 && currentSector <= 7) {
-                std::cout << "NOTICE: You are on stair step " << (currentSector - 4) 
-                          << " of 3 (height: " << (currentSector == 5 ? 0.0f : (currentSector == 6 ? 0.2f : 0.4f)) << ")" << std::endl;
-                std::cout << "SOUND EFFECT: *footstep on stair*" << std::endl;
-                
-                // Add a small screen shake when stepping on stairs
-                screenShakeAmount = 0.1f;
+            // Special messages for specific sectors
+            if (currentSector == 3) {
+                std::cout << "NOTICE: You are in the elevated room. Floor height: " << testMapSectors[currentSector].floorHeight << "\n";
+            }
+            else if (currentSector == 4) {
+                std::cout << "NOTICE: You are on the staircase. Floor height: " << testMapSectors[currentSector].floorHeight << "\n";
+            }
+            
+            // Display floor and ceiling heights
+            std::cout << "Floor height: " << testMapSectors[currentSector].floorHeight << "\n";
+            std::cout << "Ceiling height: " << testMapSectors[currentSector].ceilingHeight << "\n";
+            
+            // Display light level
+            std::cout << "Light level: " << testMapSectors[currentSector].lightLevel << "\n";
+            
+            // Display sector tag if available
+            if (!testMapSectors[currentSector].tag.empty()) {
+                std::cout << "Sector tag: " << testMapSectors[currentSector].tag << "\n";
             }
             
             // If player is entering the elevated room, provide a hint about the elevation
-            if (currentSector == 3 && previousSector == 4) {
+            if (currentSector == 3 && previousSector != 3) {
                 std::cout << "NOTICE: You have reached the top of the stairs (height 0.5)." << std::endl;
                 std::cout << "SOUND EFFECT: *footsteps on bone floor*" << std::endl;
                 
@@ -1766,10 +2075,7 @@ int main(int argc, char* argv[]) {
                                 case 2: sectorName = "Side Room"; break;
                                 case 3: sectorName = "Elevated Room"; break;
                                 case 4: sectorName = "Staircase"; break;
-                                case 5: sectorName = "Stair Step 1 (Lowest)"; break;
-                                case 6: sectorName = "Stair Step 2 (Middle)"; break;
-                                case 7: sectorName = "Stair Step 3 (Highest)"; break;
-                                default: sectorName = "Unknown"; break;
+                                default: sectorName = "Unknown Sector"; break;
                             }
                             std::cout << "\n==== DEBUG SECTOR INFO ====\n";
                             std::cout << "Current position: (" << view.position.x << ", " 
@@ -1798,9 +2104,6 @@ int main(int argc, char* argv[]) {
                                                 case 2: fromSector = "Side Room"; break;
                                                 case 3: fromSector = "Elevated Room"; break;
                                                 case 4: fromSector = "Staircase"; break;
-                                                case 5: fromSector = "Stair Step 1 (Lowest)"; break;
-                                                case 6: fromSector = "Stair Step 2 (Middle)"; break;
-                                                case 7: fromSector = "Stair Step 3 (Highest)"; break;
                                                 default: fromSector = "Unknown"; break;
                                             }
                                             switch (wall.sectorBack) {
@@ -1809,9 +2112,6 @@ int main(int argc, char* argv[]) {
                                                 case 2: toSector = "Side Room"; break;
                                                 case 3: toSector = "Elevated Room"; break;
                                                 case 4: toSector = "Staircase"; break;
-                                                case 5: toSector = "Stair Step 1 (Lowest)"; break;
-                                                case 6: toSector = "Stair Step 2 (Middle)"; break;
-                                                case 7: toSector = "Stair Step 3 (Highest)"; break;
                                                 default: toSector = "Unknown"; break;
                                             }
                                             std::cout << "  Portal at distance " << dist 
@@ -1822,6 +2122,16 @@ int main(int argc, char* argv[]) {
                             }
                             std::cout << "==========================\n";
                         }
+                        break;
+                    case SDLK_t: // Teleport to stairs for testing
+                        view.position = Vec2(0.0f, -2.3f); // Position in front of stairs
+                        view.angle = M_PI; // Face south (toward the stairs)
+                        std::cout << "Teleported to stairs position." << std::endl;
+                        break;
+                    case SDLK_o: // Teleport to center platform for testing
+                        view.position = Vec2(0.0f, 0.0f); // Position in center of room
+                        view.angle = 0; // Face north
+                        std::cout << "Teleported to center platform position." << std::endl;
                         break;
                 }
             } else if (event.type == SDL_KEYUP) {
@@ -1975,6 +2285,83 @@ int main(int argc, char* argv[]) {
             
             // Check for collisions
             CollisionInfo collision = collisionBSP.checkCollision(view.position, PLAYER_RADIUS, movementVector);
+            
+            // Check if the player is standing on a platform
+            int platformIndex = -1;
+            bool onPlatform = collisionBSP.isPointOnPlatform(view.position, view.height - PLAYER_DEFAULT_HEIGHT, platformIndex);
+            
+            // If the player is on a platform, adjust their height
+            if (onPlatform) {
+                const Platform& platform = collisionBSP.getPlatforms()[platformIndex];
+                
+                // Set the player's height based on the platform height
+                if (!isJumping) {
+                    view.height = PLAYER_DEFAULT_HEIGHT + platform.getTopHeight();
+                    
+                    // If this is a stair platform, provide visual feedback
+                    if (platform.type == PlatformType::STAIR) {
+                        std::cout << "\rOn stair step " << (platform.stairIndex + 1) 
+                                  << " of " << platform.stairCount 
+                                  << ", height: " << platform.getTopHeight() 
+                                  << ", position: (" << view.position.x << ", " << view.position.y << ")"
+                                  << "        " << std::flush;
+                        
+                        // Add subtle screen shake for walking on stairs
+                        if (movementVector.lengthSquared() > 0.0f) {
+                            screenShakeAmount = std::max(screenShakeAmount, 0.05f);
+                        }
+                    }
+                }
+            }
+            
+            // Debug: Check for platforms near the player
+            float checkRadius = 1.0f;
+            Vec2 playerPos = view.position;
+            bool foundNearbyPlatform = false;
+            
+            // Check in a grid around the player
+            for (float xOffset = -checkRadius; xOffset <= checkRadius; xOffset += 0.5f) {
+                for (float yOffset = -checkRadius; yOffset <= checkRadius; yOffset += 0.5f) {
+                    Vec2 checkPos = playerPos + Vec2(xOffset, yOffset);
+                    int nearbyPlatformIndex = -1;
+                    
+                    if (collisionBSP.isPointOnPlatform(checkPos, view.height - PLAYER_DEFAULT_HEIGHT, nearbyPlatformIndex)) {
+                        const Platform& nearbyPlatform = collisionBSP.getPlatforms()[nearbyPlatformIndex];
+                        std::cout << "Nearby platform detected at (" << checkPos.x << ", " << checkPos.y 
+                                  << "), type: " << (nearbyPlatform.type == PlatformType::STAIR ? "STAIR" : "OTHER")
+                                  << ", height: " << nearbyPlatform.getTopHeight() << std::endl;
+                        foundNearbyPlatform = true;
+                    }
+                }
+            }
+            
+            if (!foundNearbyPlatform && std::abs(view.position.y + 2.3f) < 0.5f && std::abs(view.position.x) < 2.0f) {
+                std::cout << "Player is near stairs location but no platform detected. Position: (" 
+                          << view.position.x << ", " << view.position.y << ")" << std::endl;
+            }
+            
+            // Check if the new position would be on a platform
+            Vec2 newPosition = view.position + movementVector;
+            int newPlatformIndex = -1;
+            bool onNewPlatform = collisionBSP.isPointOnPlatform(newPosition, view.height - PLAYER_DEFAULT_HEIGHT, newPlatformIndex);
+            
+            // If moving from one platform to another, check height difference
+            if (onPlatform && onNewPlatform && platformIndex != newPlatformIndex) {
+                const Platform& currentPlatform = collisionBSP.getPlatforms()[platformIndex];
+                const Platform& newPlatform = collisionBSP.getPlatforms()[newPlatformIndex];
+                
+                // Calculate height difference
+                float heightDiff = newPlatform.getTopHeight() - currentPlatform.getTopHeight();
+                
+                // If the height difference is too great, prevent movement
+                if (heightDiff > 0.3f && !isJumping) {
+                    // Step is too high to climb normally
+                    std::cout << "Step too high to climb. Height difference: " << heightDiff << std::endl;
+                    collision.collision = true;
+                    collision.distance = 0.0f;
+                    collision.normal = (newPosition - view.position).normalized() * -1.0f;
+                }
+            }
             
             // Check if we're near the portal between side room and elevated room or staircase
             bool nearElevationPortal = false;
@@ -2137,7 +2524,25 @@ int main(int argc, char* argv[]) {
         }
         
         // Render frame using test map with the potentially shaking view
-        cudaRenderer.renderTestMapFrame(shakingView, 0.016f); // ~60fps
+        std::vector<Sprite> emptySprites;
+        
+        // Debug: Print the number of platforms in the BSP tree
+        const std::vector<Platform>& platforms = collisionBSP.getPlatforms();
+        std::cout << "Rendering frame with " << platforms.size() << " platforms:" << std::endl;
+        for (size_t i = 0; i < platforms.size(); i++) {
+            const Platform& platform = platforms[i];
+            std::cout << "  Platform " << i << ": type=" 
+                      << (platform.type == PlatformType::STAIR ? "STAIR" : 
+                         (platform.type == PlatformType::STATIC ? "STATIC" : "OTHER"))
+                      << ", height=" << platform.height
+                      << ", vertices=" << platform.vertices.size()
+                      << ", position=(" << platform.vertices[0].x << "," << platform.vertices[0].y << ")"
+                      << ", isVisible=" << (platform.isVisible ? "true" : "false")
+                      << ", isSolid=" << (platform.isSolid ? "true" : "false")
+                      << std::endl;
+        }
+        
+        cudaRenderer.renderFrame(collisionBSP, shakingView, emptySprites, 0.016f);
         
         // Get the rendered frame back
         cudaRenderer.retrieveRenderingResults(frameBuffer, zBuffer);
@@ -2261,15 +2666,6 @@ int main(int argc, char* argv[]) {
             case 4: // Staircase
                 SDL_SetRenderDrawColor(sdlRenderer, 255, 150, 50, 255); // Orange
                 break;
-            case 5: // Stair Step 1 (Lowest)
-                SDL_SetRenderDrawColor(sdlRenderer, 200, 200, 50, 255); // Light yellow
-                break;
-            case 6: // Stair Step 2 (Middle)
-                SDL_SetRenderDrawColor(sdlRenderer, 150, 150, 50, 255); // Olive
-                break;
-            case 7: // Stair Step 3 (Highest)
-                SDL_SetRenderDrawColor(sdlRenderer, 100, 100, 50, 255); // Dark olive
-                break;
             default:
                 SDL_SetRenderDrawColor(sdlRenderer, 200, 200, 200, 255); // Gray
                 break;
@@ -2277,7 +2673,7 @@ int main(int argc, char* argv[]) {
         SDL_RenderFillRect(sdlRenderer, &sectorColor);
         
         // Render the minimap
-        renderMinimap(sdlRenderer, testMapSectors, Vec2(view.position.x, view.position.y), view.angle);
+        renderMinimap(sdlRenderer, testMapSectors, collisionBSP, Vec2(view.position.x, view.position.y), view.angle);
         
         // Present renderer
         SDL_RenderPresent(sdlRenderer);

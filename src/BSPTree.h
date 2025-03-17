@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <functional>
 #include <limits>
+#include "Platform.h" // Include Platform.h to get the Platform and Vec2 definitions
 
 namespace PureDoom {
 
@@ -18,58 +19,6 @@ struct Line;
 struct Sector;
 struct Wall;
 struct BSPNode;
-
-// 2D vector for coordinates
-struct Vec2 {
-    float x, y;
-    
-    Vec2() : x(0.0f), y(0.0f) {}
-    Vec2(float x, float y) : x(x), y(y) {}
-    
-    Vec2 operator+(const Vec2& other) const {
-        return Vec2(x + other.x, y + other.y);
-    }
-    
-    Vec2 operator-(const Vec2& other) const {
-        return Vec2(x - other.x, y - other.y);
-    }
-    
-    Vec2 operator*(float scalar) const {
-        return Vec2(x * scalar, y * scalar);
-    }
-    
-    float length() const {
-        return std::sqrt(x * x + y * y);
-    }
-    
-    float lengthSquared() const {
-        return x * x + y * y;
-    }
-    
-    Vec2 normalized() const {
-        float len = length();
-        if (len < 0.0001f) return Vec2();
-        return Vec2(x / len, y / len);
-    }
-    
-    float dotProduct(const Vec2& other) const {
-        return x * other.x + y * other.y;
-    }
-    
-    float crossProduct(const Vec2& other) const {
-        return x * other.y - y * other.x;
-    }
-    
-    // Distance to another point
-    float distanceTo(const Vec2& other) const {
-        return (*this - other).length();
-    }
-    
-    // Check if two points are approximately equal
-    bool approxEquals(const Vec2& other, float epsilon = 0.0001f) const {
-        return std::abs(x - other.x) < epsilon && std::abs(y - other.y) < epsilon;
-    }
-};
 
 // Vertex representation
 struct Vertex {
@@ -335,6 +284,9 @@ struct CollisionInfo {
     CollisionInfo() : collision(false), wallIndex(-1), sectorId(-1), distance(std::numeric_limits<float>::max()) {}
 };
 
+// Platform representation
+struct Platform;
+
 // The main BSP Tree class with enhanced functionality
 class BSPTree {
 public:
@@ -385,12 +337,29 @@ public:
     // Validate the BSP tree (for debugging)
     bool validate() const;
     
+    // Add a platform to the scene
+    void addPlatform(const Platform& platform);
+    
+    // Get all platforms in the scene
+    const std::vector<Platform>& getPlatforms() const { return m_platforms; }
+    
+    // Check if a point is on a platform
+    bool isPointOnPlatform(const Vec2& point, float height, int& platformIndex) const;
+    
+    // Check if a ray intersects with a platform
+    bool rayIntersectsPlatform(const Vec2& origin, const Vec2& direction, float maxDistance,
+                              Vec2& hitPoint, float& hitHeight, int& platformIndex) const;
+    
 private:
     std::unique_ptr<BSPNode> m_root; // Root of the BSP tree
     std::vector<Sector> m_sectors;   // All sectors in the scene
+    std::vector<Platform> m_platforms; // All platforms in the scene
     
     // Mapping of tags to sector indices for quick lookup
     std::unordered_map<std::string, std::vector<int>> m_tagToSectors;
+    
+    // Mapping of tags to platform indices for quick lookup
+    std::unordered_map<std::string, std::vector<int>> m_tagToPlatforms;
     
     // Cache for portal visibility
     mutable std::map<std::pair<int, int>, bool> m_portalVisibilityCache;

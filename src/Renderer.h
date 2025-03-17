@@ -3,6 +3,7 @@
 
 #include "BSPTree.h"
 #include "Sprite.h"
+#include "Platform.h"
 #include <vector>
 #include <memory>
 #include <array>
@@ -315,6 +316,12 @@ public:
     // CPU-only rendering (fallback when GPU rendering fails)
     void renderCPU(const BSPTree& bsp, std::vector<Sprite>& sprites, float deltaTime);
     
+    // Render platforms
+    void renderPlatforms(const BSPTree& bsp, const ViewPosition& view);
+    
+    // Render a single platform
+    void renderPlatform(const Platform& platform, const ViewPosition& view);
+    
 private:
     int m_width;
     int m_height;
@@ -415,6 +422,12 @@ private:
     
     // Check if sprite is visible
     bool isSpriteVisible(const Sprite& sprite, const ViewPosition& view, float& distance) const;
+    
+    // Helper method to render a platform surface
+    void renderPlatformSurface(const Platform& platform, bool isTop, const ViewPosition& view);
+    
+    // Helper method to render platform sides
+    void renderPlatformSides(const Platform& platform, const ViewPosition& view);
     
     RendererSettings m_settings;
 };

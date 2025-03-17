@@ -958,15 +958,24 @@ std::vector<Wall> BSPTree::optimizeWalls(const std::vector<Wall>& walls) const {
     return optimized;
 }
 
-// Update moving sectors
+// Update moving sectors and platforms
 void BSPTree::update(float deltaTime) {
     // Update all moving sectors
     bool anySectorMoved = false;
     
-    for (auto& sector : m_sectors) {
+    for (Sector& sector : m_sectors) {
         if (sector.isMoving() && sector.movementActive) {
             sector.update(deltaTime);
             anySectorMoved = true;
+        }
+    }
+    
+    // Update moving platforms
+    bool anyPlatformMoved = false;
+    for (Platform& platform : m_platforms) {
+        if (platform.isMoving) {
+            platform.update(deltaTime);
+            anyPlatformMoved = true;
         }
     }
     
@@ -1006,7 +1015,6 @@ void BSPTree::update(float deltaTime) {
             std::cerr << "Unknown exception during BSP rebuild!" << std::endl;
             // Continue with the old BSP tree rather than crashing
         }
-        
     }
 }
 
@@ -1206,6 +1214,126 @@ bool BSPTree::validateRecursive(const BSPNode* node) const {
     bool backValid = validateRecursive(node->back.get());
     
     return frontValid && backValid;
+}
+
+// Add a platform to the scene
+void BSPTree::addPlatform(const Platform& platform) {
+    // Add the platform to the list
+    m_platforms.push_back(platform);
+    
+    // Update the tag-to-platform map
+    int platformIndex = static_cast<int>(m_platforms.size() - 1);
+    if (!platform.tag.empty()) {
+        m_tagToPlatforms[platform.tag].push_back(platformIndex);
+    }
+    
+    // Ensure the platform has a valid sector ID
+    if (platform.sectorId < 0 || platform.sectorId >= static_cast<int>(m_sectors.size())) {
+        std::cerr << "Warning: Platform has invalid sector ID: " << platform.sectorId << std::endl;
+    }
+}
+
+// Check if a point is on a platform
+bool BSPTree::isPointOnPlatform(const Vec2& point, float height, int& platformIndex) const {
+    platformIndex = -1;
+    
+    // Check each platform
+    for (size_t i = 0; i < m_platforms.size(); ++i) {
+        const Platform& platform = m_platforms[i];
+        
+        // Check if the point is within the platform's 2D bounds
+        if (platform.containsPoint(point)) {
+            // Check if the height is within the platform's height range
+            float topHeight = platform.getTopHeight();
+            float bottomHeight = platform.getBottomHeight();
+            
+            // Use a more lenient height check with a small buffer (0.1 units)
+            const float HEIGHT_BUFFER = 0.1f;
+            if (height >= bottomHeight - HEIGHT_BUFFER && height <= topHeight + HEIGHT_BUFFER) {
+                platformIndex = static_cast<int>(i);
+                
+                // Debug output
+                std::cout << "Platform detected at (" << point.x << ", " << point.y 
+                          << "), type: " << (platform.type == PlatformType::STAIR ? "STAIR" : "OTHER")
+                          << ", index: " << i
+                          << ", height range: " << bottomHeight << " to " << topHeight
+                          << ", player height: " << height << std::endl;
+                
+                return true;
+            }
+            
+            // Debug output for near misses
+            if (std::abs(height - topHeight) < 0.2f || std::abs(height - bottomHeight) < 0.2f) {
+                std::cout << "Near miss platform at (" << point.x << ", " << point.y 
+                          << "), height range: " << bottomHeight << " to " << topHeight
+                          << ", player height: " << height << std::endl;
+            }
+        }
+    }
+    
+    return false;
+}
+
+// Check if a ray intersects with a platform
+bool BSPTree::rayIntersectsPlatform(const Vec2& origin, const Vec2& direction, float maxDistance,
+                                  Vec2& hitPoint, float& hitHeight, int& platformIndex) const {
+    platformIndex = -1;
+    float closestDistance = maxDistance;
+    
+    // Check each platform
+    for (size_t i = 0; i < m_platforms.size(); ++i) {
+        const Platform& platform = m_platforms[i];
+        
+        // Check if the ray intersects with the platform's 2D bounds
+        // This is a simplified approach - we're casting a ray and checking if it hits any of the platform's edges
+        
+        // For each edge of the platform
+        for (size_t j = 0; j < platform.vertices.size(); ++j) {
+            size_t nextIndex = (j + 1) % platform.vertices.size();
+            
+            // Create a line segment for this edge
+            Line edge(Vertex(platform.vertices[j]), Vertex(platform.vertices[nextIndex]));
+            
+            // Check if the ray intersects with this edge
+            Vec2 intersection;
+            float t1, t2;
+            
+            // Ray equation: origin + t1 * direction
+            // Edge equation: edge.start.position + t2 * (edge.end.position - edge.start.position)
+            
+            // Solve for t1 and t2
+            Vec2 edgeDir = edge.end.position - edge.start.position;
+            float crossProduct = direction.crossProduct(edgeDir);
+            
+            // If crossProduct is zero, lines are parallel
+            if (std::abs(crossProduct) < 0.0001f) {
+                continue;
+            }
+            
+            Vec2 originToStart = edge.start.position - origin;
+            t1 = originToStart.crossProduct(edgeDir) / crossProduct;
+            t2 = originToStart.crossProduct(direction) / crossProduct;
+            
+            // Check if intersection is valid
+            if (t1 >= 0.0f && t1 <= closestDistance && t2 >= 0.0f && t2 <= 1.0f) {
+                // Calculate intersection point
+                intersection = origin + direction * t1;
+                
+                // Check if this is the closest intersection
+                if (t1 < closestDistance) {
+                    closestDistance = t1;
+                    hitPoint = intersection;
+                    
+                    // Calculate the height at the intersection point
+                    // For a flat platform, the height is constant
+                    hitHeight = platform.getTopHeight();
+                    platformIndex = static_cast<int>(i);
+                }
+            }
+        }
+    }
+    
+    return platformIndex != -1;
 }
 
 } // namespace PureDoom 

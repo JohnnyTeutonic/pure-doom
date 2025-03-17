@@ -240,6 +240,30 @@ src/CudaUtils.cu.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/cuda_objects.dir/build.make CMakeFiles/cuda_objects.dir/src/CudaUtils.cu.s
 .PHONY : src/CudaUtils.cu.s
 
+src/Platform.o: src/Platform.cpp.o
+.PHONY : src/Platform.o
+
+# target to build an object file
+src/Platform.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/common_cpp_objects.dir/build.make CMakeFiles/common_cpp_objects.dir/src/Platform.cpp.o
+.PHONY : src/Platform.cpp.o
+
+src/Platform.i: src/Platform.cpp.i
+.PHONY : src/Platform.i
+
+# target to preprocess a source file
+src/Platform.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/common_cpp_objects.dir/build.make CMakeFiles/common_cpp_objects.dir/src/Platform.cpp.i
+.PHONY : src/Platform.cpp.i
+
+src/Platform.s: src/Platform.cpp.s
+.PHONY : src/Platform.s
+
+# target to generate assembly for a file
+src/Platform.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/common_cpp_objects.dir/build.make CMakeFiles/common_cpp_objects.dir/src/Platform.cpp.s
+.PHONY : src/Platform.cpp.s
+
 src/Renderer.o: src/Renderer.cpp.o
 .PHONY : src/Renderer.o
 
@@ -405,6 +429,9 @@ help:
 	@echo "... src/CudaUtils.o"
 	@echo "... src/CudaUtils.i"
 	@echo "... src/CudaUtils.s"
+	@echo "... src/Platform.o"
+	@echo "... src/Platform.i"
+	@echo "... src/Platform.s"
 	@echo "... src/Renderer.o"
 	@echo "... src/Renderer.i"
 	@echo "... src/Renderer.s"

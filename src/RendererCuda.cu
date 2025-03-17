@@ -8,10 +8,59 @@
 #include <mutex>      // For std::mutex
 #include <set>
 #include <queue>
+#include <cfloat>     // For FLT_MAX
 #include "CudaTestMap.h" // Include the test map header
+#include "Platform.h"    // Include Platform header
 
 // Host and device implementations of Color methods for CUDA kernels
 namespace PureDoom {
+
+// Define data structure for CUDA rendering
+struct CudaRenderData {
+    // Frame buffer info
+    Color* d_frameBuffer;
+    float* d_zBuffer;
+    int width;
+    int height;
+    
+    // Texture data
+    struct TextureData {
+        Color* pixels;
+        int width;
+        int height;
+    };
+    
+    TextureData* d_textures;
+    int numTextures;
+    
+    // BSP tree data
+    CudaBSPTree* d_bspTree;
+};
+
+// Structure to represent a platform in CUDA
+struct CudaPlatform {
+    float vertices[8][2];  // Up to 8 vertices (x,y coordinates)
+    int vertexCount;       // Number of vertices
+    float height;          // Height above the floor
+    float thickness;       // Thickness of the platform
+    int topTextureId;      // Texture ID for the top surface
+    int bottomTextureId;   // Texture ID for the bottom surface
+    int sideTextureId;     // Texture ID for the sides
+    int lightLevel;        // Light level
+    int sectorId;          // Sector ID
+};
+
+// Forward declaration of the platform rendering kernel
+__global__ void renderPlatformsKernel(
+    Color* frameBuffer,
+    float* zBuffer,
+    int width,
+    int height,
+    CudaPlatform* platforms,
+    int platformCount,
+    const ViewPosition view,
+    CudaRenderData::TextureData* textures
+);
 
 // Host/device implementation of Color::fromHSV
 __host__ __device__ Color Color::fromHSV(float h, float s, float v) {
@@ -76,28 +125,6 @@ __host__ __device__ Color Color::blend(const Color& c1, const Color& c2, float t
     result.a = static_cast<uint8_t>((1.0f - t) * c1.a + t * c2.a);
     return result;
 }
-
-// Define data structure for CUDA rendering
-struct CudaRenderData {
-    // Frame buffer info
-    Color* d_frameBuffer;
-    float* d_zBuffer;
-    int width;
-    int height;
-    
-    // Texture data
-    struct TextureData {
-        Color* pixels;
-        int width;
-        int height;
-    };
-    
-    TextureData* d_textures;
-    int numTextures;
-    
-    // BSP tree data
-    CudaBSPTree* d_bspTree;
-};
 
 // CUDA-compatible color blend function for device code
 __device__ Color deviceBlendColor(const Color& c1, const Color& c2, float t) {
@@ -1085,6 +1112,76 @@ void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
         
         // 4. Finally render sprites on top
         renderSpritesCuda(bsp, view, sprites);
+        
+        // 5. Render platforms
+        try {
+            const std::vector<Platform>& platforms = bsp.getPlatforms();
+            if (!platforms.empty()) {
+                // Convert platforms to CUDA format
+                std::vector<CudaPlatform> cudaPlatforms;
+                for (const Platform& platform : platforms) {
+                    CudaPlatform cudaPlatform;
+                    
+                    // Copy vertices (up to 8)
+                    cudaPlatform.vertexCount = std::min(8, static_cast<int>(platform.vertices.size()));
+                    for (int i = 0; i < cudaPlatform.vertexCount; i++) {
+                        cudaPlatform.vertices[i][0] = platform.vertices[i].x;
+                        cudaPlatform.vertices[i][1] = platform.vertices[i].y;
+                    }
+                    
+                    // Copy other properties
+                    cudaPlatform.height = platform.height;
+                    cudaPlatform.thickness = platform.thickness;
+                    cudaPlatform.topTextureId = platform.topTextureId;
+                    cudaPlatform.bottomTextureId = platform.bottomTextureId;
+                    cudaPlatform.sideTextureId = platform.sideTextureId;
+                    cudaPlatform.lightLevel = platform.lightLevel;
+                    cudaPlatform.sectorId = platform.sectorId;
+                    
+                    cudaPlatforms.push_back(cudaPlatform);
+                }
+                
+                // Allocate device memory for platforms
+                CudaPlatform* d_platforms = nullptr;
+                cudaError_t err = cudaMalloc(&d_platforms, cudaPlatforms.size() * sizeof(CudaPlatform));
+                if (err != cudaSuccess) {
+                    std::cerr << "Failed to allocate device memory for platforms: " << cudaGetErrorString(err) << std::endl;
+                    return;
+                }
+                
+                err = cudaMemcpy(d_platforms, cudaPlatforms.data(), cudaPlatforms.size() * sizeof(CudaPlatform), cudaMemcpyHostToDevice);
+                if (err != cudaSuccess) {
+                    std::cerr << "Failed to copy platform data to device: " << cudaGetErrorString(err) << std::endl;
+                    cudaFree(d_platforms);
+                    return;
+                }
+                
+                // Launch platform rendering kernel
+                dim3 blockSize(16, 16);
+                dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x, (m_height + blockSize.y - 1) / blockSize.y);
+                renderPlatformsKernel<<<gridSize, blockSize>>>(
+                    m_cudaData->d_frameBuffer,
+                    m_cudaData->d_zBuffer,
+                    m_width,
+                    m_height,
+                    d_platforms,
+                    static_cast<int>(cudaPlatforms.size()),
+                    view,
+                    m_cudaData->d_textures
+                );
+                
+                // Check for kernel launch errors
+                err = cudaGetLastError();
+                if (err != cudaSuccess) {
+                    std::cerr << "Platform rendering kernel launch failed: " << cudaGetErrorString(err) << std::endl;
+                }
+                
+                // Free device memory
+                cudaFree(d_platforms);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error rendering platforms: " << e.what() << std::endl;
+        }
         
         // Ensure all GPU operations are complete
         cudaError_t err = cudaDeviceSynchronize();
@@ -2627,6 +2724,120 @@ void RendererCuda::renderTestMapFloorCuda(const ViewPosition& view) {
 int RendererCuda::getNumTextures() const {
     if (!m_cudaData) return 0;
     return m_cudaData->numTextures;
+}
+
+// Kernel to render platforms
+__global__ void renderPlatformsKernel(
+    Color* frameBuffer,
+    float* zBuffer,
+    int width,
+    int height,
+    CudaPlatform* platforms,
+    int platformCount,
+    const ViewPosition view,
+    CudaRenderData::TextureData* textures
+) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    if (x >= width || y >= height) return;
+    
+    // For each platform
+    for (int i = 0; i < platformCount; i++) {
+        CudaPlatform& platform = platforms[i];
+        
+        // Calculate the world space position for this pixel
+        float rayAngle = view.angle - (view.fov * 0.5f * DEG_TO_RAD) + (x / (float)width) * (view.fov * DEG_TO_RAD);
+        float rayDirX = cosf(rayAngle);
+        float rayDirY = sinf(rayAngle);
+        
+        // Check if this ray intersects with the platform
+        bool intersects = false;
+        float intersectionDistance = 1000000.0f; // Use a large value instead of FLT_MAX
+        float intersectionHeight = 0.0f;
+        
+        // Simple ray-polygon intersection test
+        for (int j = 0; j < platform.vertexCount; j++) {
+            int k = (j + 1) % platform.vertexCount;
+            
+            // Edge from vertices[j] to vertices[k]
+            float x1 = platform.vertices[j][0];
+            float y1 = platform.vertices[j][1];
+            float x2 = platform.vertices[k][0];
+            float y2 = platform.vertices[k][1];
+            
+            // Ray equation: view.position + t * rayDir
+            // Edge equation: (x1,y1) + s * ((x2,y2) - (x1,y1))
+            
+            float denominator = (y2 - y1) * rayDirX - (x2 - x1) * rayDirY;
+            if (fabsf(denominator) < 0.0001f) continue; // Parallel
+            
+            float t = ((x2 - x1) * (view.position.y - y1) - (y2 - y1) * (view.position.x - x1)) / denominator;
+            float s = (rayDirX * (view.position.y - y1) - rayDirY * (view.position.x - x1)) / denominator;
+            
+            if (t >= 0.0f && s >= 0.0f && s <= 1.0f && t < intersectionDistance) {
+                // Check if this is the closest intersection
+                intersects = true;
+                intersectionDistance = t;
+                intersectionHeight = platform.height;
+            }
+        }
+        
+        if (intersects) {
+            // Calculate screen space coordinates for the platform
+            float worldX = view.position.x + rayDirX * intersectionDistance;
+            float worldY = view.position.y + rayDirY * intersectionDistance;
+            
+            // Calculate the screen space y-coordinate for the platform top
+            float screenY = height / 2.0f - (platform.height - view.height) * DISTANCE_MULTIPLIER / intersectionDistance;
+            
+            // Calculate the screen space y-coordinate for the platform bottom
+            float bottomScreenY = height / 2.0f - (platform.height - platform.thickness - view.height) * DISTANCE_MULTIPLIER / intersectionDistance;
+            
+            // Only render if the platform is visible
+            if (screenY < bottomScreenY && screenY < height && bottomScreenY >= 0) {
+                // Clamp to screen bounds
+                int startY = max(0, (int)screenY);
+                int endY = min(height - 1, (int)bottomScreenY);
+                
+                // Calculate texture coordinates
+                float u = fmodf(worldX, 1.0f);
+                if (u < 0.0f) u += 1.0f;
+                
+                float v = fmodf(worldY, 1.0f);
+                if (v < 0.0f) v += 1.0f;
+                
+                // Check if texture ID is valid
+                if (platform.topTextureId < 0) continue;
+                
+                // Get the texture
+                CudaRenderData::TextureData& texture = textures[platform.topTextureId];
+                
+                // Render the platform
+                for (int py = startY; py <= endY; py++) {
+                    // Skip if this pixel is behind something else
+                    if (intersectionDistance >= zBuffer[py * width + x]) continue;
+                    
+                    // Sample the texture
+                    int tx = (int)(u * texture.width) % texture.width;
+                    int ty = (int)(v * texture.height) % texture.height;
+                    Color color = texture.pixels[ty * texture.width + tx];
+                    
+                    // Apply lighting
+                    float lightFactor = platform.lightLevel / 255.0f;
+                    color.r = (uint8_t)(color.r * lightFactor);
+                    color.g = (uint8_t)(color.g * lightFactor);
+                    color.b = (uint8_t)(color.b * lightFactor);
+                    
+                    // Write to frame buffer
+                    frameBuffer[py * width + x] = color;
+                    
+                    // Update z-buffer
+                    zBuffer[py * width + x] = intersectionDistance;
+                }
+            }
+        }
+    }
 }
 
 } // namespace PureDoom 

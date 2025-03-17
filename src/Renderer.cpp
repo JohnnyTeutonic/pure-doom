@@ -405,77 +405,106 @@ void Renderer::clearBuffers() {
     m_visplanes.clear();
 }
 
+// Render a frame
 void Renderer::renderFrame(const BSPTree& bsp, const ViewPosition& view, const std::vector<Sprite>& sprites) {
-    // Store the view position for rendering
+    // Store the view position for minimap rendering
     m_viewPosition = view;
+    m_playerPos = view.position;
     
-    // Create a non-const copy of the sprites to pass to the new implementation
-    std::vector<Sprite> spritesCopy(sprites.begin(), sprites.end());
-    
-    // Call the updated implementation with default deltaTime
-    static float deltaTime = 1.0f / 60.0f;
-    renderFrame(bsp, spritesCopy, deltaTime);
-}
-
-void Renderer::renderFrame(const BSPTree& bsp, std::vector<Sprite>& sprites, float deltaTime) {
-    // Store the view position
-    m_viewPosition = ViewPosition(m_viewPosition);  // Ensure we have a proper copy
-    
-    // Clear buffers
+    // Clear the frame buffer
     clearBuffers();
     
-    // Update skybox animation
+    // Render the skybox
+    renderSkybox(view, 0.0f);
+    
+    // Render the BSP tree
+    renderBSP(bsp, view);
+    
+    // Render platforms
+    renderPlatforms(bsp, view);
+    
+    // Render sprites
+    renderSprites(bsp, view, sprites);
+    
+    // Render minimap if enabled
+    if (m_minimapEnabled) {
+        renderMinimap(bsp, view);
+    }
+}
+
+// Implementation with different parameter order (for internal use)
+void Renderer::renderFrame(const BSPTree& bsp, std::vector<Sprite>& sprites, float deltaTime) {
+    // Create a view position from the player position
+    ViewPosition view;
+    view.position = m_playerPos;
+    view.angle = m_viewPosition.angle;
+    view.fov = m_viewPosition.fov;
+    view.height = m_viewPosition.height;
+    
+    // Update the skybox
     m_skybox.update(deltaTime);
     
-    // Toggle GPU rendering if keyboard toggles it (handled externally)
-    if (m_toggleGPU) {
-        m_texturesUploaded = false; // Force texture upload
-        m_toggleGPU = false;
-        std::cout << "GPU rendering state toggled, current state: " << (m_gpuAccelerationEnabled ? "enabled" : "disabled") << std::endl;
+    // Check if GPU acceleration is enabled and available
+    if (m_gpuAccelerationEnabled && m_cudaRenderer) {
+        try {
+            // Upload textures to GPU if needed
+            if (!m_texturesUploaded) {
+                m_cudaRenderer->uploadTextures(m_textures);
+                m_texturesUploaded = true;
+            }
+            
+            // Set the skybox in the CUDA renderer
+            m_cudaRenderer->setSkybox(m_skybox);
+            
+            // Render using CUDA
+            m_cudaRenderer->renderFrame(bsp, view, sprites, deltaTime);
+            
+            // Render minimap if enabled (CPU-side)
+            if (m_minimapEnabled) {
+                renderMinimap(bsp, view);
+            }
+            
+            return;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "CUDA rendering failed: " << e.what() << std::endl;
+            std::cerr << "Falling back to CPU rendering." << std::endl;
+            m_gpuAccelerationEnabled = false;
+        }
     }
     
-    // If GPU acceleration is enabled and available, use it
-    #if defined(ENABLE_CUDA)
-    if (m_gpuAccelerationEnabled && m_cudaRenderer) {
-        // Upload textures to GPU if needed or if explicitly requested by CUDA renderer
-        if (!m_texturesUploaded || m_cudaRenderer->needsTextureReUpload()) {
-            std::cout << "Uploading " << m_textures.size() << " textures to GPU..." << std::endl;
-            
-            // Reset the texturesUploaded flag before attempting upload
-            m_texturesUploaded = false;
-            
-            // Attempt to upload textures
-            m_cudaRenderer->uploadTextures(m_textures);
-            
-            // Mark as uploaded regardless of success (CUDA renderer will set its own internal flag)
-            m_texturesUploaded = true;
-            std::cout << "Texture upload complete. " << m_textures.size() << " textures now available for GPU rendering." << std::endl;
-        }
-        
-        // Attempt to render with GPU
-        try {
-            // Use the correct signature for renderFrame - it expects deltaTime as the last parameter
-            m_cudaRenderer->renderFrame(bsp, m_viewPosition, sprites, deltaTime);
-            
-            // Render minimap with CPU if enabled (not worth GPU overhead)
-            if (m_minimapEnabled) {
-                renderMinimap(bsp, m_viewPosition);
-            }
-        } catch (const std::exception& e) {
-            std::cerr << "CUDA rendering failed: " << e.what() << std::endl;
-            std::cerr << "Falling back to CPU rendering" << std::endl;
-            
-            // Fall back to CPU rendering
-            renderCPU(bsp, sprites, deltaTime);
-        }
-    } else {
-        // Use CPU rendering
-        renderCPU(bsp, sprites, deltaTime);
-    }
-    #else
-    // Always use CPU rendering
+    // CPU rendering fallback
     renderCPU(bsp, sprites, deltaTime);
-    #endif
+}
+
+// CPU-only rendering (fallback when GPU rendering fails)
+void Renderer::renderCPU(const BSPTree& bsp, std::vector<Sprite>& sprites, float deltaTime) {
+    // Create a view position from the player position
+    ViewPosition view;
+    view.position = m_playerPos;
+    view.angle = m_viewPosition.angle;
+    view.fov = m_viewPosition.fov;
+    view.height = m_viewPosition.height;
+    
+    // Clear the frame buffer
+    clearBuffers();
+    
+    // Render the skybox
+    renderSkybox(view, deltaTime);
+    
+    // Render the BSP tree
+    renderBSP(bsp, view);
+    
+    // Render platforms
+    renderPlatforms(bsp, view);
+    
+    // Render sprites
+    renderSprites(bsp, view, sprites);
+    
+    // Render minimap if enabled
+    if (m_minimapEnabled) {
+        renderMinimap(bsp, view);
+    }
 }
 
 void Renderer::renderBSP(const BSPTree& bsp, const ViewPosition& view) {
@@ -2127,23 +2156,204 @@ void Renderer::addTexture(const Texture& texture) {
     #endif
 }
 
-// CPU-only rendering implementation
-void Renderer::renderCPU(const BSPTree& bsp, std::vector<Sprite>& sprites, float deltaTime) {
-    // Clear buffers
-    clearBuffers();
+// Render platforms
+void Renderer::renderPlatforms(const BSPTree& bsp, const ViewPosition& view) {
+    // Get all platforms from the BSP tree
+    const std::vector<Platform>& platforms = bsp.getPlatforms();
     
-    // Update skybox state
-    m_skybox.update(deltaTime);
+    // Render each platform
+    for (const Platform& platform : platforms) {
+        // Check if the platform is in the current sector or a visible sector
+        int sectorId = platform.sectorId;
+        if (sectorId >= 0 && bsp.isSectorVisible(sectorId, view.position, view.angle, view.fov)) {
+            renderPlatform(platform, view);
+        }
+    }
+}
+
+// Render a single platform
+void Renderer::renderPlatform(const Platform& platform, const ViewPosition& view) {
+    // Render the top surface
+    renderPlatformSurface(platform, true, view);
     
-    // Full CPU rendering pipeline
-    renderSkybox(m_viewPosition, deltaTime);
-    renderBSP(bsp, m_viewPosition);
-    renderFloorAndCeilingSpans(bsp, m_viewPosition);
-    renderSprites(bsp, m_viewPosition, sprites);
+    // Render the bottom surface
+    renderPlatformSurface(platform, false, view);
     
-    // Render the minimap if enabled
-    if (m_minimapEnabled) {
-        renderMinimap(bsp, m_viewPosition);
+    // Render the sides
+    renderPlatformSides(platform, view);
+}
+
+// Helper method to render a platform surface (top or bottom)
+void Renderer::renderPlatformSurface(const Platform& platform, bool isTop, const ViewPosition& view) {
+    // Get the height of the surface
+    float surfaceHeight = isTop ? platform.getTopHeight() : platform.getBottomHeight();
+    
+    // Get the texture ID for the surface
+    int textureId = isTop ? platform.topTextureId : platform.bottomTextureId;
+    
+    // Skip if no texture is assigned
+    if (textureId < 0 || textureId >= static_cast<int>(m_textures.size())) {
+        return;
+    }
+    
+    // Get the texture
+    const Texture& texture = m_textures[textureId];
+    
+    // Calculate the height difference between the view and the surface
+    float heightDiff = view.height - surfaceHeight;
+    
+    // Skip rendering if the surface is at the same height as the view
+    if (std::abs(heightDiff) < 0.001f) {
+        return;
+    }
+    
+    // Determine if we're looking at the surface from above or below
+    bool lookingFromAbove = heightDiff > 0;
+    
+    // Skip rendering the bottom of the platform if we're looking from below
+    if (!isTop && lookingFromAbove) {
+        return;
+    }
+    
+    // Skip rendering the top of the platform if we're looking from above
+    if (isTop && !lookingFromAbove) {
+        return;
+    }
+    
+    // Create a visplane for the surface
+    Visplane visplane;
+    visplane.height = surfaceHeight;
+    visplane.textureId = textureId;
+    visplane.lightLevel = platform.lightLevel;
+    visplane.isFloor = isTop; // Top surface is like a floor, bottom is like a ceiling
+    
+    // Resize the columns vector to match the screen width
+    visplane.columns.resize(m_width);
+    
+    // Calculate the screen space coordinates for each vertex of the platform
+    std::vector<Vec2> screenVertices;
+    for (const Vec2& vertex : platform.vertices) {
+        // Convert world space to screen space
+        screenVertices.push_back(worldToScreen(vertex, view));
+    }
+    
+    // Fill the visplane columns based on the platform's screen space polygon
+    // This is a simplified approach - in a real implementation, you would need to handle
+    // clipping, occlusion, and other edge cases
+    
+    // For each screen column
+    for (int x = 0; x < m_width; ++x) {
+        // Check if this column intersects with the platform's screen space polygon
+        // This is a simple ray casting algorithm
+        int intersections = 0;
+        for (size_t i = 0; i < screenVertices.size(); ++i) {
+            size_t j = (i + 1) % screenVertices.size();
+            
+            // Check if the edge crosses this column
+            if ((screenVertices[i].x <= x && screenVertices[j].x > x) ||
+                (screenVertices[j].x <= x && screenVertices[i].x > x)) {
+                
+                // Calculate the y-coordinate of the intersection
+                float t = (x - screenVertices[i].x) / (screenVertices[j].x - screenVertices[i].x);
+                float y = screenVertices[i].y + t * (screenVertices[j].y - screenVertices[i].y);
+                
+                // Count the intersection
+                intersections++;
+                
+                // Update the visplane column
+                if (intersections % 2 == 1) {
+                    visplane.columns[x].yStart = static_cast<int>(y);
+                } else {
+                    visplane.columns[x].yEnd = static_cast<int>(y);
+                }
+            }
+        }
+    }
+    
+    // Render the visplane
+    renderVisplane(visplane, view);
+}
+
+// Helper method to render platform sides
+void Renderer::renderPlatformSides(const Platform& platform, const ViewPosition& view) {
+    // Get the texture ID for the sides
+    int textureId = platform.sideTextureId;
+    
+    // Skip if no texture is assigned
+    if (textureId < 0 || textureId >= static_cast<int>(m_textures.size())) {
+        return;
+    }
+    
+    // Get the texture
+    const Texture& texture = m_textures[textureId];
+    
+    // Get the top and bottom heights
+    float topHeight = platform.getTopHeight();
+    float bottomHeight = platform.getBottomHeight();
+    
+    // For each edge of the platform
+    for (size_t i = 0; i < platform.vertices.size(); ++i) {
+        size_t j = (i + 1) % platform.vertices.size();
+        
+        // Create a wall slice for this edge
+        WallSlice slice;
+        slice.textureId = textureId;
+        slice.lightLevel = platform.lightLevel;
+        slice.floorHeight = bottomHeight;
+        slice.ceilingHeight = topHeight;
+        
+        // Calculate the world space coordinates of the edge
+        Vec2 start = platform.vertices[i];
+        Vec2 end = platform.vertices[j];
+        
+        // Calculate the direction from the view to the edge
+        Vec2 toStart = start - view.position;
+        Vec2 toEnd = end - view.position;
+        
+        // Calculate the angle to the start and end points
+        float angleToStart = std::atan2(toStart.y, toStart.x);
+        float angleToEnd = std::atan2(toEnd.y, toEnd.x);
+        
+        // Normalize the angles to be within the view's field of view
+        float viewAngle = view.angle;
+        float halfFov = view.fov * 0.5f * DEG_TO_RAD;
+        
+        // Calculate the angle difference
+        float angleDiff = angleToEnd - angleToStart;
+        if (angleDiff > PI) angleDiff -= 2.0f * PI;
+        if (angleDiff < -PI) angleDiff += 2.0f * PI;
+        
+        // Skip if the edge is not facing the view
+        if (std::abs(angleDiff) < 0.001f) {
+            continue;
+        }
+        
+        // Calculate the normal of the edge
+        Vec2 normal = platform.getEdgeNormal(i);
+        
+        // Skip if the edge is facing away from the view
+        Vec2 toView = (view.position - start).normalized();
+        if (normal.dotProduct(toView) <= 0.0f) {
+            continue;
+        }
+        
+        // Calculate the distance to the edge
+        float distance = toStart.length();
+        
+        // Calculate the screen space x-coordinate
+        float screenX = (angleToStart - (viewAngle - halfFov)) / (view.fov * DEG_TO_RAD) * m_width;
+        
+        // Calculate the wall height on screen
+        float wallHeight = calculateWallHeight(distance, topHeight - bottomHeight);
+        
+        // Set up the wall slice
+        slice.x = static_cast<int>(screenX);
+        slice.distance = distance;
+        slice.height = wallHeight;
+        slice.texCoordU = 0.0f; // Start of the texture
+        
+        // Render the wall slice
+        renderWallSlice(slice, view);
     }
 }
 
