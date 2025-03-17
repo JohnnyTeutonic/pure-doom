@@ -541,10 +541,12 @@ __global__ void bspRenderKernel(
             // More tolerance for distant walls to prevent z-fighting
             float tolerance = 0.001f + (depth * 0.01f);
             
-            // Bypass z-buffer check for walls - always draw them
-            // This ensures all walls are visible regardless of depth issues
-            frameBuffer[idx] = wallColor;
-            zBuffer[idx] = depth;
+            // Use proper z-buffer check instead of bypassing it
+            // This ensures correct depth ordering between walls, platforms, and floors
+            if (depth <= zBuffer[idx] + tolerance) {
+                frameBuffer[idx] = wallColor;
+                zBuffer[idx] = depth;
+            }
         }
     } else if (isDebugRay) {
         // Draw a thin line for debug rays that didn't hit anything
@@ -710,12 +712,18 @@ __global__ void floorRenderKernel(
     floorColor.g = (uint8_t)(floorColor.g * combinedLighting);
     floorColor.b = (uint8_t)(floorColor.b * combinedLighting);
     
-    // Set the pixel
+    // Set the pixel with proper z-buffer check
     int idx = y * width + x;
-    frameBuffer[idx] = floorColor;
+    float depth = distance / maxDistance;
     
-    // Update z-buffer - convert distance to normalized depth (0-1)
-    zBuffer[idx] = distance / maxDistance;
+    // Use the same tolerance approach as walls for consistent rendering
+    float tolerance = 0.001f + (depth * 0.01f);
+    
+    // Only draw if this pixel is closer than what's already there (with tolerance)
+    if (depth <= zBuffer[idx] + tolerance) {
+        frameBuffer[idx] = floorColor;
+        zBuffer[idx] = depth;
+    }
 }
 
 // This kernel will be called once per sprite
@@ -1002,12 +1010,12 @@ void RendererCuda::clearBuffers() {
             Color(0, 0, 0, 255)  // Black, fully opaque
         );
         
-        // Clear z-buffer to maximum depth (1.0f)
+        // Clear z-buffer to maximum depth (FLT_MAX for better precision)
         clearZBufferKernel<<<gridSize, blockSize>>>(
             m_cudaData->d_zBuffer,
             m_width,
             m_height,
-            1.0f  // Maximum depth
+            FLT_MAX  // Maximum depth for better precision
         );
         
         // Check for errors
@@ -2863,11 +2871,14 @@ __global__ void renderPlatformsKernel(
                 
                 // Render the platform with z-buffer check for each pixel
                 for (int py = startY; py <= endY; py++) {
-                    // Calculate z-buffer value with slight offset to avoid z-fighting
-                    float zValue = intersectionDistance * 0.99f; // Slight bias to ensure visibility
+                    // Calculate z-buffer value with consistent approach
+                    float depth = intersectionDistance / 20.0f; // Normalize to 0-1 range
                     
-                    // Skip if this pixel is behind something else
-                    if (zValue >= zBuffer[py * width + x]) continue;
+                    // Use the same tolerance approach as walls and floors
+                    float tolerance = 0.001f + (depth * 0.01f);
+                    
+                    // Skip if this pixel is behind something else (with tolerance)
+                    if (depth >= zBuffer[py * width + x] + tolerance) continue;
                     
                     // Sample the texture
                     int tx = (int)(u * texture.width) % texture.width;
@@ -2884,7 +2895,7 @@ __global__ void renderPlatformsKernel(
                     frameBuffer[py * width + x] = color;
                     
                     // Update z-buffer
-                    zBuffer[py * width + x] = zValue;
+                    zBuffer[py * width + x] = depth;
                 }
             }
         }
