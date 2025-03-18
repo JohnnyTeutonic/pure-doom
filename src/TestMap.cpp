@@ -1280,11 +1280,27 @@ int main(int argc, char* argv[]) {
     skybox.dynamicSky = true;
     skybox.sunAngle = 1.0f;  // Position in radians
     skybox.sunHeight = 0.2f; // Lower in the sky (0.0 = horizon, 1.0 = zenith)
-    skybox.sunSize = 0.03f;  // Slightly larger sun
-    skybox.sunColor = Color(255, 200, 50); // Bright yellow-orange sun
-    skybox.sunGlowColor = Color(255, 100, 20); // Fiery red glow
+    skybox.sunSize = 10.0f;  // Larger sun for a more imposing presence
+    skybox.sunColor = Color(255, 180, 50); // Bright yellow-orange sun
+    skybox.sunGlowColor = Color(255, 80, 10); // Intense fiery red glow
     skybox.sunGlowSize = 8.0f; // Larger glow for more dramatic effect
+    
+    // Set up light ray parameters
+    const int numLightRays = 12; // Number of light rays
+    const float rayLength = 15.0f; // Length of rays
+    const float rayWidth = 0.8f; // Width of rays
+    const float rayIntensity = 0.85f; // Intensity of rays
+    
+    // Custom sun rendering with light rays
     cudaRenderer.setSkybox(skybox);
+    cudaRenderer.setCustomParameter("enableHellSun", 1.0f); // Enable the custom hell sun
+    cudaRenderer.setCustomParameter("numLightRays", static_cast<float>(numLightRays));
+    cudaRenderer.setCustomParameter("rayLength", rayLength);
+    cudaRenderer.setCustomParameter("rayWidth", rayWidth);
+    cudaRenderer.setCustomParameter("rayIntensity", rayIntensity);
+    cudaRenderer.setCustomParameter("enableShadowCasting", 1.0f); // Enable shadow casting
+    cudaRenderer.setCustomParameter("shadowIntensity", 0.7f); // Shadow darkness (0-1)
+    cudaRenderer.setCustomParameter("shadowSoftness", 0.3f); // Shadow softness (0-1)
     
     // Create frame buffer and z-buffer
     std::vector<Color> frameBuffer(WIDTH * HEIGHT, Color(0, 0, 0));

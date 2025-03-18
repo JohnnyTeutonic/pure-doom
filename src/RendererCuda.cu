@@ -33,6 +33,9 @@ struct CudaRenderData {
     TextureData* d_textures;
     int numTextures;
     
+    // Current view information (for ray casting)
+    ViewPosition currentView;
+    
     // BSP tree data
     CudaBSPTree* d_bspTree;
 };
@@ -249,11 +252,47 @@ __global__ void skyboxGradientKernel(Color* frameBuffer, float* zBuffer, int wid
     zBuffer[idx] = 1.0f;  // Maximum depth
 }
 
-// Kernel for rendering the sun
+// Kernel for casting shadow rays to determine light and shadow areas
+__global__ void shadowRayCastKernel(int* wallHitBuffer, 
+                                  float playerX, float playerY,
+                                  float sunAngle, float sunHeight,
+                                  const CudaBSPTree bspTree,
+                                  float maxRayLength,
+                                  int numRays) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= numRays) return;
+    
+    // Calculate ray direction based on ray angle
+    float rayAngle = (2.0f * PI * idx) / numRays;
+    
+    // Rotate around sun position
+    float rayDirX = cosf(sunAngle + rayAngle);
+    float rayDirY = sinf(sunAngle + rayAngle);
+    
+    // Cast ray from player position
+    CudaVec2 rayOrigin(playerX, playerY);
+    CudaVec2 rayDir(rayDirX, rayDirY);
+    
+    // Cast ray and check for collision
+    CudaWallCollision collision = castRayBSP(bspTree, rayOrigin, rayDir, maxRayLength);
+    
+    // Store the normalized distance (0-1) if there's a hit, or 0 if no hit
+    if (collision.collision) {
+        // We hit something, store normalized distance
+        float normDistance = collision.distance / maxRayLength;
+        wallHitBuffer[idx] = __float_as_int(normDistance);
+    } else {
+        // No collision, set to 0
+        wallHitBuffer[idx] = __float_as_int(0.0f);
+    }
+}
+
+// Kernel for rendering the sun with light rays
 __global__ void sunRenderKernel(Color* frameBuffer, float* zBuffer, int width, int height,
                              float screenX, float screenY, float radius, 
                              const Color sunColor, const Color glowColor,
-                             float intensity, float glowSize, bool performanceMode) {
+                             float intensity, float glowSize, bool performanceMode,
+                             float* customParams, int* wallHitBuffer) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     
@@ -273,21 +312,106 @@ __global__ void sunRenderKernel(Color* frameBuffer, float* zBuffer, int width, i
     // Maximum size of the sun's glow effect
     float maxGlowRadius = radius * glowSize;
     
-    // If within sun's glow radius
-    if (distance <= maxGlowRadius) {
+    // Get custom parameters
+    bool enableHellSun = customParams[0] > 0.5f;
+    int numLightRays = (int)customParams[1];
+    float rayLength = customParams[2];
+    float rayWidth = customParams[3];
+    float rayIntensity = customParams[4];
+    bool enableShadowCasting = customParams[5] > 0.5f;
+    float shadowIntensity = customParams[6];
+    float shadowSoftness = customParams[7];
+    
+    // Check if this pixel is inside a light ray
+    bool isInLightRay = false;
+    float rayBrightness = 0.0f;
+    
+    if (enableHellSun && numLightRays > 0) {
+        // Maximum ray distance from sun center
+        float maxRayDistance = radius * rayLength;
+        
+        // Calculate angle from sun center to current pixel
+        float angle = atan2f(dy, dx);
+        if (angle < 0) angle += 2.0f * PI;
+        while (angle < 0) angle += 2.0f * PI;
+        while (angle > 2.0f * PI) angle -= 2.0f * PI;
+        
+        // Angle step between rays
+        float rayAngleStep = 2.0f * PI / numLightRays;
+        
+        // Check if the current pixel falls within any light ray
+        for (int i = 0; i < numLightRays; i++) {
+            float rayAngle = i * rayAngleStep;
+            
+            // Calculate angular distance from ray center
+            float angleDiff = fabsf(angle - rayAngle);
+            if (angleDiff > PI) angleDiff = 2.0f * PI - angleDiff;
+            
+            // Ray width varies with distance from sun
+            float currentRayWidth = rayWidth * (1.0f + distance / maxRayDistance * 0.5f);
+            
+            // Check if pixel is within a light ray
+            if (angleDiff < currentRayWidth && distance > radius && distance < maxRayDistance) {
+                // Calculate ray brightness based on distance from center of ray
+                float rayFactor = 1.0f - (angleDiff / currentRayWidth);
+                
+                // Ray intensity decreases with distance from sun
+                float distanceFactor = 1.0f - ((distance - radius) / (maxRayDistance - radius));
+                
+                // Ray intensity also has a pulsating effect
+                float pulseFactor = 0.7f + 0.3f * sinf(distanceFactor * 8.0f);
+                
+                rayBrightness = rayFactor * distanceFactor * pulseFactor * rayIntensity;
+                isInLightRay = true;
+                
+                // Shadow casting
+                if (enableShadowCasting && wallHitBuffer != nullptr) {
+                    // Get the distance to the nearest wall along this ray
+                    int rayIndex = i % numLightRays;
+                    float wallHitDistance = __int_as_float(wallHitBuffer[rayIndex]);
+                    
+                    // If there's a wall hit and we're beyond it, apply shadow
+                    if (wallHitDistance > 0.0f && distance > (radius + wallHitDistance * maxRayDistance)) {
+                        // Calculate shadow intensity with soft edges
+                        float shadowFactor = min(1.0f, (distance - (radius + wallHitDistance * maxRayDistance)) 
+                                               / (maxRayDistance * shadowSoftness));
+                        
+                        // Apply shadow darkening
+                        rayBrightness *= (1.0f - shadowFactor * shadowIntensity);
+                    }
+                }
+                
+                break;
+            }
+        }
+    }
+    
+    // If within sun's glow radius or in a light ray
+    if (distance <= maxGlowRadius || isInLightRay) {
         // Calculate brightness based on distance
         float brightness = 0.0f;
         
         if (distance <= radius) {
             // Inside the sun - bright center fading to edge
             brightness = intensity * (1.0f - (distance / radius) * 0.2f);
-        } else {
+        } else if (!isInLightRay) {
             // In the glow area - fade out with distance
             brightness = intensity * (1.0f - ((distance - radius) / (maxGlowRadius - radius)));
+        } else {
+            // In a light ray
+            brightness = rayBrightness;
         }
         
-        // Determine color based on whether we're in the sun or glow area
-        Color baseColor = (distance <= radius) ? sunColor : glowColor;
+        // Determine color based on whether we're in the sun, glow area, or light ray
+        Color baseColor;
+        if (distance <= radius) {
+            baseColor = sunColor;
+        } else if (isInLightRay) {
+            // Light rays are more orange-red
+            baseColor = Color(255, 100 + (int)(80.0f * rayBrightness), 20 + (int)(30.0f * rayBrightness));
+        } else {
+            baseColor = glowColor;
+        }
         
         // Additive blending for glow effect
         Color currentColor = frameBuffer[y * width + x];
@@ -1077,6 +1201,9 @@ void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
     }
     
     try {
+        // Store current view position for ray casting
+        m_cudaData->currentView = view;
+        
         // Ensure BSP data is uploaded - Use a local copy of the BSP tree to prevent race conditions
         bool needsUpload = !m_bspUploaded;
         
@@ -1208,20 +1335,27 @@ void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
 }
 
 void RendererCuda::renderSkyboxCuda(const ViewPosition& view, float deltaTime, const Skybox& skybox) {
-    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
+    if (!m_initialized || !m_buffersAllocated) return;
     
-    // Calculate horizon position (scaled to screen height)
+    // Store current view for use in ray casting
+    m_cudaData->currentView = view;
+    
+    // Update time of day in skybox if dynamic
+    if (skybox.dynamicSky) {
+        const_cast<Skybox&>(skybox).update(deltaTime);
+    }
+    
+    // Calculate horizon line
     float horizonY = m_height / 2.0f;
     
-    // Determine block and grid sizes
-    dim3 blockSize = getOptimalBlockSize(m_width, m_height);
-    dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x, 
-                 (m_height + blockSize.y - 1) / blockSize.y);
-    
-    // Check if we're in performance mode
+    // Determine performance mode
     bool performanceMode = skybox.maxViewDistance < 20.0f;
     
     // Launch the skybox gradient kernel
+    dim3 blockSize(16, 16);
+    dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x, 
+                 (m_height + blockSize.y - 1) / blockSize.y);
+    
     skyboxGradientKernel<<<gridSize, blockSize>>>(
         m_cudaData->d_frameBuffer,
         m_cudaData->d_zBuffer,
@@ -1233,50 +1367,103 @@ void RendererCuda::renderSkyboxCuda(const ViewPosition& view, float deltaTime, c
         performanceMode
     );
     
-    // Check for errors
-    CUDA_CHECK(cudaGetLastError());
-    
     // Draw the sun if dynamic sky is enabled
     if (skybox.dynamicSky) {
         // Calculate sun position on screen
-        float sunScreenAngle = skybox.sunAngle - view.angle;
+        float sunAngle = skybox.sunAngle - view.angle;
+        while (sunAngle < -PI) sunAngle += 2.0f * PI;
+        while (sunAngle > PI) sunAngle -= 2.0f * PI;
         
-        // Normalize angle to [-PI, PI]
-        while (sunScreenAngle > PI) sunScreenAngle -= 2.0f * PI;
-        while (sunScreenAngle < -PI) sunScreenAngle += 2.0f * PI;
+        // Only draw sun if it's in the viewport
+        // FOV is typically in degrees, convert to radians
+        float fovRadians = view.fov * (PI / 180.0f);
         
-        // Check if sun is visible (within field of view)
-        float halfFov = view.fov * DEG_TO_RAD / 2.0f;
-        if (sunScreenAngle >= -halfFov && sunScreenAngle <= halfFov) {
-            // Calculate screen position
-            float screenX = m_width / 2.0f + m_width * (sunScreenAngle / (view.fov * DEG_TO_RAD)) * 0.5f;
-            float screenY = m_height / 2.0f - m_height * skybox.sunHeight * 0.5f;
+        if (sunAngle >= -fovRadians/2 && sunAngle <= fovRadians/2) {
+            // Convert sun angle to screen x-coordinate
+            float normalizedAngle = sunAngle / (fovRadians/2); // -1 to 1
+            float screenX = m_width * (0.5f + 0.5f * normalizedAngle);
             
-            // Sun radius in pixels
-            float sunRadius = skybox.sunSize * m_width / (view.fov * 2.0f);
+            // Convert sun height to screen y-coordinate
+            float sunHeightOffset = skybox.sunHeight * m_height * 0.5f;
+            float screenY = horizonY - sunHeightOffset;
             
-            // Draw the sun
-            drawSunCuda(screenX, screenY, sunRadius, skybox.sunColor, 1.0f, skybox);
+            // Calculate sun intensity based on time of day
+            float sunIntensity = 1.0f;
+            
+            // Draw the sun with our custom parameters
+            drawSunCuda(screenX, screenY, skybox.sunSize, skybox.sunColor, sunIntensity, skybox);
+        }
+    }
+}
+
+void RendererCuda::drawSunCuda(float screenX, float screenY, float sizeDegrees, const Color& color, 
+                             float intensity, const Skybox& skybox) {
+    if (!m_initialized || !m_buffersAllocated) return;
+    
+    // Convert sun size from degrees to pixels (screen space conversion)
+    float radius = m_height * (sizeDegrees / 180.0f);
+    
+    // Create a buffer for custom parameters
+    float customParams[8] = {0};
+    
+    // Transfer custom parameters if they exist
+    customParams[0] = getCustomParameter("enableHellSun");
+    customParams[1] = getCustomParameter("numLightRays");
+    customParams[2] = getCustomParameter("rayLength");
+    customParams[3] = getCustomParameter("rayWidth");
+    customParams[4] = getCustomParameter("rayIntensity");
+    customParams[5] = getCustomParameter("enableShadowCasting");
+    customParams[6] = getCustomParameter("shadowIntensity");
+    customParams[7] = getCustomParameter("shadowSoftness");
+    
+    // Device memory for custom parameters
+    float* d_customParams = nullptr;
+    int* d_wallHitBuffer = nullptr;
+    
+    // Allocate and copy custom parameters to device
+    cudaMalloc((void**)&d_customParams, 8 * sizeof(float));
+    cudaMemcpy(d_customParams, customParams, 8 * sizeof(float), cudaMemcpyHostToDevice);
+    
+    // If shadow casting is enabled, use our shadow ray kernel to calculate shadows
+    if (customParams[5] > 0.5f && customParams[1] > 0) {
+        int numRays = static_cast<int>(customParams[1]);
+        
+        // Allocate device memory for the wall hit buffer
+        cudaMalloc((void**)&d_wallHitBuffer, numRays * sizeof(int));
+        
+        // Use 1D thread blocks for ray casting (one thread per ray)
+        int threadsPerBlock = 128; // Typical value for CUDA
+        int blocksPerGrid = (numRays + threadsPerBlock - 1) / threadsPerBlock;
+        
+        // Get player position and viewing angle from the current view
+        ViewPosition& view = m_cudaData->currentView;
+        float playerX = view.position.x;
+        float playerY = view.position.y;
+        
+        // Launch the shadow ray casting kernel
+        shadowRayCastKernel<<<blocksPerGrid, threadsPerBlock>>>(
+            d_wallHitBuffer,
+            playerX, playerY,
+            skybox.sunAngle, skybox.sunHeight,
+            m_deviceBSPTree,
+            customParams[2] * 5.0f, // Convert ray length to world units
+            numRays
+        );
+        
+        // Check for errors after shadow ray casting
+        cudaError_t rayError = cudaGetLastError();
+        if (rayError != cudaSuccess) {
+            std::cerr << "Error in shadow ray casting: " << cudaGetErrorString(rayError) << std::endl;
         }
     }
     
-    // Synchronize to ensure all kernels complete
-    CUDA_CHECK(cudaDeviceSynchronize());
-}
-
-void RendererCuda::drawSunCuda(float screenX, float screenY, float radius, const Color& color, 
-                            float intensity, const Skybox& skybox) {
-    if (!m_cudaAvailable || !m_initialized || !m_cudaData) return;
-    
-    // Determine block and grid sizes to cover the sun area
-    dim3 blockSize = getOptimalBlockSize(m_width, m_height);
+    // Calculate thread blocks and grid
+    bool performanceMode = skybox.maxViewDistance < 20.0f;
+    dim3 blockSize(16, 16);
     dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x, 
                  (m_height + blockSize.y - 1) / blockSize.y);
     
-    // Check if we're in performance mode
-    bool performanceMode = skybox.maxViewDistance < 20.0f;
-    
-    // Launch the sun rendering kernel
+    // Launch the sun kernel with custom parameters
     sunRenderKernel<<<gridSize, blockSize>>>(
         m_cudaData->d_frameBuffer,
         m_cudaData->d_zBuffer,
@@ -1289,11 +1476,20 @@ void RendererCuda::drawSunCuda(float screenX, float screenY, float radius, const
         skybox.sunGlowColor,
         intensity,
         skybox.sunGlowSize,
-        performanceMode
+        performanceMode,
+        d_customParams,
+        d_wallHitBuffer
     );
     
+    // Free device memory
+    if (d_customParams) cudaFree(d_customParams);
+    if (d_wallHitBuffer) cudaFree(d_wallHitBuffer);
+    
     // Check for errors
-    CUDA_CHECK(cudaGetLastError());
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        std::cerr << "Error in drawSunCuda: " << cudaGetErrorString(error) << std::endl;
+    }
 }
 
 // Update renderBSPCuda to use the serialized BSP tree

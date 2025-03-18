@@ -3,6 +3,8 @@
 
 #include "Renderer.h"
 #include "CudaUtils.h"
+#include <unordered_map>
+#include <string>
 
 // Explicitly include necessary CUDA headers
 #ifdef __CUDACC__
@@ -83,6 +85,22 @@ public:
     int getNumTextures() const; // Implementation moved to .cu file
     bool isBSPUploaded() const { return m_bspUploaded; }
     
+    // Set custom render parameters for effects like light rays and shadows
+    void setCustomParameter(const std::string& name, float value) {
+        m_customParameters[name] = value;
+    }
+    
+    // Get a custom parameter value (returns 0.0f if not found)
+    float getCustomParameter(const std::string& name) const {
+        auto it = m_customParameters.find(name);
+        return (it != m_customParameters.end()) ? it->second : 0.0f;
+    }
+    
+    // Check if a custom parameter exists
+    bool hasCustomParameter(const std::string& name) const {
+        return m_customParameters.find(name) != m_customParameters.end();
+    }
+    
 private:
     int m_width;
     int m_height;
@@ -111,6 +129,9 @@ private:
     // Render using the test map's BSP data
     void renderTestMapBSPCuda(const ViewPosition& view, float maxViewDistance);
     void renderTestMapFloorCuda(const ViewPosition& view);
+    
+    // Custom parameters for special rendering effects
+    std::unordered_map<std::string, float> m_customParameters;
 };
 
 } // namespace PureDoom
