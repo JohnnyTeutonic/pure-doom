@@ -1481,6 +1481,22 @@ int main(int argc, char* argv[]) {
     // Right section
     mainRoom.walls.push_back(Wall(Line(Vertex(2.0f, -5.0f), Vertex(5.0f, -5.0f)), 0, -1, 3));
     
+    // Replace a portion of the south wall with a portal to the new hellish sector
+    // Remove the last wall we just added (south wall segment)
+    mainRoom.walls.pop_back();
+    
+    // Add shortened south wall segments with a portal in between
+    mainRoom.walls.push_back(Wall(Line(Vertex(2.0f, -5.0f), Vertex(3.0f, -5.0f)), 0, -1, 3));
+    
+    // Portal to hellish sector
+    Wall hellPortal = Wall(Line(Vertex(3.0f, -5.0f), Vertex(4.0f, -5.0f)), 0, 5, 4); // Connect to new sector (5)
+    hellPortal.isTransparent = true;
+    hellPortal.isSolid = false;
+    mainRoom.walls.push_back(hellPortal);
+    
+    // Continue the rest of the south wall
+    mainRoom.walls.push_back(Wall(Line(Vertex(4.0f, -5.0f), Vertex(5.0f, -5.0f)), 0, -1, 3));
+    
     // Add the main room to sectors
     testMapSectors.push_back(mainRoom);
     
@@ -1617,6 +1633,32 @@ int main(int argc, char* argv[]) {
     testMapSectors.push_back(elevatedRoom);
     testMapSectors.push_back(staircase);  // Add the new staircase sector
     
+    // Create a new hellish sector extending south from the main room
+    Sector hellishSector;
+    hellishSector.floorHeight = -0.5f;  // Lower floor for a pit-like feel
+    hellishSector.ceilingHeight = 3.0f; // Higher ceiling for an imposing atmosphere
+    hellishSector.floorTextureId = 0;  // Using existing floor texture for now
+    hellishSector.ceilingTextureId = 1; // Using existing ceiling texture for now
+    hellishSector.lightLevel = 80;      // Darker with dramatic lighting
+    hellishSector.tag = "hellish_pit";
+    
+    // Entrance from main room
+    Wall hellEntrance = Wall(Line(Vertex(4.0f, -5.0f), Vertex(3.0f, -5.0f)), 5, 0, 4);
+    hellEntrance.isTransparent = true;
+    hellEntrance.isSolid = false;
+    hellishSector.walls.push_back(hellEntrance);
+    
+    // Define the walls of the hellish sector (extending south in a rough pentagram shape)
+    hellishSector.walls.push_back(Wall(Line(Vertex(3.0f, -5.0f), Vertex(2.0f, -8.0f)), 5, -1, 7));  // Left edge (molten rock)
+    hellishSector.walls.push_back(Wall(Line(Vertex(2.0f, -8.0f), Vertex(3.0f, -10.0f)), 5, -1, 6)); // Left bottom (flesh wall)
+    hellishSector.walls.push_back(Wall(Line(Vertex(3.0f, -10.0f), Vertex(4.0f, -11.0f)), 5, -1, 5)); // Bottom left (fiery wall)
+    hellishSector.walls.push_back(Wall(Line(Vertex(4.0f, -11.0f), Vertex(5.0f, -10.0f)), 5, -1, 5)); // Bottom right (fiery wall)
+    hellishSector.walls.push_back(Wall(Line(Vertex(5.0f, -10.0f), Vertex(6.0f, -8.0f)), 5, -1, 6)); // Right bottom (flesh wall)
+    hellishSector.walls.push_back(Wall(Line(Vertex(6.0f, -8.0f), Vertex(4.0f, -5.0f)), 5, -1, 7));  // Right edge (molten rock)
+    
+    // Add hellish sector to the test map
+    testMapSectors.push_back(hellishSector);
+    
     // Build the BSP tree for collision detection
     BSPTree collisionBSP;
     collisionBSP.build(testMapSectors);
@@ -1657,22 +1699,75 @@ int main(int argc, char* argv[]) {
     // Add the center platform to the BSP tree
     collisionBSP.addPlatform(centerPlatform);
     
+    // Create a pentagram platform in the center of the hellish sector
+    Platform pentagramPlatform;
+    
+    // Define the platform shape (pentagram, counter-clockwise order)
+    std::vector<Vec2> pentagramVertices;
+    pentagramVertices.push_back(Vec2(4.0f, -7.0f));   // Top
+    pentagramVertices.push_back(Vec2(5.0f, -8.5f));   // Right upper
+    pentagramVertices.push_back(Vec2(4.5f, -10.0f));  // Right lower
+    pentagramVertices.push_back(Vec2(3.5f, -10.0f));  // Left lower
+    pentagramVertices.push_back(Vec2(3.0f, -8.5f));   // Left upper
+    
+    // Create the pentagram platform with a red glow
+    pentagramPlatform = Platform(pentagramVertices, -0.3f, 0.1f, 5, 5, 5, 200, 0);
+    pentagramPlatform.type = PlatformType::STATIC;
+    pentagramPlatform.isVisible = true;
+    pentagramPlatform.isSolid = true;
+    pentagramPlatform.tag = "pentagram_platform";
+    
+    // Add the pentagram platform to the BSP tree
+    collisionBSP.addPlatform(pentagramPlatform);
+    
+    // Add blood pools as additional platforms in the hellish sector
+    Platform bloodPool1;
+    std::vector<Vec2> bloodPool1Vertices;
+    bloodPool1Vertices.push_back(Vec2(2.5f, -7.0f));
+    bloodPool1Vertices.push_back(Vec2(3.5f, -7.5f));
+    bloodPool1Vertices.push_back(Vec2(3.0f, -8.5f));
+    bloodPool1Vertices.push_back(Vec2(2.0f, -8.0f));
+    
+    bloodPool1 = Platform(bloodPool1Vertices, -0.48f, 0.05f, 6, 6, 6, 150, 0);
+    bloodPool1.type = PlatformType::STATIC;
+    bloodPool1.isVisible = true;
+    bloodPool1.isSolid = false; // Can walk through blood
+    bloodPool1.tag = "blood_pool_1";
+    collisionBSP.addPlatform(bloodPool1);
+    
+    Platform bloodPool2;
+    std::vector<Vec2> bloodPool2Vertices;
+    bloodPool2Vertices.push_back(Vec2(5.0f, -7.0f));
+    bloodPool2Vertices.push_back(Vec2(5.5f, -8.0f));
+    bloodPool2Vertices.push_back(Vec2(4.5f, -8.5f));
+    bloodPool2Vertices.push_back(Vec2(4.0f, -7.5f));
+    
+    bloodPool2 = Platform(bloodPool2Vertices, -0.48f, 0.05f, 6, 6, 6, 150, 0);
+    bloodPool2.type = PlatformType::STATIC;
+    bloodPool2.isVisible = true;
+    bloodPool2.isSolid = false; // Can walk through blood
+    bloodPool2.tag = "blood_pool_2";
+    collisionBSP.addPlatform(bloodPool2);
+    
+    // Add a demonic altar in the center of the pentagram
+    Platform altar;
+    std::vector<Vec2> altarVertices;
+    altarVertices.push_back(Vec2(3.8f, -8.3f));
+    altarVertices.push_back(Vec2(4.2f, -8.3f));
+    altarVertices.push_back(Vec2(4.2f, -8.7f));
+    altarVertices.push_back(Vec2(3.8f, -8.7f));
+    
+    altar = Platform(altarVertices, -0.2f, 0.3f, 7, 7, 7, 255, 0);
+    altar.type = PlatformType::STATIC;
+    altar.isVisible = true;
+    altar.isSolid = true;
+    altar.tag = "demonic_altar";
+    collisionBSP.addPlatform(altar);
+    
     // Print a helpful message about the platforms
     std::cout << "\n=== ROOM-COVERING PLATFORMS GUIDE ===\n";
     std::cout << "Multiple room-covering platforms have been added to the main room.\n";
     std::cout << "These platforms are stacked at different heights from 0.2 to 1.8 units.\n";
-    std::cout << "Unlike the stair illusion textures, these are actual elevated platforms that you can walk on.\n";
-    
-    // Print a helpful message about the elevated platform
-    std::cout << "Added an elevated platform in the main room at height " << elevatedPlatform.height 
-              << " units above the floor." << std::endl;
-    std::cout << "The platform is located near the center of the main room." << std::endl;
-    
-    // Print a helpful message about the stairs and platforms
-    std::cout << "\n=== ROOM-COVERING PLATFORMS GUIDE ===\n";
-    std::cout << "Real 3D stairs have been added to the south wall of the main room.\n";
-    std::cout << "These stairs consist of " << stairsNumSteps << " steps rising to a height of " 
-              << (stairsBaseHeight + stairsNumSteps * stairsStepHeight) << " units.\n";
     std::cout << "Unlike the stair illusion textures, these are actual elevated platforms that you can walk on.\n";
     
     std::cout << "\nA large center platform has been added to the main room.\n";
@@ -1753,6 +1848,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  - Flesh-walled side room with elevated floor\n";
     std::cout << "  - Proper staircase with 5 steps leading up to the elevated room\n";
     std::cout << "  - Elevated room with molten rock walls and charred bone floor\n";
+    std::cout << "  - New hellish pit extending south with lava floor and burning ceiling\n";
     std::cout << "  - Stair illusion textures on the south wall of the main room\n";
     std::cout << "Textures:\n";
     std::cout << "  - DOOM-style floor (ID 0)\n";
@@ -1840,6 +1936,7 @@ int main(int argc, char* argv[]) {
                 case 2: sectorName = "Side Room"; break;
                 case 3: sectorName = "Elevated Room"; break;
                 case 4: sectorName = "Staircase"; break;
+                case 5: sectorName = "Hellish Pit"; break;
                 default: sectorName = "Unknown Sector"; break;
             }
             std::cout << "You are in sector: " << sectorName << " (ID: " << currentSector << ")\n";
@@ -1850,6 +1947,13 @@ int main(int argc, char* argv[]) {
             }
             else if (currentSector == 4) {
                 std::cout << "NOTICE: You are on the staircase. Floor height: " << testMapSectors[currentSector].floorHeight << "\n";
+            }
+            else if (currentSector == 5) {
+                std::cout << "NOTICE: You have entered the hellish pit. The air is thick with sulfur and the heat is unbearable.\n";
+                std::cout << "You can hear distant screams and the bubbling of molten lava beneath the floor.\n";
+                
+                // Add a screen shake effect when entering the hellish sector
+                screenShakeAmount = 0.5f;
             }
             
             // Display floor and ceiling heights
@@ -2192,6 +2296,7 @@ int main(int argc, char* argv[]) {
                                 case 2: sectorName = "Side Room"; break;
                                 case 3: sectorName = "Elevated Room"; break;
                                 case 4: sectorName = "Staircase"; break;
+                                case 5: sectorName = "Hellish Pit"; break;
                                 default: sectorName = "Unknown Sector"; break;
                             }
                             std::cout << "\n==== DEBUG SECTOR INFO ====\n";
@@ -2221,6 +2326,7 @@ int main(int argc, char* argv[]) {
                                                 case 2: fromSector = "Side Room"; break;
                                                 case 3: fromSector = "Elevated Room"; break;
                                                 case 4: fromSector = "Staircase"; break;
+                                                case 5: fromSector = "Hellish Pit"; break;
                                                 default: fromSector = "Unknown"; break;
                                             }
                                             switch (wall.sectorBack) {
@@ -2229,6 +2335,7 @@ int main(int argc, char* argv[]) {
                                                 case 2: toSector = "Side Room"; break;
                                                 case 3: toSector = "Elevated Room"; break;
                                                 case 4: toSector = "Staircase"; break;
+                                                case 5: toSector = "Hellish Pit"; break;
                                                 default: toSector = "Unknown"; break;
                                             }
                                             std::cout << "  Portal at distance " << dist 
@@ -2787,6 +2894,9 @@ int main(int argc, char* argv[]) {
                 break;
             case 4: // Staircase
                 SDL_SetRenderDrawColor(sdlRenderer, 255, 150, 50, 255); // Orange
+                break;
+            case 5: // Hellish Pit
+                SDL_SetRenderDrawColor(sdlRenderer, 100, 100, 100, 255); // Gray
                 break;
             default:
                 SDL_SetRenderDrawColor(sdlRenderer, 200, 200, 200, 255); // Gray
