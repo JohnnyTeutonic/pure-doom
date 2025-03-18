@@ -1265,6 +1265,10 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
+    // Initialize mouse for relative movement
+    SDL_SetRelativeMouseMode(SDL_TRUE);
+    std::cout << "Mouse control enabled" << std::endl;
+    
     // Create texture vector
     std::vector<Texture> textures;
     
@@ -1717,6 +1721,10 @@ int main(int argc, char* argv[]) {
     bool keySpace = false, keyC = false; // For jumping and crouching
     SDL_Event event;
     
+    // Mouse control variables
+    bool mouseControlEnabled = true;
+    const float mouseSensitivity = 0.002f;
+    
     // Movement speed
     const float moveSpeed = 0.1f;
     const float turnSpeed = 0.05f;
@@ -1760,12 +1768,17 @@ int main(int argc, char* argv[]) {
     std::cout << "  - Bloody staircase/steps (ID 10)\n";
     std::cout << "Controls:\n";
     std::cout << "  - WASD: Move around\n";
-    std::cout << "  - QE: Rotate view\n";
+    std::cout << "  - QE: Rotate view (can be used alongside mouse)\n";
+    std::cout << "  - Mouse: Look around (mouse control enabled by default)\n";
+    std::cout << "  - Left Mouse Button: Interact with objects in front of you\n";
+    std::cout << "  - Right Mouse Button: Secondary action\n";
+    std::cout << "  - Mouse Wheel: Weapon selection (future functionality)\n";
+    std::cout << "  - M: Toggle mouse control\n";
     std::cout << "  - SPACE: Jump\n";
     std::cout << "  - C: Crouch\n";
     std::cout << "  - P: Debug wall info\n";
     std::cout << "  - L: Debug sector info\n";
-    std::cout << "  - T: Teleport to stairs (for testing)\n";
+    std::cout << "  - T: Teleport to stair illusion textures (for testing)\n";
     std::cout << "  - O: Teleport to center platform (for testing)\n";
     std::cout << "  - ESC: Quit\n";
     std::cout << "Collision detection enabled with player radius: " << PLAYER_RADIUS << "\n";
@@ -1784,6 +1797,9 @@ int main(int argc, char* argv[]) {
         auto currentTime = std::chrono::high_resolution_clock::now();
         float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
         lastTime = currentTime;
+        
+        // Set relative mouse mode at the start of each frame if mouse control is enabled
+        SDL_SetRelativeMouseMode(mouseControlEnabled ? SDL_TRUE : SDL_FALSE);
         
         // Calculate movement vector based on keyboard input
         Vec2 movementVector(0.0f, 0.0f);
@@ -2041,6 +2057,70 @@ int main(int argc, char* argv[]) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
+            } else if (event.type == SDL_MOUSEMOTION && mouseControlEnabled) {
+                // Apply mouse movement to camera rotation
+                view.angle += event.motion.xrel * mouseSensitivity;
+                
+                // Normalize angle
+                if (view.angle < 0) {
+                    view.angle += 2 * M_PI;
+                } else if (view.angle >= 2 * M_PI) {
+                    view.angle -= 2 * M_PI;
+                }
+            } else if (event.type == SDL_MOUSEWHEEL && mouseControlEnabled) {
+                // Mouse wheel for zooming or weapon selection
+                if (event.wheel.y > 0) {
+                    // Scroll up
+                    std::cout << "Mouse wheel up - could be used for zooming in or switching to next weapon" << std::endl;
+                } else if (event.wheel.y < 0) {
+                    // Scroll down
+                    std::cout << "Mouse wheel down - could be used for zooming out or switching to previous weapon" << std::endl;
+                }
+            } else if (event.type == SDL_MOUSEBUTTONDOWN && mouseControlEnabled) {
+                if (event.button.button == SDL_BUTTON_LEFT) {
+                    // Left mouse button - could be used for shooting or interaction
+                    std::cout << "Left mouse button pressed - interaction" << std::endl;
+                    
+                    // Example: Print information about what's in front of the player
+                    Vec2 rayDir(cos(view.angle), sin(view.angle));
+                    Vec2 rayStart = view.position;
+                    
+                    // Cast a ray to find what's in front of the player
+                    CollisionInfo hit = collisionBSP.castRay(rayStart, rayDir, 5.0f);
+                    if (hit.collision) {
+                        std::cout << "Interacting with wall at distance " << hit.distance << std::endl;
+                        
+                        // Get the wall that was hit
+                        int sectorId = hit.sectorId;
+                        int wallIndex = hit.wallIndex;
+                        
+                        if (sectorId >= 0 && sectorId < testMapSectors.size() && 
+                            wallIndex >= 0 && wallIndex < testMapSectors[sectorId].walls.size()) {
+                            const Wall& wall = testMapSectors[sectorId].walls[wallIndex];
+                            std::cout << "Wall texture ID: " << wall.textureId << std::endl;
+                            
+                            // Display more detailed information about the wall
+                            std::cout << "Wall from (" << wall.segment.start.position.x << ", " 
+                                      << wall.segment.start.position.y << ") to (" 
+                                      << wall.segment.end.position.x << ", " 
+                                      << wall.segment.end.position.y << ")" << std::endl;
+                                      
+                            if (wall.isSolid) {
+                                std::cout << "This is a solid wall" << std::endl;
+                            } else {
+                                std::cout << "This is a portal connecting sector " 
+                                          << wall.sectorFront << " to sector " << wall.sectorBack << std::endl;
+                            }
+                        } else {
+                            std::cout << "Invalid wall indices: sector=" << sectorId << ", wall=" << wallIndex << std::endl;
+                        }
+                    } else {
+                        std::cout << "No wall hit within 5.0 units" << std::endl;
+                    }
+                } else if (event.button.button == SDL_BUTTON_RIGHT) {
+                    // Right mouse button - could be used for alt fire or secondary action
+                    std::cout << "Right mouse button pressed - secondary action" << std::endl;
+                }
             } else if (event.type == SDL_KEYDOWN) {
                 switch (event.key.keysym.sym) {
                     case SDLK_ESCAPE:
@@ -2169,6 +2249,12 @@ int main(int argc, char* argv[]) {
                         view.position = Vec2(0.0f, 0.0f); // Position in center of room
                         view.angle = 0; // Face north
                         std::cout << "Teleported to center platform position." << std::endl;
+                        break;
+                    case SDLK_m:
+                        // Toggle mouse control
+                        mouseControlEnabled = !mouseControlEnabled;
+                        SDL_SetRelativeMouseMode(mouseControlEnabled ? SDL_TRUE : SDL_FALSE);
+                        std::cout << "Mouse control " << (mouseControlEnabled ? "enabled" : "disabled") << std::endl;
                         break;
                 }
             } else if (event.type == SDL_KEYUP) {
