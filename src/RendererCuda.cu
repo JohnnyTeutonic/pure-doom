@@ -1324,12 +1324,15 @@ void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
         // 3. Render floor (ceiling is now handled by skybox)
         renderFloorCuda(bsp, view);
         
-        // 4. Render sprites
+        // 4. Render platforms
+        renderPlatformsCuda(bsp, view);
+        
+        // 5. Render sprites
         if (!sprites.empty()) {
             renderSpritesCuda(bsp, view, sprites);
         }
         
-        // 5. Apply directional lighting from the sun with shadows
+        // 6. Apply directional lighting from the sun with shadows
         if (hasCustomParameter("enableHellSun") && getCustomParameter("enableHellSun") > 0.5f) {
             // Cast shadow rays from the sun to determine shadows
             int numRays = static_cast<int>(getCustomParameter("numLightRays"));
@@ -2749,6 +2752,10 @@ bool RendererCuda::useTestMapWithSectors(const std::vector<Sector>& sectors) {
         std::cout << "Creating test map from " << sectors.size() << " sectors..." << std::endl;
         m_deviceBSPTree = createTestMapFromSectors(sectors);
         
+        // Initialize the BSP tree for platform rendering by constructing it in place
+        new (&m_testMapBSP) BSPTree();  // Properly construct in place
+        m_testMapBSP.build(sectors);    // Build the tree with the sectors
+        
         // Check if test map creation was successful
         if (m_deviceBSPTree.nodeCount == 0 || m_deviceBSPTree.wallCount == 0) {
             std::cerr << "Error: Failed to create test map from sectors" << std::endl;
@@ -2821,6 +2828,9 @@ void RendererCuda::renderTestMapFrame(const ViewPosition& view, float deltaTime)
         
         // 3. Render floor (ceiling is now handled by skybox)
         renderTestMapFloorCuda(view);
+        
+        // 4. Render platforms using the standard platform renderer
+        renderPlatformsCuda(m_testMapBSP, view);
     } else {
         std::cerr << "Test map data became invalid during rendering" << std::endl;
     }
@@ -3167,8 +3177,11 @@ __global__ void renderPlatformsKernel(
                     // Use the same tolerance approach as walls and floors
                     float tolerance = 0.001f + (depth * 0.01f);
                     
+                    // Get current z-buffer value at this pixel
+                    float currentDepth = zBuffer[py * width + x];
+                    
                     // Skip if this pixel is behind something else (with tolerance)
-                    if (depth >= zBuffer[py * width + x] + tolerance) continue;
+                    if (depth >= currentDepth + tolerance) continue;
                     
                     // Sample the texture
                     int tx = (int)(u * texture.width) % texture.width;
@@ -3189,6 +3202,107 @@ __global__ void renderPlatformsKernel(
                 }
             }
         }
+    }
+}
+
+// Render platforms on the GPU
+void RendererCuda::renderPlatformsCuda(const BSPTree& bsp, const ViewPosition& view) {
+    if (!m_cudaAvailable || !m_initialized || !m_cudaData || !m_buffersAllocated) {
+        return;
+    }
+    
+    try {
+        // Get platforms from the BSP tree
+        const std::vector<Platform>& platforms = bsp.getPlatforms();
+        if (platforms.empty()) {
+            return; // No platforms to render
+        }
+        
+        // Allocate device memory for platforms
+        CudaPlatform* d_platforms = nullptr;
+        cudaMalloc((void**)&d_platforms, platforms.size() * sizeof(CudaPlatform));
+        
+        // Convert platforms to CUDA format
+        std::vector<CudaPlatform> hostPlatforms;
+        hostPlatforms.reserve(platforms.size());
+        
+        // Get number of available textures
+        int numTextures = m_cudaData->numTextures;
+        if (numTextures <= 0) {
+            std::cerr << "No textures available for platform rendering" << std::endl;
+            cudaFree(d_platforms);
+            return;
+        }
+        
+        for (const Platform& platform : platforms) {
+            // Skip invisible platforms
+            if (!platform.isVisible) continue;
+            
+            CudaPlatform cudaPlatform;
+            
+            // Copy vertices (up to 8)
+            int vertCount = std::min(static_cast<int>(platform.vertices.size()), 8);
+            cudaPlatform.vertexCount = vertCount;
+            
+            for (int i = 0; i < vertCount; ++i) {
+                cudaPlatform.vertices[i][0] = platform.vertices[i].x;
+                cudaPlatform.vertices[i][1] = platform.vertices[i].y;
+            }
+            
+            // Copy other platform properties
+            cudaPlatform.height = platform.height;
+            cudaPlatform.thickness = platform.thickness;
+            
+            // Validate texture IDs
+            cudaPlatform.topTextureId = (platform.topTextureId >= 0 && platform.topTextureId < numTextures) ? 
+                                        platform.topTextureId : 0;
+            cudaPlatform.bottomTextureId = (platform.bottomTextureId >= 0 && platform.bottomTextureId < numTextures) ? 
+                                           platform.bottomTextureId : 0;
+            cudaPlatform.sideTextureId = (platform.sideTextureId >= 0 && platform.sideTextureId < numTextures) ? 
+                                         platform.sideTextureId : 0;
+            
+            cudaPlatform.lightLevel = platform.lightLevel;
+            cudaPlatform.sectorId = platform.sectorId;
+            
+            hostPlatforms.push_back(cudaPlatform);
+        }
+        
+        // Copy platform data to device
+        if (!hostPlatforms.empty()) {
+            cudaMemcpy(d_platforms, hostPlatforms.data(), 
+                      hostPlatforms.size() * sizeof(CudaPlatform), 
+                      cudaMemcpyHostToDevice);
+            
+            // Launch the platform rendering kernel
+            dim3 blockSize(16, 16);
+            dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x, 
+                         (m_height + blockSize.y - 1) / blockSize.y);
+            
+            renderPlatformsKernel<<<gridSize, blockSize>>>(
+                m_cudaData->d_frameBuffer,
+                m_cudaData->d_zBuffer,
+                m_width,
+                m_height,
+                d_platforms,
+                static_cast<int>(hostPlatforms.size()),
+                view,
+                m_cudaData->d_textures
+            );
+            
+            // Check for errors
+            cudaError_t kernelErr = cudaGetLastError();
+            if (kernelErr != cudaSuccess) {
+                std::cerr << "CUDA error in platform rendering: " << cudaGetErrorString(kernelErr) << std::endl;
+            }
+        }
+        
+        // Free device memory
+        if (d_platforms) {
+            cudaFree(d_platforms);
+        }
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Error in renderPlatformsCuda: " << e.what() << std::endl;
     }
 }
 

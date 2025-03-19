@@ -61,9 +61,14 @@ public:
     
     // CUDA accelerated BSP rendering
     void renderBSPCuda(const BSPTree& bsp, const ViewPosition& view, float maxViewDistance);
+    void renderTestMapBSPCuda(const ViewPosition& view, float maxViewDistance);
     
-    // CUDA accelerated floor rendering (ceiling is now handled by skybox)
+    // CUDA accelerated floor/ceiling rendering
     void renderFloorCuda(const BSPTree& bsp, const ViewPosition& view);
+    void renderTestMapFloorCuda(const ViewPosition& view);
+    
+    // CUDA accelerated platform rendering
+    void renderPlatformsCuda(const BSPTree& bsp, const ViewPosition& view);
     
     // CUDA accelerated sprite rendering
     void renderSpritesCuda(const BSPTree& bsp, const ViewPosition& view, 
@@ -120,15 +125,14 @@ private:
     // Serialized BSP data on device
     CudaBSPTree m_deviceBSPTree;
     
+    // Store the test map BSP tree
+    BSPTree m_testMapBSP;
+    
     // Allocate CUDA memory
     void allocateCudaMemory();
     
     // Free CUDA memory
     void freeCudaMemory();
-    
-    // Render using the test map's BSP data
-    void renderTestMapBSPCuda(const ViewPosition& view, float maxViewDistance);
-    void renderTestMapFloorCuda(const ViewPosition& view);
     
     // Custom parameters for special rendering effects
     std::unordered_map<std::string, float> m_customParameters;
