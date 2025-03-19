@@ -1670,14 +1670,24 @@ int main(int argc, char* argv[]) {
     collisionBSP.addPlatform(elevatedPlatform);
     
     // Create and add DOOM-like stairs to the BSP tree
+    // Position the stairs properly connecting to the top stairs room
     Vec2 stairsStart(-1.5f, -2.3f);  // Start position (slightly in front of south wall)
     Vec2 stairsEnd(1.5f, -2.3f);     // End position (wider and slightly in front of wall)
     float stairsBaseHeight = 0.0f;   // Start at floor level
-    float stairsStepHeight = 0.4f;   // Increased height of each step (was 0.3f)
+    float stairsStepHeight = 0.4f;   // Height of each step
     int stairsNumSteps = 5;          // Number of steps
     
     // Calculate the final height of the top step (for the elevated room)
     float topStepHeight = stairsBaseHeight + (stairsStepHeight * (stairsNumSteps - 1));
+    
+    // Print stair positioning information
+    std::cout << "\n=== STAIR CONFIGURATION ===\n";
+    std::cout << "Stair start position: (" << stairsStart.x << ", " << stairsStart.y << ")\n";
+    std::cout << "Stair end position: (" << stairsEnd.x << ", " << stairsEnd.y << ")\n";
+    std::cout << "Base height: " << stairsBaseHeight << " units\n";
+    std::cout << "Step height: " << stairsStepHeight << " units\n";
+    std::cout << "Number of steps: " << stairsNumSteps << "\n";
+    std::cout << "Top step height: " << topStepHeight << " units\n";
     
     // Create a new sector for the elevated room at the top of the stairs
     // This will be the 7th sector (index 6) since we have 6 sectors already:
@@ -1725,18 +1735,32 @@ int main(int argc, char* argv[]) {
     }
     
     // Now also create actual stair platforms connecting to the elevated room
+    std::cout << "\n=== CREATING STAIR PLATFORMS ===\n";
     std::vector<Platform> stairs = createDoomStairs(stairsStart, stairsEnd, stairsBaseHeight, 
                                                    stairsStepHeight, stairsNumSteps, 
                                                    10, 10, 10, 200, 0);
+    std::cout << "Created " << stairs.size() << " stair platforms.\n";
+    
+    // First build the BSP tree with the sectors
+    collisionBSP.build(testMapSectors);
+    
+    // Add platforms to BSP tree AFTER building it
     
     // Add each platform to the BSP tree
     for (const Platform& platform : roomPlatforms) {
         collisionBSP.addPlatform(platform);
     }
     
-    // Add each stair platform to the BSP tree
+    // Add each stair platform to the BSP tree - do this last to ensure proper indexing
+    std::cout << "\n=== ADDING STAIR PLATFORMS TO BSP TREE ===\n";
     for (const Platform& stair : stairs) {
         collisionBSP.addPlatform(stair);
+        // Verify the stair platform was added correctly
+        size_t platformIndex = collisionBSP.getPlatforms().size() - 1;
+        const Platform& addedPlatform = collisionBSP.getPlatforms()[platformIndex];
+        std::cout << "Added stair platform " << addedPlatform.stairIndex + 1 
+                  << " at height " << addedPlatform.height 
+                  << " (index " << platformIndex << ")" << std::endl;
     }
     
     // Add decorative items to the elevated room
@@ -2533,257 +2557,235 @@ int main(int argc, char* argv[]) {
             // Store original position for unstick detection
             Vec2 originalPosition = view.position;
             
-            // Check if we're very close to a portal and trying to move through it
-            bool portalAssist = false;
-            for (int i = 0; i < testMapSectors.size() && !portalAssist; i++) {
-                for (int j = 0; j < testMapSectors[i].walls.size(); j++) {
-                    const Wall& wall = testMapSectors[i].walls[j];
-                    if (!wall.isSolid && wall.sectorBack >= 0) {
-                        float dist = wall.segment.distanceToPoint(view.position);
-                        if (dist < 0.1f) { // Very close to portal
-                            // Get wall direction and normal
-                            Vec2 wallDir = (wall.segment.end.position - wall.segment.start.position).normalized();
-                            Vec2 wallNormal(-wallDir.y, wallDir.x);
-                            
-                            // Check if we're trying to move through the portal
-                            if (std::abs(movementVector.dotProduct(wallNormal)) > 0.05f) { // Reduced threshold to make it easier to cross
-                                // If dot product of movement and normal is significant, we're trying to cross
-                                // Add a stronger boost in the direction of the normal to help push through
-                                float direction = movementVector.dotProduct(wallNormal) > 0 ? 1.0f : -1.0f;
-                                Vec2 portalBoost = wallNormal * direction * 0.2f; // Increased from 0.15f to 0.2f
-                                view.position = view.position + portalBoost;
-                                
-                                // Check if this is the portal between side room and elevated room or staircase
-                                if ((wall.sectorFront == 2 && wall.sectorBack == 4) || // Side room to staircase
-                                    (wall.sectorFront == 4 && wall.sectorBack == 2) || // Staircase to side room
-                                    (wall.sectorFront == 4 && wall.sectorBack == 3) || // Staircase to elevated room
-                                    (wall.sectorFront == 3 && wall.sectorBack == 4)) { // Elevated room to staircase
-                                    // Apply an additional boost for elevation portals
-                                    view.position = view.position + portalBoost * 3.0f;
-                                    
-                                    // Adjust height to match the destination sector's floor
-                                    if (wall.sectorFront == 2 && wall.sectorBack == 4) {
-                                        // Going from side room to staircase
-                                        view.height = PLAYER_DEFAULT_HEIGHT + 0.2f; // Boost height to match staircase
-                                        std::cout << "Enhanced portal assist applied for staircase!" << std::endl;
-                                    } else if (wall.sectorFront == 4 && wall.sectorBack == 3) {
-                                        // Going from staircase to elevated room
-                                        view.height = PLAYER_DEFAULT_HEIGHT + 0.5f; // Boost height to match elevated room
-                                        std::cout << "Enhanced portal assist applied for elevated room!" << std::endl;
-                                    } else if (wall.sectorFront == 3 && wall.sectorBack == 4) {
-                                        // Going from elevated room to staircase
-                                        view.height = PLAYER_DEFAULT_HEIGHT + 0.4f; // Slightly lower for staircase top
-                                        std::cout << "Enhanced portal assist applied for staircase from elevated room!" << std::endl;
-                                    } else {
-                                        // Going from staircase to side room
-                                        view.height = PLAYER_DEFAULT_HEIGHT + 0.1f; // Reset height to match side room
-                                        std::cout << "Enhanced portal assist applied for side room!" << std::endl;
-                                    }
-                                } else {
-                                    std::cout << "Portal assist applied! Boosting player through portal." << std::endl;
-                                }
-                                
-                                portalAssist = true;
-                                break;
-                            }
+            // First, check if we're on a stair platform and trying to climb it
+            int currentPlatformIndex = -1;
+            bool onStairPlatform = false;
+            float currentStairHeight = 0.0f;
+            
+            // Check if player is currently on a stair platform
+            for (int i = collisionBSP.getPlatforms().size() - 1; i >= 0; i--) {
+                const Platform& platform = collisionBSP.getPlatforms()[i];
+                if (platform.type == PlatformType::STAIR && platform.containsPoint(view.position)) {
+                    float distToTop = std::abs(view.height - PLAYER_DEFAULT_HEIGHT - platform.height);
+                    if (distToTop < 0.5f) { // If player is close to platform height
+                        currentPlatformIndex = i;
+                        onStairPlatform = true;
+                        currentStairHeight = platform.height;
+                        
+                        // If we're not already at the right height, adjust it
+                        if (std::abs(view.height - (PLAYER_DEFAULT_HEIGHT + platform.height)) > 0.05f) {
+                            view.height = PLAYER_DEFAULT_HEIGHT + platform.height;
+                            std::cout << "Adjusting player height to match stair: " << platform.height << std::endl;
                         }
+                        break;
                     }
                 }
             }
             
-            // Check for nearby walls - debug output
-            CollisionInfo nearbyWalls = collisionBSP.castRay(view.position, movementVector.normalized(), PLAYER_RADIUS * 3.0f);
-            if (nearbyWalls.collision && nearbyWalls.distance < 0.5f) {
-                // Only output when we're very close to a wall
-                std::cout << "NEARBY WALL: Player at (" << view.position.x << ", " << view.position.y 
-                          << "), Wall at " << nearbyWalls.distance * PLAYER_RADIUS * 3.0f 
-                          << " units away in direction (" << movementVector.normalized().x 
-                          << ", " << movementVector.normalized().y << ")" << std::endl;
+            // Now check if we're moving onto the next stair
+            Vec2 nextPosition = view.position + movementVector;
+            int nextPlatformIndex = -1;
+            bool onNextStairPlatform = false;
+            float nextStairHeight = 0.0f;
+            
+            // First check specifically for stair platforms at the next position
+            for (int i = collisionBSP.getPlatforms().size() - 1; i >= 0; i--) {
+                const Platform& platform = collisionBSP.getPlatforms()[i];
+                if (platform.type == PlatformType::STAIR && platform.containsPoint(nextPosition)) {
+                    nextPlatformIndex = i;
+                    onNextStairPlatform = true;
+                    nextStairHeight = platform.height;
+                    
+                    std::cout << "Found next stair platform at height: " << platform.height 
+                              << ", index: " << platform.stairIndex + 1 << " of " << platform.stairCount << std::endl;
+                    break;
+                }
             }
             
-            // Check for collisions
-            CollisionInfo collision = collisionBSP.checkCollision(view.position, PLAYER_RADIUS, movementVector);
-            
-            // Check if the player is standing on a platform
-            int platformIndex = -1;
-            bool onPlatform = collisionBSP.isPointOnPlatform(view.position, view.height - PLAYER_DEFAULT_HEIGHT, platformIndex);
-            
-            // If the player is on a platform, adjust their height
-            if (onPlatform) {
-                const Platform& platform = collisionBSP.getPlatforms()[platformIndex];
-                
-                // Set the player's height based on the platform height
+            // If we're moving from one stair platform to another, adjust height
+            if (onNextStairPlatform) {
+                // If we're not jumping, set our height based on the stair
                 if (!isJumping) {
-                    view.height = PLAYER_DEFAULT_HEIGHT + platform.getTopHeight();
+                    float heightDiff = nextStairHeight - currentStairHeight;
                     
-                    // If this is a stair platform, provide visual feedback
-                    if (platform.type == PlatformType::STAIR) {
-                        std::cout << "\rOn room-covering platform"
-                                  << ", height: " << platform.getTopHeight() 
-                                  << ", position: (" << view.position.x << ", " << view.position.y << ")"
-                                  << "        " << std::flush;
+                    // Only adjust if moving to a different height
+                    if (std::abs(heightDiff) > 0.05f) {
+                        // Adjust the player's height based on the next platform
+                        view.height = PLAYER_DEFAULT_HEIGHT + nextStairHeight;
                         
-                        // Add subtle screen shake for walking on elevated surfaces
-                        if (movementVector.lengthSquared() > 0.0f) {
-                            screenShakeAmount = std::max(screenShakeAmount, 0.05f);
-                        }
+                        // Add a small screen shake for feedback when climbing stairs
+                        screenShakeAmount = 0.1f;
+                        
+                        std::cout << "Moving to stair at height: " << nextStairHeight 
+                                  << ", height change: " << heightDiff << std::endl;
                     }
                 }
-            }
-            
-            // Debug: Check for platforms near the player
-            float checkRadius = 1.0f;
-            Vec2 playerPos = view.position;
-            bool foundNearbyPlatform = false;
-            
-            // Check in a grid around the player
-            for (float xOffset = -checkRadius; xOffset <= checkRadius; xOffset += 0.5f) {
-                for (float yOffset = -checkRadius; yOffset <= checkRadius; yOffset += 0.5f) {
-                    Vec2 checkPos = playerPos + Vec2(xOffset, yOffset);
-                    int nearbyPlatformIndex = -1;
+                
+                // Allow movement to the next platform
+                view.position = nextPosition;
+            } else {
+                // Standard collision detection for non-stair movement
+                // Check for collisions
+                CollisionInfo collision = collisionBSP.checkCollision(view.position, PLAYER_RADIUS, movementVector);
+                
+                // Check if the player is standing on a platform
+                int platformIndex = -1;
+                bool onPlatform = collisionBSP.isPointOnPlatform(view.position, view.height - PLAYER_DEFAULT_HEIGHT, platformIndex);
+                
+                // If the player is on a platform, adjust their height
+                if (onPlatform) {
+                    const Platform& platform = collisionBSP.getPlatforms()[platformIndex];
                     
-                    if (collisionBSP.isPointOnPlatform(checkPos, view.height - PLAYER_DEFAULT_HEIGHT, nearbyPlatformIndex)) {
-                        const Platform& nearbyPlatform = collisionBSP.getPlatforms()[nearbyPlatformIndex];
-                        std::cout << "Nearby platform detected at (" << checkPos.x << ", " << checkPos.y 
-                                  << "), type: " << (nearbyPlatform.type == PlatformType::STAIR ? "ELEVATED" : "OTHER")
-                                  << ", height: " << nearbyPlatform.getTopHeight() << std::endl;
-                        foundNearbyPlatform = true;
-                    }
-                }
-            }
-            
-            if (!foundNearbyPlatform && std::abs(view.position.y + 2.3f) < 0.5f && std::abs(view.position.x) < 2.0f) {
-                std::cout << "Player is near stairs location but no platform detected. Position: (" 
-                          << view.position.x << ", " << view.position.y << ")" << std::endl;
-            }
-            
-            // Check if the new position would be on a platform
-            Vec2 newPosition = view.position + movementVector;
-            int newPlatformIndex = -1;
-            bool onNewPlatform = collisionBSP.isPointOnPlatform(newPosition, view.height - PLAYER_DEFAULT_HEIGHT, newPlatformIndex);
-            
-            // If moving from one platform to another, check height difference
-            if (onPlatform && onNewPlatform && platformIndex != newPlatformIndex) {
-                const Platform& currentPlatform = collisionBSP.getPlatforms()[platformIndex];
-                const Platform& newPlatform = collisionBSP.getPlatforms()[newPlatformIndex];
-                
-                // Calculate height difference
-                float heightDiff = newPlatform.getTopHeight() - currentPlatform.getTopHeight();
-                
-                // If the height difference is too great, prevent movement
-                if (heightDiff > 0.3f && !isJumping) {
-                    // Step is too high to climb normally
-                    std::cout << "Step too high to climb. Height difference: " << heightDiff << std::endl;
-                    collision.collision = true;
-                    collision.distance = 0.0f;
-                    collision.normal = (newPosition - view.position).normalized() * -1.0f;
-                }
-            }
-            
-            // Check if we're near the portal between side room and elevated room or staircase
-            bool nearElevationPortal = false;
-            for (int i = 0; i < testMapSectors.size() && !nearElevationPortal; i++) {
-                for (int j = 0; j < testMapSectors[i].walls.size(); j++) {
-                    const Wall& wall = testMapSectors[i].walls[j];
-                    if (!wall.isSolid && 
-                        ((wall.sectorFront == 2 && wall.sectorBack == 4) || // Side room to staircase
-                         (wall.sectorFront == 4 && wall.sectorBack == 2) || // Staircase to side room
-                         (wall.sectorFront == 4 && wall.sectorBack == 3) || // Staircase to elevated room
-                         (wall.sectorFront == 3 && wall.sectorBack == 4))) { // Elevated room to staircase
-                        float dist = wall.segment.distanceToPoint(view.position);
-                        if (dist < 0.5f) { // Within 0.5 units of the elevation portal
-                            nearElevationPortal = true;
+                    // Set the player's height based on the platform height
+                    if (!isJumping) {
+                        view.height = PLAYER_DEFAULT_HEIGHT + platform.height;
+                        
+                        // If this is a stair platform, provide visual feedback
+                        if (platform.type == PlatformType::STAIR) {
+                            std::cout << "\rOn stair platform"
+                                    << ", height: " << platform.height 
+                                    << ", position: (" << view.position.x << ", " << view.position.y << ")"
+                                    << "        " << std::flush;
                             
-                            // Apply a small boost toward the portal to help player move through
-                            Vec2 wallDir = (wall.segment.end.position - wall.segment.start.position).normalized();
-                            Vec2 wallNormal(-wallDir.y, wallDir.x);
-                            
-                            // Determine which direction to boost (toward the portal)
-                            float direction = 1.0f;
-                            if (wall.sectorFront == currentSector) {
-                                // We're in the front sector, so boost toward the back
-                                direction = wallNormal.dotProduct(movementVector) > 0 ? 1.0f : -1.0f;
-                            } else {
-                                // We're in the back sector, so boost toward the front
-                                direction = wallNormal.dotProduct(movementVector) > 0 ? -1.0f : 1.0f;
+                            // Add subtle screen shake for walking on elevated surfaces
+                            if (movementVector.lengthSquared() > 0.0f) {
+                                screenShakeAmount = std::max(screenShakeAmount, 0.05f);
                             }
-                            
-                            // Apply a stronger boost for elevation changes
-                            Vec2 portalBoost = wallNormal * direction * 0.2f;
-                            view.position = view.position + portalBoost;
-                            
-                            std::cout << "Elevation portal assist applied! Boosting player through portal." << std::endl;
-                            break;
                         }
                     }
                 }
-            }
-            
-            if (collision.collision) {
-                // If we're near the elevation portal, be more lenient with collisions
-                if (nearElevationPortal && collision.distance < 1.0f) {
-                    // Reduce the collision effect for the elevation portal
-                    collision.distance *= 1.5f; // Make it seem further away
-                    std::cout << "Applying lenient collision detection near elevation portal" << std::endl;
-                }
                 
-                // Output collision details when a collision is detected
-                std::cout << "COLLISION: Distance=" << collision.distance 
-                          << ", Normal=(" << collision.normal.x << ", " << collision.normal.y 
-                          << "), SectorId=" << collision.sectorId
-                          << ", WallIndex=" << collision.wallIndex << std::endl;
-                
-                // If we're about to hit a wall
-                if (collision.distance < 1.0f) {
-                    // Move as far as we can before hitting the wall
-                    // Apply a small safety factor (0.9) to avoid getting too close
-                    Vec2 safeMovement = movementVector * (collision.distance * 0.9f);
+                // Handle normal collision response
+                if (collision.collision) {
+                    // If we're near the elevation portal, be more lenient with collisions
+                    bool nearElevationPortal = false;
+                    for (int i = 0; i < testMapSectors.size() && !nearElevationPortal; i++) {
+                        for (int j = 0; j < testMapSectors[i].walls.size(); j++) {
+                            const Wall& wall = testMapSectors[i].walls[j];
+                            if (!wall.isSolid && 
+                                ((wall.sectorFront == 2 && wall.sectorBack == 4) || // Side room to staircase
+                                (wall.sectorFront == 4 && wall.sectorBack == 2) || // Staircase to side room
+                                (wall.sectorFront == 4 && wall.sectorBack == 3) || // Staircase to elevated room
+                                (wall.sectorFront == 3 && wall.sectorBack == 4))) { // Elevated room to staircase
+                                float dist = wall.segment.distanceToPoint(view.position);
+                                if (dist < 0.5f) { // Within 0.5 units of the elevation portal
+                                    nearElevationPortal = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     
-                    // Move up to the collision point
-                    view.position = view.position + safeMovement;
+                    if (nearElevationPortal && collision.distance < 1.0f) {
+                        // Reduce the collision effect for the elevation portal
+                        collision.distance *= 1.5f; // Make it seem further away
+                    }
                     
-                    // Calculate the remaining movement vector that needs to be redirected
-                    Vec2 remainingMovement = movementVector * (1.0f - collision.distance * 0.9f);
-                    
-                    // Slide along the wall (project the remaining movement onto the wall plane)
-                    Vec2 slideVector = remainingMovement - 
-                                    collision.normal * remainingMovement.dotProduct(collision.normal);
-                    
-                    // Add a significant component away from the wall to prevent sticking
-                    Vec2 awayFromWall = collision.normal * 0.01f;
-                    slideVector = slideVector + awayFromWall;
-                    
-                    // Apply the slide movement, but check for a second collision
-                    if (slideVector.lengthSquared() > 0.001f) {
-                        CollisionInfo slideCollision = collisionBSP.checkCollision(view.position, PLAYER_RADIUS, slideVector);
+                    // If we're about to hit a wall
+                    if (collision.distance < 1.0f) {
+                        // Move as far as we can before hitting the wall
+                        // Apply a small safety factor (0.9) to avoid getting too close
+                        Vec2 safeMovement = movementVector * (collision.distance * 0.9f);
                         
-                        if (slideCollision.collision && slideCollision.distance < 1.0f) {
-                            // If we'd hit another wall while sliding, move safely along the slide vector
-                            // Reduce the sliding movement to avoid getting stuck in corners
-                            float slideDistance = slideCollision.distance * 0.7f;
+                        // Move up to the collision point
+                        view.position = view.position + safeMovement;
+                        
+                        // Calculate the remaining movement vector that needs to be redirected
+                        Vec2 remainingMovement = movementVector * (1.0f - collision.distance * 0.9f);
+                        
+                        // Slide along the wall (project the remaining movement onto the wall plane)
+                        Vec2 slideVector = remainingMovement - 
+                                        collision.normal * remainingMovement.dotProduct(collision.normal);
+                        
+                        // Add a significant component away from the wall to prevent sticking
+                        Vec2 awayFromWall = collision.normal * 0.01f;
+                        slideVector = slideVector + awayFromWall;
+                        
+                        // Apply the slide movement, but check for a second collision
+                        if (slideVector.lengthSquared() > 0.001f) {
+                            CollisionInfo slideCollision = collisionBSP.checkCollision(view.position, PLAYER_RADIUS, slideVector);
                             
-                            // Add a stronger repulsion force to push away from corners
-                            Vec2 repulsionForce = slideCollision.normal * 0.025f;
-                            view.position = view.position + slideVector * slideDistance + repulsionForce;
-                            
-                            // If movement is very small, apply a larger bump in the normal direction to unstick
-                            if (slideVector.length() * slideDistance < 0.015f) {
-                                Vec2 unstickVector = collision.normal * 0.03f;
-                                view.position = view.position + unstickVector;
+                            if (slideCollision.collision && slideCollision.distance < 1.0f) {
+                                // If we'd hit another wall while sliding, move safely along the slide vector
+                                // Reduce the sliding movement to avoid getting stuck in corners
+                                float slideDistance = slideCollision.distance * 0.7f;
                                 
+                                // Add a stronger repulsion force to push away from corners
+                                Vec2 repulsionForce = slideCollision.normal * 0.025f;
+                                view.position = view.position + slideVector * slideDistance + repulsionForce;
+                                
+                                // If movement is very small, apply a larger bump in the normal direction to unstick
+                                if (slideVector.length() * slideDistance < 0.015f) {
+                                    Vec2 unstickVector = collision.normal * 0.03f;
+                                    view.position = view.position + unstickVector;
+                                }
+                            } else {
+                                // No collision with the slide vector, apply it fully
+                                view.position = view.position + slideVector;
                             }
-                        } else {
-                            // No collision with the slide vector, apply it fully
-                            view.position = view.position + slideVector;
                         }
+                    } else {
+                        // Collision.distance >= 1.0 means no collision during this move
+                        view.position = view.position + movementVector;
                     }
                 } else {
-                    // Collision.distance >= 1.0 means no collision during this move
+                    // No collision, safe to move
                     view.position = view.position + movementVector;
                 }
-            } else {
-                // No collision, safe to move
-                view.position = view.position + movementVector;
+            }
+            
+            // Enhanced detection for nearby stair platforms
+            bool foundNearbyStairPlatform = false;
+            const float STAIR_CHECK_RADIUS = 0.5f;
+            
+            // Check specifically for the stair platforms near the player
+            for (size_t i = 0; i < stairs.size(); i++) {
+                for (float xOffset = -STAIR_CHECK_RADIUS; xOffset <= STAIR_CHECK_RADIUS; xOffset += 0.25f) {
+                    for (float yOffset = -STAIR_CHECK_RADIUS; yOffset <= STAIR_CHECK_RADIUS; yOffset += 0.25f) {
+                        Vec2 checkPos = view.position + Vec2(xOffset, yOffset);
+                        int platformIndex = -1;
+                        
+                        if (collisionBSP.isPointOnPlatform(checkPos, view.height - PLAYER_DEFAULT_HEIGHT, platformIndex)) {
+                            // Check if this is one of our stair platforms
+                            for (size_t j = 0; j < stairs.size(); j++) {
+                                if (platformIndex == collisionBSP.getPlatforms().size() - stairs.size() + j) {
+                                    const Platform& stairPlatform = collisionBSP.getPlatforms()[platformIndex];
+                                    foundNearbyStairPlatform = true;
+                                    
+                                    // If near a stair but not on it yet, give a visual cue
+                                    if (!onStairPlatform && !onNextStairPlatform) {
+                                        std::cout << "Approaching stair " << j + 1 << " of " << stairsNumSteps
+                                                << ", height: " << (stairsBaseHeight + j * stairsStepHeight) << std::endl;
+                                    }
+                                    break;
+                                }
+                            }
+                            if (foundNearbyStairPlatform) break;
+                        }
+                    }
+                    if (foundNearbyStairPlatform) break;
+                }
+            }
+            
+            // Check if we're near the stairs area but not detecting platforms
+            if (!foundNearbyStairPlatform && 
+                std::abs(view.position.y + 2.3f) < 0.5f && 
+                std::abs(view.position.x) < 2.0f) {
+                    
+                // We're in the stair area but no platforms detected - adjust to find the nearest stair
+                for (size_t i = 0; i < stairs.size(); i++) {
+                    // Get the typical position of this stair
+                    float stairY = -2.3f; // This matches the stairsStart Y position
+                    float stairHeight = stairsBaseHeight + i * stairsStepHeight;
+                    
+                    // If we're close enough to this stair, adjust our height
+                    float distToStair = std::abs(view.position.y - stairY);
+                    if (distToStair < 0.3f && !isJumping) {
+                        view.height = PLAYER_DEFAULT_HEIGHT + stairHeight;
+                        std::cout << "Adjusting height for stair " << i + 1 << ", height: " << stairHeight << std::endl;
+                        break;
+                    }
+                }
             }
             
             // Check if we've moved at all - if not, we might be stuck
@@ -2792,18 +2794,6 @@ int main(int argc, char* argv[]) {
                 float randomAngle = static_cast<float>(rand()) / RAND_MAX * 2.0f * M_PI;
                 Vec2 randomDir(std::cos(randomAngle), std::sin(randomAngle));
                 view.position = view.position + randomDir * 0.05f;
-                
-                // Debug output for getting stuck
-                std::cout << "MAJOR STUCK: Player at position (" << view.position.x << ", " << view.position.y 
-                          << ") - applying stronger random bump in direction (" 
-                          << randomDir.x << ", " << randomDir.y << ")" << std::endl;
-                
-                // Try another ray cast in the random direction to see what's there
-                CollisionInfo stuckRay = collisionBSP.castRay(view.position, randomDir, PLAYER_RADIUS * 5.0f);
-                if (stuckRay.collision) {
-                    std::cout << "  Nearest obstacle in random direction at distance: " 
-                              << stuckRay.distance * PLAYER_RADIUS * 5.0f << " units" << std::endl;
-                }
             }
         }
         
@@ -3019,6 +3009,19 @@ int main(int argc, char* argv[]) {
     std::cout << "3. Blood pools in the corners\n";
     std::cout << "4. Molten rock and flesh walls\n";
     std::cout << "Use the DOOM-like stairs to reach the elevated room!\n";
+    
+    // Print out debug info about each stair platform
+    std::cout << "\n=== STAIR PLATFORMS INFO ===\n";
+    for (size_t i = 0; i < stairs.size(); i++) {
+        const Platform& stair = stairs[i];
+        std::cout << "Stair " << i + 1 << " of " << stairs.size() << ":\n";
+        std::cout << "  Height: " << stair.height << " units\n";
+        std::cout << "  Position: (" << stair.vertices[0].x << ", " << stair.vertices[0].y << ")\n";
+        std::cout << "  Step index: " << stair.stairIndex << "\n";
+        std::cout << "  Platform index in BSP: " << (collisionBSP.getPlatforms().size() - stairs.size() + i) << "\n";
+    }
+    std::cout << "Total platforms in BSP: " << collisionBSP.getPlatforms().size() << "\n";
+    std::cout << "===========================\n";
     
     return 0;
 } 

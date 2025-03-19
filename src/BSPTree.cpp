@@ -1210,40 +1210,78 @@ void BSPTree::addPlatform(const Platform& platform) {
 bool BSPTree::isPointOnPlatform(const Vec2& point, float height, int& platformIndex) const {
     platformIndex = -1;
     
-    // Check each platform
-    for (size_t i = 0; i < m_platforms.size(); ++i) {
+    // First check for stair platforms specifically
+    // Iterate from newest to oldest platforms (stairs are usually added last)
+    for (int i = m_platforms.size() - 1; i >= 0; --i) {
         const Platform& platform = m_platforms[i];
         
-        // Check if the point is within the platform's 2D bounds
-        if (platform.containsPoint(point)) {
-            // Check if the height is within the platform's height range
-            float topHeight = platform.getTopHeight();
-            float bottomHeight = platform.getBottomHeight();
-            
-            // Use a more lenient height check with a small buffer (0.1 units)
-            const float HEIGHT_BUFFER = 0.1f;
-            if (height >= bottomHeight - HEIGHT_BUFFER && height <= topHeight + HEIGHT_BUFFER) {
-                platformIndex = static_cast<int>(i);
+        // Skip platforms that aren't solid or visible
+        if (!platform.isSolid || !platform.isVisible) {
+            continue;
+        }
+        
+        // Special handling for stairs
+        if (platform.type == PlatformType::STAIR) {
+            // Check if the point is within the platform's 2D bounds
+            if (platform.containsPoint(point)) {
+                // Get platform height range
+                float platformTop = platform.height;
+                float platformBottom = platform.height - platform.thickness;
                 
-                // Debug output
-                std::cout << "Platform detected at (" << point.x << ", " << point.y 
-                          << "), type: " << (platform.type == PlatformType::STAIR ? "STAIR" : "OTHER")
-                          << ", index: " << i
-                          << ", height range: " << bottomHeight << " to " << topHeight
-                          << ", player height: " << height << std::endl;
+                // Use a very generous tolerance for stairs to make climbing easier
+                const float STAIR_HEIGHT_TOLERANCE = 0.5f;
                 
-                return true;
-            }
-            
-            // Debug output for near misses
-            if (std::abs(height - topHeight) < 0.2f || std::abs(height - bottomHeight) < 0.2f) {
-                std::cout << "Near miss platform at (" << point.x << ", " << point.y 
-                          << "), height range: " << bottomHeight << " to " << topHeight
-                          << ", player height: " << height << std::endl;
+                // If the player's height is close to the stair platform height,
+                // consider them to be on the stair
+                if (std::abs(height - platformTop) < STAIR_HEIGHT_TOLERANCE ||
+                    (height >= platformBottom && height <= platformTop + STAIR_HEIGHT_TOLERANCE)) {
+                    platformIndex = i;
+                    
+                    // Output debug information
+                    std::cout << "On stair " << platform.stairIndex + 1 
+                              << " of " << platform.stairCount
+                              << " at height " << platformTop 
+                              << ", player height: " << height << std::endl;
+                    
+                    return true;
+                }
             }
         }
     }
     
+    // If we didn't find a stair platform, check for regular platforms
+    for (int i = m_platforms.size() - 1; i >= 0; --i) {
+        const Platform& platform = m_platforms[i];
+        
+        // Skip platforms that aren't solid or visible
+        if (!platform.isSolid || !platform.isVisible) {
+            continue;
+        }
+        
+        // Skip stair platforms (already checked)
+        if (platform.type == PlatformType::STAIR) {
+            continue;
+        }
+        
+        // Check if the point is within the platform's 2D bounds
+        if (platform.containsPoint(point)) {
+            // Get platform height range
+            float platformTop = platform.height;
+            float platformBottom = platform.height - platform.thickness;
+            
+            // Use a small tolerance for regular platforms
+            const float HEIGHT_TOLERANCE = 0.1f;
+            
+            // Check if the height is within the platform's height range
+            if (height >= platformBottom - HEIGHT_TOLERANCE && 
+                height <= platformTop + HEIGHT_TOLERANCE) {
+                platformIndex = i;
+                return true;
+            }
+        }
+    }
+    
+    // No platform found
     return false;
 }
 

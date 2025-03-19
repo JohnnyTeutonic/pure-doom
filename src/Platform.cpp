@@ -1,5 +1,6 @@
 #include "Platform.h"
 #include "BSPTree.h" // Now we can include BSPTree.h here
+#include <iostream>  // Add missing include for std::cout and std::endl
 
 namespace PureDoom {
 
@@ -100,32 +101,64 @@ void Platform::trigger() {
 }
 
 // Create a stair platform
-Platform Platform::createStair(const Vec2& start, const Vec2& end, float baseHeight, 
-                             float stepHeight, int index, int count, 
+Platform Platform::createStair(const Vec2& start, const Vec2& end, float baseHeight,
+                             float stepHeight, int index, int count,
                              int topTex, int bottomTex, int sideTex, int light, int sector) {
-    // Calculate the step dimensions
-    Vec2 direction = (end - start).normalized();
-    float stepLength = (end - start).length() / count;
+    // Calculate the position and dimensions of this step
+    float stepWidth = (end - start).length();
+    float stepDepth = 1.0f;  // Increased depth of each step for better collision detection
     
-    // Calculate the step position
-    Vec2 stepStart = start + direction * (index * stepLength);
-    Vec2 stepEnd = start + direction * ((index + 1) * stepLength);
-    
-    // Create perpendicular vector for step width
-    Vec2 perpendicular(-direction.y, direction.x);
-    float stepWidth = 1.5f; // Increased step width for better visibility (was 1.0f)
-    
-    // Create the four corners of the step
+    // Calculate the vertices for this step (more precise)
     std::vector<Vec2> vertices;
-    vertices.push_back(stepStart + perpendicular * (stepWidth / 2.0f));
-    vertices.push_back(stepEnd + perpendicular * (stepWidth / 2.0f));
-    vertices.push_back(stepEnd - perpendicular * (stepWidth / 2.0f));
-    vertices.push_back(stepStart - perpendicular * (stepWidth / 2.0f));
     
-    // Calculate the height for this step
+    // Calculate step height (bottom to top stair)
     float height = baseHeight + (index * stepHeight);
     
-    // Create the platform
+    // Direction of the step
+    Vec2 stepDir = (end - start).normalized();
+    Vec2 stepNormal(-stepDir.y, stepDir.x);
+    
+    // Calculate step positions - make each step overlap slightly with the next
+    float stepLength = stepWidth / count;
+    float overlap = 0.05f; // Slight overlap between steps
+    
+    // Start position for this step (ensure first step connects with ground level)
+    float startPos;
+    if (index == 0) {
+        // First step should start exactly at the specified start position
+        startPos = 0;
+    } else {
+        // Subsequent steps should overlap slightly with the previous step
+        startPos = (stepLength * index) - overlap;
+    }
+    
+    // End position for this step (ensure last step reaches the top)
+    float endPos;
+    if (index == count - 1) {
+        // Last step should end exactly at the specified end position
+        endPos = stepWidth;
+    } else {
+        // Intermediate steps should overlap slightly with the next step
+        endPos = (stepLength * (index + 1)) + overlap;
+    }
+    
+    // Calculate the actual start and end points
+    Vec2 stepStart = start + stepDir * startPos;
+    Vec2 stepEnd = start + stepDir * endPos;
+    
+    // Make stairs wider by extending them to the sides
+    float sideExtension = 0.5f; // How much to extend on each side
+    
+    // Add vertices for the step (counter-clockwise ordering)
+    // Front edge (extended)
+    vertices.push_back(stepStart - stepNormal * (stepDepth / 2 + sideExtension));
+    vertices.push_back(stepEnd - stepNormal * (stepDepth / 2 + sideExtension));
+    
+    // Back edge (extended)
+    vertices.push_back(stepEnd + stepNormal * (stepDepth / 2 + sideExtension));
+    vertices.push_back(stepStart + stepNormal * (stepDepth / 2 + sideExtension));
+    
+    // Create the platform with solid collision
     Platform platform(vertices, height, stepHeight, topTex, bottomTex, sideTex, light, sector);
     
     // Set stair-specific properties
@@ -137,6 +170,12 @@ Platform Platform::createStair(const Vec2& start, const Vec2& end, float baseHei
     // Make sure the platform is visible and solid
     platform.isVisible = true;
     platform.isSolid = true;
+    
+    // Debug output
+    std::cout << "Created stair platform " << index + 1 << " of " << count 
+              << " at height " << height 
+              << ", start: (" << stepStart.x << ", " << stepStart.y << ")"
+              << ", end: (" << stepEnd.x << ", " << stepEnd.y << ")" << std::endl;
     
     return platform;
 }
