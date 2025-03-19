@@ -116,12 +116,16 @@ struct CudaWallCollision {
     int lightLevel;         // Light level at the wall (0-255)
     int sectorFront;        // Front sector ID
     int sectorBack;         // Back sector ID (-1 if not a portal)
+    int wallIndex;          // Index of the wall that was hit
+    int sectorId;           // ID of the sector the wall belongs to
+    CudaVec2 normal;        // Normal vector of the wall surface
     
     __host__ __device__ CudaWallCollision() 
         : collision(false), distance(0.0f), textureId(0), texCoordU(0.0f),
           wallHeight(0.0f), floorHeight(0.0f), ceilingHeight(0.0f), 
           isPortal(false), lightLevel(255),
-          sectorFront(-1), sectorBack(-1) {}
+          sectorFront(-1), sectorBack(-1), wallIndex(-1), sectorId(-1),
+          normal(0.0f, 0.0f) {}
 };
 
 // Structure to hold sprite rendering data for CUDA

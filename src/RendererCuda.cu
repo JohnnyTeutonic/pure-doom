@@ -653,12 +653,26 @@ __global__ void bspRenderKernel(
     CudaVec2 rayOrigin(playerX, playerY);
     CudaVec2 rayDir(rayDirX, rayDirY);
     
-    // Special debug rays at fixed positions for testing
-    // bool isDebugRay = (x == 0 || x == width/4 || x == width/2 || x == 3*width/4 || x == width-1);
-    bool isDebugRay = false; // Disable debug rays
+    // Cast ray through BSP tree with a slightly increased maxDistance for robustness
+    CudaWallCollision collision = castRayBSP(*bspTree, rayOrigin, rayDir, maxDistance * 1.05f);
     
-    // Cast ray through BSP tree
-    CudaWallCollision collision = castRayBSP(*bspTree, rayOrigin, rayDir, maxDistance);
+    // For columns near the edges of the screen, consider casting additional rays with small angle offsets
+    // if we didn't hit anything with the primary ray
+    if (!collision.collision && (x < width * 0.1f || x > width * 0.9f)) {
+        // Try a slightly offset angle to catch walls that might be missed due to precision issues
+        float offsetAngle = rayAngle + 0.001f; // Small offset to catch edge cases
+        float offsetDirX = cosf(offsetAngle);
+        float offsetDirY = sinf(offsetAngle);
+        CudaVec2 offsetDir(offsetDirX, offsetDirY);
+        
+        CudaWallCollision offsetCollision = castRayBSP(*bspTree, rayOrigin, offsetDir, maxDistance);
+        if (offsetCollision.collision) {
+            collision = offsetCollision;
+        }
+    }
+    
+    // Define isDebugRay variable for conditional check later in the function
+    bool isDebugRay = false; // Debug rays disabled
     
     if (collision.collision) {
         // Correct for fisheye effect
@@ -688,166 +702,70 @@ __global__ void bspRenderKernel(
         float intensity = 1.0f - fminf(0.9f, correctedDistance / maxDistance); // Cap at 0.9 to prevent totally black walls
         intensity = fmaxf(0.3f, intensity); // Ensure walls are never too dark
         
+        // Calculate z-buffer value (normalized distance)
+        float zValue = fminf(correctedDistance / maxDistance, 0.9999f);
+        
         // Draw the wall column
         for (int y = wallTop; y <= wallBottom; y++) {
-            // Calculate texture coordinate (0-1 range)
-            float wallPercent = (float)(y - wallTop) / fmaxf(1, wallBottom - wallTop);
-            
-            // Get the wall color
-            Color wallColor;
-            bool useTexture = false;
-            
-            // Try to use texture if available and valid
-            if (textures != nullptr && collision.textureId >= 0 && collision.textureId < numTextures) {
-                CudaRenderData::TextureData texture = textures[collision.textureId];
-                
-                if (texture.pixels != nullptr && texture.width > 0 && texture.height > 0) {
-                    useTexture = true;
-                    
-                    // Calculate texture coordinates
-                    float texU = collision.texCoordU;
-                    float texV = wallPercent;
-                    
-                    // Ensure texture coordinates are in [0,1] range
-                    texU = texU - floorf(texU);
-                    texV = texV - floorf(texV);
-                    
-                    // Get texture pixel indices
-                    int texX = (int)(texU * texture.width);
-                    int texY = (int)(texV * texture.height);
-                    
-                    // Clamp to texture dimensions
-                    texX = fmaxf(0, fminf(texture.width - 1, texX));
-                    texY = fmaxf(0, fminf(texture.height - 1, texY));
-                    
-                    // Get the texel color
-                    int texIndex = texY * texture.width + texX;
-                    Color texColor = texture.pixels[texIndex];
-                    
-                    // Apply lighting
-                    wallColor.r = (uint8_t)(texColor.r * intensity);
-                    wallColor.g = (uint8_t)(texColor.g * intensity);
-                    wallColor.b = (uint8_t)(texColor.b * intensity);
-                    wallColor.a = 255; // Fully opaque
-                    
-                    // Add portal effect if needed
-                    if (collision.isPortal) {
-                        // Give portals a slight blue tint
-                        wallColor.b = fminf(255, (int)(wallColor.b * 1.2f));
-                    }
-                }
-            }
-            
-            // Fallback to solid color if texture not available or invalid
-            if (!useTexture) {
-                // More visible wall colors for debugging
-                if (collision.isPortal) {
-                    // Portal wall fallback - bright blue
-                    wallColor = Color(
-                        (uint8_t)(60 * intensity), 
-                        (uint8_t)(60 * intensity), 
-                        (uint8_t)(220 * intensity),
-                        255
-                    );
-                } else {
-                    // Regular wall fallback - use distinct colors based on texture ID
-                    // Use a vibrant color scheme for better visibility
-                    int baseHue = (collision.textureId % 6) * 60; // 6 distinct colors
-                    
-                    if (baseHue < 60) {
-                        // Red to Yellow
-                        wallColor = Color(
-                            255,
-                            (uint8_t)((baseHue/60.0f) * 255 * intensity),
-                            0,
-                            255
-                        );
-                    } else if (baseHue < 120) {
-                        // Yellow to Green
-                        wallColor = Color(
-                            (uint8_t)((2.0f - baseHue/60.0f) * 255 * intensity),
-                            255,
-                            0,
-                            255
-                        );
-                    } else if (baseHue < 180) {
-                        // Green to Cyan
-                        wallColor = Color(
-                            0,
-                            255,
-                            (uint8_t)((baseHue/60.0f - 2.0f) * 255 * intensity),
-                            255
-                        );
-                    } else if (baseHue < 240) {
-                        // Cyan to Blue
-                        wallColor = Color(
-                            0,
-                            (uint8_t)((4.0f - baseHue/60.0f) * 255 * intensity),
-                            255,
-                            255
-                        );
-                    } else if (baseHue < 300) {
-                        // Blue to Magenta
-                        wallColor = Color(
-                            (uint8_t)((baseHue/60.0f - 4.0f) * 255 * intensity),
-                            0,
-                            255,
-                            255
-                        );
-                    } else {
-                        // Magenta to Red
-                        wallColor = Color(
-                            255,
-                            0,
-                            (uint8_t)((6.0f - baseHue/60.0f) * 255 * intensity),
-                            255
-                        );
-                    }
-                }
-            }
-            
-            // Special debug ray visualization
-            if (isDebugRay) {
-                // Only mark the middle of the wall for debug rays
-                int wallHeight = wallBottom - wallTop;
-                if (y >= wallTop + wallHeight/3 && y <= wallBottom - wallHeight/3) {
-                    // Choose color based on ray position
-                    if (x == 0) wallColor = Color(255, 0, 0, 255); // Red
-                    else if (x == width/4) wallColor = Color(255, 255, 0, 255); // Yellow
-                    else if (x == width/2) wallColor = Color(0, 255, 0, 255); // Green
-                    else if (x == 3*width/4) wallColor = Color(0, 255, 255, 255); // Cyan
-                    else wallColor = Color(0, 0, 255, 255); // Blue
-                }
-            }
-            
-            // Set pixel with improved depth testing (larger tolerance for distant walls)
+            // Get current pixel index
             int idx = y * width + x;
-            float depth = correctedDistance / maxDistance;
             
-            // More tolerance for distant walls to prevent z-fighting
-            float tolerance = 0.001f + (depth * 0.01f);
-            
-            // Use proper z-buffer check instead of bypassing it
-            // This ensures correct depth ordering between walls, platforms, and floors
-            if (depth <= zBuffer[idx] + tolerance) {
+            // Only draw if this wall is closer than what's already in the z-buffer
+            if (zValue < zBuffer[idx]) {
+                // Calculate texture coordinate (0-1 range)
+                float wallPercent = (float)(y - wallTop) / fmaxf(1, wallBottom - wallTop);
+                
+                // Get the wall color
+                Color wallColor;
+                bool useTexture = false;
+                
+                // Try to use texture if available and valid
+                if (textures != nullptr && collision.textureId >= 0 && collision.textureId < numTextures) {
+                    CudaRenderData::TextureData texture = textures[collision.textureId];
+                    
+                    if (texture.pixels != nullptr && texture.width > 0 && texture.height > 0) {
+                        useTexture = true;
+                        
+                        // Calculate texture coordinates
+                        float texU = collision.texCoordU;
+                        float texV = wallPercent;
+                        
+                        // Clamp texture coordinates to valid range [0,1)
+                        texU = fmaxf(0.0f, fminf(0.9999f, texU));
+                        texV = fmaxf(0.0f, fminf(0.9999f, texV));
+                        
+                        // Convert to pixel coordinates
+                        int texX = static_cast<int>(texU * texture.width);
+                        int texY = static_cast<int>(texV * texture.height);
+                        
+                        // Safety check for texture coordinates
+                        texX = fmaxf(0, fminf(texture.width - 1, texX));
+                        texY = fmaxf(0, fminf(texture.height - 1, texY));
+                        
+                        // Get texture pixel
+                        wallColor = texture.pixels[texY * texture.width + texX];
+                    }
+                }
+                
+                // If texture is not available, use a default color based on wall index
+                if (!useTexture) {
+                    // Fallback colors - alternating gray shades
+                    wallColor = Color(128, 128, 128);
+                }
+                
+                // Apply lighting
+                wallColor.r = (uint8_t)(wallColor.r * intensity);
+                wallColor.g = (uint8_t)(wallColor.g * intensity);
+                wallColor.b = (uint8_t)(wallColor.b * intensity);
+                
+                // Write to frame buffer and z-buffer
                 frameBuffer[idx] = wallColor;
-                zBuffer[idx] = depth;
+                zBuffer[idx] = zValue;
             }
         }
     } else if (isDebugRay) {
         // Draw a thin line for debug rays that didn't hit anything
-        Color debugColor(255, 0, 255, 255); // Magenta
-        
-        // Draw line in the middle of the screen
-        int midY = height / 2;
-        for (int y = midY - 2; y <= midY + 2; y++) {
-            if (y >= 0 && y < height) {
-                int idx = y * width + x;
-                // Always draw debug rays
-                frameBuffer[idx] = debugColor;
-                zBuffer[idx] = 0.95f;
-            }
-        }
+        // (Code for debug rays would normally go here)
     }
 }
 

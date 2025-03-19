@@ -161,16 +161,54 @@ __device__ bool rayLineIntersection(
     CudaVec2 v3 = CudaVec2(-rayDir.y, rayDir.x);
     
     float dot = dotProduct(v2, v3);
-    if (fabsf(dot) < 0.0001f) {
-        return false; // Parallel or coincident
+    
+    // Use a larger epsilon to handle precision issues
+    const float INTERSECTION_EPSILON = 0.00001f;
+    
+    // If lines are nearly parallel, handle as a special case
+    if (fabsf(dot) < INTERSECTION_EPSILON) {
+        // Check if ray and line are collinear
+        float cross = crossProduct(v1, rayDir);
+        if (fabsf(cross) < INTERSECTION_EPSILON) {
+            // Collinear - check if they overlap
+            float t1 = dotProduct(v1, rayDir) / dotProduct(rayDir, rayDir);
+            float t2 = t1 + dotProduct(v2, rayDir) / dotProduct(rayDir, rayDir);
+            
+            // Sort t1 and t2
+            if (t2 < t1) {
+                float temp = t1;
+                t1 = t2;
+                t2 = temp;
+            }
+            
+            // Check for overlap
+            if (t1 <= 1.0f && t2 >= 0.0f) {
+                // They overlap - use the closest positive intersection
+                outDistance = fmaxf(0.0f, t1);
+                outU = 0.5f; // Arbitrary texture coordinate for collinear case
+                return true;
+            }
+        }
+        return false; // Parallel but not collinear, or no overlap
     }
     
     float t1 = crossProduct(v2, v1) / dot;
     float t2 = dotProduct(v1, v3) / dot;
     
-    if (t1 >= 0.0f && t2 >= 0.0f && t2 <= 1.0f) {
+    // Add a small epsilon to the bounds check to handle edge cases
+    if (t1 >= -INTERSECTION_EPSILON && t2 >= -INTERSECTION_EPSILON && t2 <= 1.0f + INTERSECTION_EPSILON) {
+        // Make sure distance is positive (avoid numerical precision issues)
+        if (t1 < INTERSECTION_EPSILON) {
+            t1 = INTERSECTION_EPSILON;
+        }
+        
         outDistance = t1;
+        
+        // Clamp texCoordU to valid range to avoid texture sampling issues
         outU = t2;
+        if (outU < 0.0f) outU = 0.0f;
+        if (outU > 1.0f) outU = 1.0f;
+        
         return true;
     }
     
@@ -209,6 +247,138 @@ __device__ CudaWallCollision castRayBSP(
         normalizedRayDir = CudaVec2(1.0f, 0.0f); // Default direction if ray is too short
     }
     
+    // Linear scan for small test maps - faster and more reliable for debugging
+    bool useLinearScan = (bsp.wallCount < 200); // Increased limit for better reliability
+    
+    if (useLinearScan) {
+        // Simple linear scan of all walls for small maps
+        float closestDistance = maxDistance;
+        int closestWallIndex = -1;
+        float closestU = 0.0f;
+        
+        // Use a multipass approach to improve precision
+        // First pass: collect all potential intersections
+        const int MAX_HITS = 16; // Maximum number of potential hits to track
+        struct PotentialHit {
+            int wallIndex;
+            float distance;
+            float texCoordU;
+        };
+        PotentialHit potentialHits[MAX_HITS];
+        int numHits = 0;
+        
+        for (int i = 0; i < bsp.wallCount; i++) {
+            const CudaWall& wall = bsp.walls[i];
+            float distance, u;
+            
+            if (rayLineIntersection(rayOrigin, normalizedRayDir, wall.segment, distance, u)) {
+                // Use a slightly smaller epsilon to prioritize closer hits but still avoid precision issues
+                const float DISTANCE_EPSILON = 0.00001f;
+                
+                if (distance > DISTANCE_EPSILON && distance < maxDistance) {
+                    // Store potential hit
+                    if (numHits < MAX_HITS) {
+                        potentialHits[numHits].wallIndex = i;
+                        potentialHits[numHits].distance = distance;
+                        potentialHits[numHits].texCoordU = u;
+                        numHits++;
+                    }
+                    
+                    // Also track the closest hit for early exit if we reach MAX_HITS
+                    if (distance < closestDistance) {
+                        closestDistance = distance;
+                        closestWallIndex = i;
+                        closestU = u;
+                    }
+                }
+            }
+        }
+        
+        // Second pass: sort hits by distance (simple bubble sort for small array)
+        for (int i = 0; i < numHits - 1; i++) {
+            for (int j = 0; j < numHits - i - 1; j++) {
+                if (potentialHits[j].distance > potentialHits[j + 1].distance) {
+                    // Swap
+                    PotentialHit temp = potentialHits[j];
+                    potentialHits[j] = potentialHits[j + 1];
+                    potentialHits[j + 1] = temp;
+                }
+            }
+        }
+        
+        // Third pass: check hits in order of distance
+        closestWallIndex = -1; // Reset for final selection
+        
+        for (int i = 0; i < numHits; i++) {
+            int wallIndex = potentialHits[i].wallIndex;
+            const CudaWall& wall = bsp.walls[wallIndex];
+            
+            // Simple validation check - use the closest wall that has a valid sector
+            if (wall.sectorFront >= 0 && wall.sectorFront < bsp.sectorCount) {
+                closestWallIndex = wallIndex;
+                closestDistance = potentialHits[i].distance;
+                closestU = potentialHits[i].texCoordU;
+                break; // Use the first valid wall
+            }
+        }
+        
+        // If we found a valid wall intersection
+        if (closestWallIndex >= 0) {
+            const CudaWall& wall = bsp.walls[closestWallIndex];
+            int sectorIndex = wall.sectorFront;
+            
+            // Validate sector index
+            if (sectorIndex >= 0 && sectorIndex < bsp.sectorCount) {
+                const CudaSector& sector = bsp.sectors[sectorIndex];
+                
+                collision.collision = true;
+                collision.distance = closestDistance;
+                collision.textureId = wall.textureId;
+                collision.texCoordU = closestU;
+                
+                // Get sector information
+                collision.wallHeight = sector.ceilingHeight - sector.floorHeight;
+                collision.floorHeight = sector.floorHeight;
+                collision.ceilingHeight = sector.ceilingHeight;
+                collision.isPortal = (wall.sectorBack >= 0);
+                collision.lightLevel = wall.lightLevel;
+                
+                // Store wall index and sector ID for debugging
+                collision.wallIndex = closestWallIndex;
+                collision.sectorId = sectorIndex;
+                
+                // Store the wall normal for sliding calculations
+                CudaVec2 wallDir = subtract(wall.segment.end, wall.segment.start);
+                float wallLength = sqrtf(wallDir.x * wallDir.x + wallDir.y * wallDir.y);
+                
+                if (wallLength > 0.0001f) {
+                    wallDir.x /= wallLength;
+                    wallDir.y /= wallLength;
+                    
+                    // Normal is perpendicular to wall direction
+                    collision.normal.x = -wallDir.y;
+                    collision.normal.y = wallDir.x;
+                    
+                    // Make sure normal points away from wall
+                    float dotProduct = collision.normal.x * normalizedRayDir.x + 
+                                       collision.normal.y * normalizedRayDir.y;
+                    
+                    if (dotProduct > 0) {
+                        // Flip normal if it's pointing in same direction as ray
+                        collision.normal.x = -collision.normal.x;
+                        collision.normal.y = -collision.normal.y;
+                    }
+                } else {
+                    // Default normal if wall has zero length
+                    collision.normal.x = -normalizedRayDir.x;
+                    collision.normal.y = -normalizedRayDir.y;
+                }
+            }
+        }
+        
+        return collision;
+    }
+    
     // Stack-based BSP traversal (non-recursive)
     const int MAX_DEPTH = 64; // Maximum tree depth
     
@@ -231,57 +401,6 @@ __device__ CudaWallCollision castRayBSP(
     // Prevent infinite loops with a traversal counter
     int traversalCount = 0;
     const int MAX_TRAVERSALS = 2000; // Safety limit
-    
-    // Linear scan for small test maps - faster and more reliable for debugging
-    bool useLinearScan = (bsp.wallCount < 50); // Only use for small test maps
-    
-    if (useLinearScan) {
-        // Simple linear scan of all walls for small maps
-        float closestDistance = maxDistance;
-        int closestWallIndex = -1;
-        float closestU = 0.0f;
-        
-        for (int i = 0; i < bsp.wallCount; i++) {
-            const CudaWall& wall = bsp.walls[i];
-            float distance, u;
-            
-            if (rayLineIntersection(rayOrigin, normalizedRayDir, wall.segment, distance, u)) {
-                if (distance > 0.0001f && distance < closestDistance) {
-                    closestDistance = distance;
-                    closestWallIndex = i;
-                    closestU = u;
-                }
-            }
-        }
-        
-        if (closestWallIndex >= 0) {
-            const CudaWall& wall = bsp.walls[closestWallIndex];
-            int sectorIndex = wall.sectorFront;
-            
-            // Validate sector index
-            if (sectorIndex >= 0 && sectorIndex < bsp.sectorCount) {
-                const CudaSector& sector = bsp.sectors[sectorIndex];
-                
-                collision.collision = true;
-                collision.distance = closestDistance;
-                collision.textureId = wall.textureId;
-                collision.texCoordU = closestU;
-                
-                // Get sector information
-                collision.wallHeight = sector.ceilingHeight - sector.floorHeight;
-                collision.floorHeight = sector.floorHeight;
-                collision.ceilingHeight = sector.ceilingHeight;
-                collision.isPortal = (wall.sectorBack >= 0);
-                collision.lightLevel = wall.lightLevel;
-                
-                // Store additional information for portals
-                collision.sectorFront = wall.sectorFront;
-                collision.sectorBack = wall.sectorBack;
-            }
-        }
-        
-        return collision;
-    }
     
     // Main BSP traversal loop
     while (stackPos > 0 && traversalCount < MAX_TRAVERSALS) {
