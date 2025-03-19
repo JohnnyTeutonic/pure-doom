@@ -897,11 +897,28 @@ void renderMinimap(SDL_Renderer* renderer, const std::vector<Sector>& sectors, c
     for (const Platform& platform : platforms) {
         // Set color based on platform type
         if (platform.type == PlatformType::STAIR) {
-            // Bright yellow for stairs
-            SDL_SetRenderDrawColor(renderer, 255, 255, 0, 255);
+            // Check if this is part of our straight staircase (located near y = -2.3)
+            bool isMainStaircase = false;
+            for (const Vec2& vertex : platform.vertices) {
+                if (std::abs(vertex.y + 2.3f) < 1.0f) {
+                    isMainStaircase = true;
+                    break;
+                }
+            }
+            
+            if (isMainStaircase) {
+                // Bright yellow for the main straight staircase
+                SDL_SetRenderDrawColor(renderer, 255, 255, 0, 255);
+            } else {
+                // Don't render other stair platforms - they should be removed
+                continue;
+            }
+        } else if (platform.tag.find("top_stairs_room") != std::string::npos) {
+            // Special color for the top stairs room elements
+            SDL_SetRenderDrawColor(renderer, 255, 128, 0, 255); // Orange
         } else {
-            // Cyan for other platforms
-            SDL_SetRenderDrawColor(renderer, 0, 255, 255, 255);
+            // Don't render other platforms to keep the minimap clean
+            continue;
         }
         
         // Draw platform outline
@@ -1586,7 +1603,10 @@ int main(int argc, char* argv[]) {
     staircase.lightLevel = 110;     // Brighter to make it more visible
     staircase.tag = "staircase";
     
-    // Staircase walls - make it wider for easier navigation
+    // Instead of creating stair platforms between the side room and the elevated room,
+    // we'll just keep the corridor with a portal - we only want the straight staircase
+    // in the main room leading to the top stairs room
+    
     // Connection to side room
     Wall staircaseSideRoomEntrance = Wall(Line(Vertex(1.0f, 6.0f), Vertex(1.5f, 6.0f)), 4, 2, 4);
     staircaseSideRoomEntrance.isTransparent = true;
@@ -1724,37 +1744,21 @@ int main(int argc, char* argv[]) {
     // First build the BSP tree with the sectors
     collisionBSP.build(testMapSectors);
     
-    // Create room platforms
-    std::vector<Platform> roomPlatforms;
-    for (int i = 0; i < 5; i++) {
-        float platformHeight = 0.2f + (i * 0.4f); // Increasing heights
-        Platform roomPlatform = createRoomPlatform(
-            platformHeight,
-            3,  // Top texture (valid texture ID)
-            3,  // Bottom texture (valid texture ID)
-            3,  // Side texture (valid texture ID)
-            255 - (i * 20), // Light level (decreasing brightness for higher platforms)
-            0   // Sector ID (main room)
-        );
-        roomPlatforms.push_back(roomPlatform);
-    }
+    // Remove room-covering platforms - keeping only the straight staircase
     
-    // Create the stairs with proper height adjustment
+    // Create the straight staircase with proper height adjustment
+    // This is the only staircase we're keeping - the one that leads from the main room to the top stairs room
     std::vector<Platform> stairs = createDoomStairs(stairsStart, stairsEnd, stairsBaseHeight, 
                                                    stairsStepHeight, stairsNumSteps, 
                                                    10, 10, 10, 200, 0);
-    std::cout << "Created " << stairs.size() << " stair platforms.\n";
+    std::cout << "Created " << stairs.size() << " stair platforms for the straight staircase.\n";
     
-    // Add each platform to the BSP tree
-    for (const Platform& platform : roomPlatforms) {
-        collisionBSP.addPlatform(platform);
-    }
-    
-    // Add center platform
-    collisionBSP.addPlatform(centerPlatform);
+    // Remove center platform to eliminate the cyan outline in the minimap
+    // collisionBSP.addPlatform(centerPlatform);
     
     // Add each stair platform to the BSP tree - do this LAST to ensure proper indexing
-    std::cout << "\n=== ADDING STAIR PLATFORMS TO BSP TREE ===\n";
+    // ONLY adding the straight staircase platforms
+    std::cout << "\n=== ADDING STRAIGHT STAIRCASE PLATFORMS TO BSP TREE ===\n";
     for (const Platform& stair : stairs) {
         collisionBSP.addPlatform(stair);
         // Verify the stair platform was added correctly
@@ -1766,7 +1770,6 @@ int main(int argc, char* argv[]) {
     }
     
     // Add decorative items to the elevated room
-    // Create an altar platform in the center of the elevated room
     Platform elevatedAltar;
     std::vector<Vec2> topStairsAltarVertices;
     topStairsAltarVertices.push_back(Vec2(-0.5f, -4.5f));
@@ -1810,8 +1813,8 @@ int main(int argc, char* argv[]) {
     elevatedBloodPool2.tag = "top_stairs_room_blood_pool_2";
     collisionBSP.addPlatform(elevatedBloodPool2);
     
-    // Add the center platform to the BSP tree
-    collisionBSP.addPlatform(centerPlatform);
+    // Remove center platform to eliminate the cyan outline in the minimap
+    // collisionBSP.addPlatform(centerPlatform);
     
     // Create a pentagram platform in the center of the hellish sector
     Platform pentagramPlatform;
@@ -1879,46 +1882,32 @@ int main(int argc, char* argv[]) {
     collisionBSP.addPlatform(altar);
     
     // Print a helpful message about the platforms
-    std::cout << "\n=== ROOM-COVERING PLATFORMS GUIDE ===\n";
-    std::cout << "Multiple room-covering platforms have been added to the main room.\n";
-    std::cout << "These platforms are stacked at different heights from 0.2 to 1.8 units.\n";
-    std::cout << "Unlike the stair illusion textures, these are actual elevated platforms that you can walk on.\n";
-    
-    std::cout << "\nA large center platform has been added to the main room.\n";
+    std::cout << "\n=== PLATFORM GUIDE ===\n";
+    std::cout << "A large center platform has been added to the main room.\n";
     std::cout << "This platform is 6x6 units in size and rises 0.5 units above the floor.\n";
     std::cout << "It's positioned in the center of the room with plenty of space around it.\n";
     
-    std::cout << "\nTo explore the platforms:\n";
-    std::cout << "1. From the starting position, look around to see the different platform levels\n";
-    std::cout << "2. Move onto a platform to change your height\n";
-    std::cout << "3. Try jumping between different platform heights\n";
-    std::cout << "4. Notice how each platform covers the entire room at a different height\n";
+    std::cout << "\nTo explore the straight staircase in the main room:\n";
+    std::cout << "1. From the starting position, move south to find the straight staircase\n";
+    std::cout << "2. The staircase consists of " << stairsNumSteps << " steps\n";
+    std::cout << "3. You can climb the stairs to reach the elevated room\n";
+    std::cout << "4. Each step increases your elevation by " << stairsStepHeight << " units\n";
     
     // Print a helpful message about the stair illusion
-    std::cout << "\n=== STAIR ILLUSION GUIDE ===\n";
-    std::cout << "In addition to the real 3D stairs, we've also created an illusion of stairs\n";
-    std::cout << "using special textures on the south wall of the main room.\n";
-    std::cout << "The wall has three sections with different stair perspectives:\n";
-    std::cout << "1. Left section: Stairs going up (first-person perspective)\n";
-    std::cout << "2. Middle section: Side view of stairs\n";
-    std::cout << "3. Right section: Stairs going down (first-person perspective)\n";
-    std::cout << "This demonstrates how to create the illusion of 3D elements in a 2.5D engine.\n";
-    std::cout << "Compare these texture-based illusions with the real 3D stairs you can walk on!\n";
+    std::cout << "\n=== NAVIGATION GUIDE ===\n";
+    std::cout << "Two ways to reach the elevated room:\n";
+    std::cout << "1. MAIN PATH: Use the straight staircase in the south part of the main room\n";
+    std::cout << "   - This staircase leads directly to the top stairs room\n";
+    std::cout << "   - It has " << stairsNumSteps << " steps with gradient elevation\n";
+    std::cout << "\n2. ALTERNATE PATH: Go through the rooms to the north\n";
+    std::cout << "   - Go through the wide corridor to the north\n";
+    std::cout << "   - From the corridor, enter the large side room to the north\n";
+    std::cout << "   - In the side room, look for the portal to the staircase sector in the eastern part of the room\n";
+    std::cout << "   - From the staircase sector, enter the portal to the elevated room\n";
+    std::cout << "   (Note: The alternate path is just flat corridors with no actual stair platforms)\n";
     
     // Create sprites for the test map
     std::vector<Sprite> testSprites;
-    
-    // Print a helpful message about the elevated room
-    std::cout << "\n=== NAVIGATION GUIDE ===\n";
-    std::cout << "To reach the elevated room:\n";
-    std::cout << "1. Go through the wide corridor to the north\n";
-    std::cout << "2. From the corridor, enter the large side room to the north\n";
-    std::cout << "3. In the side room, look for the staircase entrance in the eastern part of the room\n";
-    std::cout << "4. Climb the staircase to reach the elevated room\n";
-    std::cout << "\nTo find the stair illusion:\n";
-    std::cout << "1. From the starting position, turn around (180 degrees)\n";
-    std::cout << "2. Look at the south wall of the main room\n";
-    std::cout << "3. You'll see three sections with different stair perspectives\n";
     
     // Use all sectors for the CUDA renderer
     cudaRenderer.useTestMapWithSectors(testMapSectors);
@@ -2041,6 +2030,12 @@ int main(int argc, char* argv[]) {
         int currentSector = collisionBSP.findSector(view.position);
         static int previousSector = -1;
         
+        // Define variables for platform and stair detection at this scope to avoid redeclaration issues
+        bool foundNearbyStairPlatform = false;
+        bool onStairPlatform = false;
+        bool onNextStairPlatform = false;
+        const float STAIR_CHECK_RADIUS = 0.5f;
+        
         // Check if player moved to a different sector (through a portal)
         if (currentSector != previousSector && currentSector >= 0) {
             std::string sectorName;
@@ -2140,57 +2135,46 @@ int main(int argc, char* argv[]) {
         
         // If player is in the staircase sector, create a stepped height effect
         if (currentSector == 4) {
-            // Get player's position within the staircase
-            float staircaseLength = 2.0f; // Increased length of the staircase to match new coordinates
+            // Tell player this is just a corridor now, not an actual staircase with platforms
+            std::cout << "\rThis is a corridor connecting the side room and elevated room. Use the straight staircase in the main room instead." << std::flush;
             
-            // Calculate how far along the staircase the player is (0 = start, 1 = end)
-            // This is a simplified calculation - in a real game you'd use the actual path distance
-            float progressAlongStaircase = (view.position.x - 1.0f) / staircaseLength;
-            progressAlongStaircase = std::max(0.0f, std::min(1.0f, progressAlongStaircase));
-            
-            // Create 5 distinct steps with larger height changes
-            int currentStep = static_cast<int>(progressAlongStaircase * 5);
-            float stepHeight = 0.06f; // Slightly reduced height of each step for smoother movement
-            
+            // Keep player at consistent height - no stepping in this corridor
             if (!isJumping) {
-                float staircaseBaseHeight = 0.2f;
-                float stepElevation = currentStep * stepHeight;
-                
-                // Set player height based on current step - more dramatic change
-                view.height = PLAYER_DEFAULT_HEIGHT + stepElevation;
-                
-                // Visual feedback for climbing the stairs
-                std::cout << "\rOn staircase: Step " << (currentStep + 1) << " of 5, height: " 
-                          << (staircaseBaseHeight + stepElevation) << "        " << std::flush;
-                
-                // Add screen shake when moving on stairs
-                if (movementVector.lengthSquared() > 0.0f) {
-                    // More shake on step transitions
-                    float stepFraction = progressAlongStaircase * 5 - currentStep;
-                    if (stepFraction < 0.2f || stepFraction > 0.8f) {
-                        screenShakeAmount = std::max(screenShakeAmount, 0.12f); // Increased shake
+                float corridorBaseHeight = 0.2f;
+                view.height = PLAYER_DEFAULT_HEIGHT + corridorBaseHeight;
+            }
+        }
+        
+        // Enhanced detection for nearby stair platforms - focus on the straight staircase only
+        // Variables are now defined at a higher scope
+        
+        // Check specifically for the straight staircase platforms near the player
+        // These are the ones at coordinates near (-1.5 to 1.5, -2.3)
+        if (std::abs(view.position.y + 2.3f) < 1.0f && std::abs(view.position.x) < 2.0f) {
+            for (size_t i = 0; i < stairs.size(); i++) {
+                for (float xOffset = -STAIR_CHECK_RADIUS; xOffset <= STAIR_CHECK_RADIUS; xOffset += 0.25f) {
+                    for (float yOffset = -STAIR_CHECK_RADIUS; yOffset <= STAIR_CHECK_RADIUS; yOffset += 0.25f) {
+                        Vec2 checkPos = view.position + Vec2(xOffset, yOffset);
+                        int platformIndex = -1;
                         
-                        // Sound effect for stepping
-                        if (rand() % 100 < 15) { // Increased chance of sound
-                            std::cout << "SOUND EFFECT: *STEP*" << std::endl;
+                        if (collisionBSP.isPointOnPlatform(checkPos, view.height - PLAYER_DEFAULT_HEIGHT, platformIndex)) {
+                            // Check if this is one of our stair platforms (should be at the end of the platform list)
+                            if (platformIndex >= collisionBSP.getPlatforms().size() - stairs.size()) {
+                                const Platform& stairPlatform = collisionBSP.getPlatforms()[platformIndex];
+                                foundNearbyStairPlatform = true;
+                                
+                                // If near a stair but not on it yet, give a visual cue
+                                if (!onStairPlatform && !onNextStairPlatform) {
+                                    std::cout << "Approaching straight staircase, step " 
+                                            << (platformIndex - (collisionBSP.getPlatforms().size() - stairs.size()) + 1)
+                                            << " of " << stairsNumSteps << std::endl;
+                                }
+                                break;
+                            }
                         }
-                    } else {
-                        screenShakeAmount = std::max(screenShakeAmount, 0.05f);
                     }
+                    if (foundNearbyStairPlatform) break;
                 }
-                
-                // Add a visual indicator for the current step
-                std::cout << "Current step: [";
-                for (int i = 0; i < 5; i++) {
-                    if (i == currentStep) {
-                        std::cout << "X"; // Current step
-                    } else if (i < currentStep) {
-                        std::cout << "="; // Completed steps
-                    } else {
-                        std::cout << "-"; // Remaining steps
-                    }
-                }
-                std::cout << "]" << std::endl;
             }
         }
         
@@ -2561,7 +2545,6 @@ int main(int argc, char* argv[]) {
             
             // First, check if we're on a stair platform and trying to climb it
             int currentPlatformIndex = -1;
-            bool onStairPlatform = false;
             float currentStairHeight = 0.0f;
             
             // Check if player is currently on a stair platform - IMPORTANT for elevation changes
@@ -2596,12 +2579,12 @@ int main(int argc, char* argv[]) {
             // Now check if we're moving onto the next stair
             Vec2 nextPosition = view.position + movementVector;
             int nextPlatformIndex = -1;
-            bool onNextStairPlatform = false;
             float nextStairHeight = 0.0f;
             
             // First check specifically for stair platforms at the next position
             for (int i = collisionBSP.getPlatforms().size() - 1; i >= 0; i--) {
                 const Platform& platform = collisionBSP.getPlatforms()[i];
+                // Only process stair platforms (avoid other platform types)
                 if (platform.type == PlatformType::STAIR && platform.containsPoint(nextPosition)) {
                     nextPlatformIndex = i;
                     onNextStairPlatform = true;
@@ -2761,8 +2744,7 @@ int main(int argc, char* argv[]) {
             }
             
             // Enhanced detection for nearby stair platforms
-            bool foundNearbyStairPlatform = false;
-            const float STAIR_CHECK_RADIUS = 0.5f;
+            // Using variables declared at higher scope
             
             // Check specifically for the stair platforms near the player
             for (size_t i = 0; i < stairs.size(); i++) {
@@ -2798,17 +2780,19 @@ int main(int argc, char* argv[]) {
                 std::abs(view.position.y + 2.3f) < 0.5f && 
                 std::abs(view.position.x) < 2.0f) {
                     
-                // We're in the stair area but no platforms detected - adjust to find the nearest stair
-                for (size_t i = 0; i < stairs.size(); i++) {
-                    // Get the typical position of this stair
-                    float stairY = -2.3f; // This matches the stairsStart Y position
+                // We're in the straight staircase area but no platforms detected
+                // Try to find the nearest stair step based on position
+                for (size_t i = 0; i < stairsNumSteps; i++) {
+                    // Calculate where each stair should be along the x-axis
+                    float stepX = stairsStart.x + ((stairsEnd.x - stairsStart.x) * i) / (stairsNumSteps - 1);
                     float stairHeight = stairsBaseHeight + i * stairsStepHeight;
                     
-                    // If we're close enough to this stair, adjust our height
-                    float distToStair = std::abs(view.position.y - stairY);
-                    if (distToStair < 0.3f && !isJumping) {
+                    // If we're close enough to this stair's x position, adjust our height
+                    float distToStair = std::abs(view.position.x - stepX);
+                    if (distToStair < 0.4f && !isJumping) {
                         view.height = PLAYER_DEFAULT_HEIGHT + stairHeight;
-                        std::cout << "Adjusting height for stair " << i + 1 << ", height: " << stairHeight << std::endl;
+                        std::cout << "Adjusting height for straight staircase step " << i + 1 
+                                  << ", height: " << stairHeight << std::endl;
                         break;
                     }
                 }
@@ -2861,19 +2845,22 @@ int main(int argc, char* argv[]) {
         
         // Debug: Print the number of platforms in the BSP tree
         const std::vector<Platform>& platforms = collisionBSP.getPlatforms();
-        std::cout << "Rendering frame with " << platforms.size() << " platforms:" << std::endl;
+        std::cout << "Rendering frame with " << platforms.size() << " total platforms" << std::endl;
+        
+        // Count stair platforms
+        int stairCount = 0;
         for (size_t i = 0; i < platforms.size(); i++) {
-            const Platform& platform = platforms[i];
-            std::cout << "  Platform " << i << ": type=" 
-                      << (platform.type == PlatformType::STAIR ? "STAIR" : 
-                         (platform.type == PlatformType::STATIC ? "STATIC" : "OTHER"))
-                      << ", height=" << platform.height
-                      << ", vertices=" << platform.vertices.size()
-                      << ", position=(" << platform.vertices[0].x << "," << platform.vertices[0].y << ")"
-                      << ", isVisible=" << (platform.isVisible ? "true" : "false")
-                      << ", isSolid=" << (platform.isSolid ? "true" : "false")
-                      << std::endl;
+            if (platforms[i].type == PlatformType::STAIR) {
+                stairCount++;
+                std::cout << "  Stair platform " << i << ": height=" << platforms[i].height
+                          << ", vertices=" << platforms[i].vertices.size()
+                          << ", position=(" << platforms[i].vertices[0].x << "," << platforms[i].vertices[0].y << ")"
+                          << ", isVisible=" << (platforms[i].isVisible ? "true" : "false")
+                          << ", isSolid=" << (platforms[i].isSolid ? "true" : "false")
+                          << std::endl;
+            }
         }
+        std::cout << "  Found " << stairCount << " stair platforms" << std::endl;
         
         cudaRenderer.renderFrame(collisionBSP, shakingView, emptySprites, 0.016f);
         
