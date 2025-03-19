@@ -1460,66 +1460,44 @@ int main(int argc, char* argv[]) {
     // Create a proper staircase in front of the player (DOOM-style)
     // In DOOM, stairs are created using sectors with different floor heights connected by portals
     
-    // Main room sector
+    // Create a main room (sector 0)
     Sector mainRoom;
     mainRoom.floorHeight = 0.0f;
-    mainRoom.ceilingHeight = 2.0f;
-    mainRoom.floorTextureId = 0;
-    mainRoom.ceilingTextureId = 1;
-    mainRoom.lightLevel = 200;
+    mainRoom.ceilingHeight = 4.0f; // Higher ceiling
+    mainRoom.floorTextureId = 1;
+    mainRoom.ceilingTextureId = 2;
+    mainRoom.lightLevel = 128;
     mainRoom.tag = "main_room";
     
-    // Main room walls (10x10 square, centered at origin)
-    mainRoom.walls.push_back(Wall(Line(Vertex(-5.0f, 5.0f), Vertex(-1.0f, 5.0f)), 0, -1, 3));
+    // Define the walls for the main room
+    mainRoom.walls.push_back(Wall(Line(Vertex(-5.0f, 5.0f), Vertex(5.0f, 5.0f)), 0, -1, 3));   // North wall
     
-    // Portal to corridor - make it wider
-    Wall portalWall = Wall(Line(Vertex(-1.0f, 5.0f), Vertex(1.0f, 5.0f)), 0, 1, 4);
-    portalWall.isTransparent = true;
-    portalWall.isSolid = false;
-    mainRoom.walls.push_back(portalWall);
+    // East wall - portal to side room (sector 1)
+    Wall sideRoomPortal = Wall(Line(Vertex(5.0f, 5.0f), Vertex(5.0f, -5.0f)), 0, 1, 4); 
+    sideRoomPortal.isTransparent = true;
+    sideRoomPortal.isSolid = false;
+    sideRoomPortal.tag = "side_room_portal";
+    mainRoom.walls.push_back(sideRoomPortal);
     
-    // Rest of main room walls
-    mainRoom.walls.push_back(Wall(Line(Vertex(1.0f, 5.0f), Vertex(5.0f, 5.0f)), 0, -1, 3));
-    mainRoom.walls.push_back(Wall(Line(Vertex(5.0f, 5.0f), Vertex(5.0f, -5.0f)), 0, -1, 3));
-    mainRoom.walls.push_back(Wall(Line(Vertex(5.0f, -5.0f), Vertex(-5.0f, -5.0f)), 0, -1, 3));
+    mainRoom.walls.push_back(Wall(Line(Vertex(5.0f, -5.0f), Vertex(1.5f, -2.8f)), 0, -1, 5));  // South wall right segment
     
-    // South wall with stair illusion textures
-    // Left section
-    mainRoom.walls.push_back(Wall(Line(Vertex(-5.0f, -5.0f), Vertex(-2.0f, -5.0f)), 0, -1, 3));
+    // Add a portal wall segment to the elevated room 
+    // Note: The sector ID for the elevated room will be 6 (0-based indexing, it will be the 7th sector added)
+    Wall elevatedRoomPortal = Wall(Line(Vertex(1.5f, -2.8f), Vertex(-1.5f, -2.8f)), 0, 6, 7);  // South wall middle segment - portal to elevated room
+    elevatedRoomPortal.isTransparent = true; // Can see through
+    elevatedRoomPortal.isSolid = false;      // Can walk through
+    elevatedRoomPortal.tag = "main_to_elevated";
+    mainRoom.walls.push_back(elevatedRoomPortal);
     
-    // Middle section with stair illusion texture (looking up)
-    Wall stairWallUp = Wall(Line(Vertex(-2.0f, -5.0f), Vertex(-1.0f, -5.0f)), 0, -1, 12);
-    stairWallUp.textureOffsetY = 0.0f; // Adjust texture alignment
-    mainRoom.walls.push_back(stairWallUp);
+    // Complete the south wall with the left segment
+    mainRoom.walls.push_back(Wall(Line(Vertex(-1.5f, -2.8f), Vertex(-5.0f, -5.0f)), 0, -1, 5)); // South wall left segment
     
-    // Middle section with side view stair texture
-    Wall stairWallSide = Wall(Line(Vertex(-1.0f, -5.0f), Vertex(1.0f, -5.0f)), 0, -1, 11);
-    stairWallSide.textureOffsetY = 0.0f; // Adjust texture alignment
-    mainRoom.walls.push_back(stairWallSide);
-    
-    // Middle section with stair illusion texture (looking down)
-    Wall stairWallDown = Wall(Line(Vertex(1.0f, -5.0f), Vertex(2.0f, -5.0f)), 0, -1, 13);
-    stairWallDown.textureOffsetY = 0.0f; // Adjust texture alignment
-    mainRoom.walls.push_back(stairWallDown);
-    
-    // Right section
-    mainRoom.walls.push_back(Wall(Line(Vertex(2.0f, -5.0f), Vertex(5.0f, -5.0f)), 0, -1, 3));
-    
-    // Replace a portion of the south wall with a portal to the new hellish sector
-    // Remove the last wall we just added (south wall segment)
-    mainRoom.walls.pop_back();
-    
-    // Add shortened south wall segments with a portal in between
-    mainRoom.walls.push_back(Wall(Line(Vertex(2.0f, -5.0f), Vertex(3.0f, -5.0f)), 0, -1, 3));
-    
-    // Portal to hellish sector
-    Wall hellPortal = Wall(Line(Vertex(3.0f, -5.0f), Vertex(4.0f, -5.0f)), 0, 5, 4); // Connect to new sector (5)
-    hellPortal.isTransparent = true;
-    hellPortal.isSolid = false;
-    mainRoom.walls.push_back(hellPortal);
-    
-    // Continue the rest of the south wall
-    mainRoom.walls.push_back(Wall(Line(Vertex(4.0f, -5.0f), Vertex(5.0f, -5.0f)), 0, -1, 3));
+    // West wall - portal to hallway (sector 4)
+    Wall hallwayPortal = Wall(Line(Vertex(-5.0f, -5.0f), Vertex(-5.0f, 5.0f)), 0, 4, 6);
+    hallwayPortal.isTransparent = true;
+    hallwayPortal.isSolid = false;
+    hallwayPortal.tag = "hallway_portal";
+    mainRoom.walls.push_back(hallwayPortal);
     
     // Add the main room to sectors
     testMapSectors.push_back(mainRoom);
@@ -1562,10 +1540,10 @@ int main(int argc, char* argv[]) {
     corridor.walls.push_back(Wall(Line(Vertex(-1.5f, 6.0f), Vertex(-1.0f, 6.0f)), 1, -1, 5));
     
     // Portal to side room - wider entrance
-    Wall sideRoomPortal = Wall(Line(Vertex(-1.0f, 6.0f), Vertex(1.0f, 6.0f)), 1, 2, 4);
-    sideRoomPortal.isTransparent = true;
-    sideRoomPortal.isSolid = false;
-    corridor.walls.push_back(sideRoomPortal);
+    Wall corridorToSideRoomPortal = Wall(Line(Vertex(-1.0f, 6.0f), Vertex(1.0f, 6.0f)), 1, 2, 4);
+    corridorToSideRoomPortal.isTransparent = true;
+    corridorToSideRoomPortal.isSolid = false;
+    corridor.walls.push_back(corridorToSideRoomPortal);
     
     // Last corridor wall
     corridor.walls.push_back(Wall(Line(Vertex(1.0f, 6.0f), Vertex(1.5f, 6.0f)), 1, -1, 5));
@@ -1698,6 +1676,37 @@ int main(int argc, char* argv[]) {
     float stairsStepHeight = 0.4f;   // Increased height of each step (was 0.3f)
     int stairsNumSteps = 5;          // Number of steps
     
+    // Calculate the final height of the top step (for the elevated room)
+    float topStepHeight = stairsBaseHeight + (stairsStepHeight * (stairsNumSteps - 1));
+    
+    // Create a new sector for the elevated room at the top of the stairs
+    // This will be the 7th sector (index 6) since we have 6 sectors already:
+    // 0 - main room, 1 - side room, 2 - side corridor, 3 - lower platform, 4 - hallway, 5 - hellish pit
+    Sector topStairsRoom;
+    topStairsRoom.floorHeight = topStepHeight;      // Set floor height to match the top step
+    topStairsRoom.ceilingHeight = topStepHeight + 3.0f; // 3 units ceiling height
+    topStairsRoom.floorTextureId = 8;               // Charred bone floor texture
+    topStairsRoom.ceilingTextureId = 9;             // Pulsating flesh ceiling texture
+    topStairsRoom.lightLevel = 150;                 // Brighter lighting for contrast
+    topStairsRoom.tag = "top_stairs_room";
+    
+    // Define walls for the elevated room
+    // The front wall (facing the stairs) connects to the main room
+    // Note the sector reference to the main room (sector 0)
+    Wall entranceWall = Wall(Line(Vertex(-1.5f, -2.8f), Vertex(1.5f, -2.8f)), 6, 0, 7); // Using molten rock texture
+    entranceWall.isTransparent = true; // Can see through this wall
+    entranceWall.isSolid = false;      // Can walk through it
+    entranceWall.tag = "top_stairs_room_entrance";
+    topStairsRoom.walls.push_back(entranceWall);
+    
+    // Add the remaining walls to form a rectangular room extending behind the stairs
+    topStairsRoom.walls.push_back(Wall(Line(Vertex(1.5f, -2.8f), Vertex(1.5f, -7.0f)), 6, -1, 7)); // Right wall
+    topStairsRoom.walls.push_back(Wall(Line(Vertex(1.5f, -7.0f), Vertex(-1.5f, -7.0f)), 6, -1, 6)); // Back wall
+    topStairsRoom.walls.push_back(Wall(Line(Vertex(-1.5f, -7.0f), Vertex(-1.5f, -2.8f)), 6, -1, 7)); // Left wall
+    
+    // Add the elevated room to the test map sectors
+    testMapSectors.push_back(topStairsRoom);
+    
     // Instead of stairs, create multiple platforms covering the entire room at different heights
     std::vector<Platform> roomPlatforms;
     
@@ -1715,10 +1724,65 @@ int main(int argc, char* argv[]) {
         roomPlatforms.push_back(roomPlatform);
     }
     
+    // Now also create actual stair platforms connecting to the elevated room
+    std::vector<Platform> stairs = createDoomStairs(stairsStart, stairsEnd, stairsBaseHeight, 
+                                                   stairsStepHeight, stairsNumSteps, 
+                                                   10, 10, 10, 200, 0);
+    
     // Add each platform to the BSP tree
     for (const Platform& platform : roomPlatforms) {
         collisionBSP.addPlatform(platform);
     }
+    
+    // Add each stair platform to the BSP tree
+    for (const Platform& stair : stairs) {
+        collisionBSP.addPlatform(stair);
+    }
+    
+    // Add decorative items to the elevated room
+    // Create an altar platform in the center of the elevated room
+    Platform elevatedAltar;
+    std::vector<Vec2> topStairsAltarVertices;
+    topStairsAltarVertices.push_back(Vec2(-0.5f, -4.5f));
+    topStairsAltarVertices.push_back(Vec2(0.5f, -4.5f));
+    topStairsAltarVertices.push_back(Vec2(0.5f, -5.5f));
+    topStairsAltarVertices.push_back(Vec2(-0.5f, -5.5f));
+    
+    elevatedAltar = Platform(topStairsAltarVertices, topStepHeight + 0.3f, 0.5f, 7, 7, 7, 255, 6);
+    elevatedAltar.type = PlatformType::STATIC;
+    elevatedAltar.isVisible = true;
+    elevatedAltar.isSolid = true;
+    elevatedAltar.tag = "top_stairs_room_altar";
+    collisionBSP.addPlatform(elevatedAltar);
+    
+    // Create blood pools in the corners of the elevated room
+    Platform elevatedBloodPool1;
+    std::vector<Vec2> elevatedBloodPool1Vertices;
+    elevatedBloodPool1Vertices.push_back(Vec2(-1.0f, -3.3f));
+    elevatedBloodPool1Vertices.push_back(Vec2(-0.3f, -3.3f));
+    elevatedBloodPool1Vertices.push_back(Vec2(-0.3f, -4.0f));
+    elevatedBloodPool1Vertices.push_back(Vec2(-1.0f, -4.0f));
+    
+    elevatedBloodPool1 = Platform(elevatedBloodPool1Vertices, topStepHeight + 0.02f, 0.05f, 6, 6, 6, 150, 6);
+    elevatedBloodPool1.type = PlatformType::STATIC;
+    elevatedBloodPool1.isVisible = true;
+    elevatedBloodPool1.isSolid = false; // Can walk through blood
+    elevatedBloodPool1.tag = "top_stairs_room_blood_pool_1";
+    collisionBSP.addPlatform(elevatedBloodPool1);
+    
+    Platform elevatedBloodPool2;
+    std::vector<Vec2> elevatedBloodPool2Vertices;
+    elevatedBloodPool2Vertices.push_back(Vec2(0.3f, -3.3f));
+    elevatedBloodPool2Vertices.push_back(Vec2(1.0f, -3.3f));
+    elevatedBloodPool2Vertices.push_back(Vec2(1.0f, -4.0f));
+    elevatedBloodPool2Vertices.push_back(Vec2(0.3f, -4.0f));
+    
+    elevatedBloodPool2 = Platform(elevatedBloodPool2Vertices, topStepHeight + 0.02f, 0.05f, 6, 6, 6, 150, 6);
+    elevatedBloodPool2.type = PlatformType::STATIC;
+    elevatedBloodPool2.isVisible = true;
+    elevatedBloodPool2.isSolid = false; // Can walk through blood
+    elevatedBloodPool2.tag = "top_stairs_room_blood_pool_2";
+    collisionBSP.addPlatform(elevatedBloodPool2);
     
     // Add the center platform to the BSP tree
     collisionBSP.addPlatform(centerPlatform);
@@ -2944,6 +3008,17 @@ int main(int argc, char* argv[]) {
     SDL_DestroyRenderer(sdlRenderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
+    
+    // Print a helpful message about the elevated room
+    std::cout << "\n=== ELEVATED ROOM GUIDE ===\n";
+    std::cout << "A new room has been added at the top of the stairs.\n";
+    std::cout << "The room floor is at the same height as the top step (" << topStepHeight << " units).\n";
+    std::cout << "Features of the elevated room:\n";
+    std::cout << "1. Charred bone floor texture and pulsating flesh ceiling\n";
+    std::cout << "2. Altar in the center of the room\n";
+    std::cout << "3. Blood pools in the corners\n";
+    std::cout << "4. Molten rock and flesh walls\n";
+    std::cout << "Use the DOOM-like stairs to reach the elevated room!\n";
     
     return 0;
 } 
