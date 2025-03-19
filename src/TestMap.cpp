@@ -1286,10 +1286,16 @@ int main(int argc, char* argv[]) {
     skybox.sunGlowSize = 8.0f; // Larger glow for more dramatic effect
     
     // Set up light ray parameters
-    const int numLightRays = 12; // Number of light rays
-    const float rayLength = 15.0f; // Length of rays
-    const float rayWidth = 0.8f; // Width of rays
+    const int numLightRays = 24; // Increased number of light rays for better coverage
+    const float rayLength = 20.0f; // Increased length of rays to reach the map
+    const float rayWidth = 0.5f; // Slightly narrower rays for more defined shadows
     const float rayIntensity = 0.85f; // Intensity of rays
+    
+    // Parameters for map lighting
+    const float mapLightingIntensity = 1.2f; // Stronger light effect on the map
+    const float lightAttenuation = 0.15f; // How quickly light fades with distance (lower = less attenuation)
+    const float shadowDarkness = 0.8f; // How dark the shadows are (0-1)
+    const float shadowSoftness = 0.3f; // How soft the shadow edges are (0-1)
     
     // Custom sun rendering with light rays
     cudaRenderer.setSkybox(skybox);
@@ -1299,8 +1305,10 @@ int main(int argc, char* argv[]) {
     cudaRenderer.setCustomParameter("rayWidth", rayWidth);
     cudaRenderer.setCustomParameter("rayIntensity", rayIntensity);
     cudaRenderer.setCustomParameter("enableShadowCasting", 1.0f); // Enable shadow casting
-    cudaRenderer.setCustomParameter("shadowIntensity", 0.7f); // Shadow darkness (0-1)
-    cudaRenderer.setCustomParameter("shadowSoftness", 0.3f); // Shadow softness (0-1)
+    cudaRenderer.setCustomParameter("shadowIntensity", shadowDarkness); // Shadow darkness (0-1)
+    cudaRenderer.setCustomParameter("shadowSoftness", shadowSoftness); // Shadow softness (0-1)
+    cudaRenderer.setCustomParameter("mapLightingIntensity", mapLightingIntensity); // Intensity of light on map
+    cudaRenderer.setCustomParameter("lightAttenuation", lightAttenuation); // Distance attenuation for light
     
     // Create frame buffer and z-buffer
     std::vector<Color> frameBuffer(WIDTH * HEIGHT, Color(0, 0, 0));

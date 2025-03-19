@@ -287,6 +287,168 @@ __global__ void shadowRayCastKernel(int* wallHitBuffer,
     }
 }
 
+// New kernel for applying directional light to map surfaces
+__global__ void applyDirectionalLightKernel(
+    Color* frameBuffer,
+    float* zBuffer,
+    int width, 
+    int height,
+    float sunAngle,
+    float sunHeight,
+    float sunX,
+    float sunY,
+    float playerX,
+    float playerY,
+    float playerAngle,
+    const Color sunColor,
+    float rayIntensity,
+    float* customParams,
+    int* wallHitBuffer,
+    int numRays,
+    float maxViewDistance
+) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    if (x >= width || y >= height) return;
+    
+    // Only process pixels with valid depth (not skybox)
+    int pixelIndex = y * width + x;
+    float depth = zBuffer[pixelIndex];
+    if (depth >= 0.999f) return; // Skip skybox pixels
+    
+    // Get custom parameters
+    bool enableLighting = customParams[0] > 0.5f;
+    float mapLightingIntensity = customParams[8]; // New parameter - intensity of light on map
+    float lightAttenuation = customParams[9]; // New parameter - distance attenuation
+    bool enableShadowCasting = customParams[5] > 0.5f;
+    float shadowIntensity = customParams[6];
+    float shadowSoftness = customParams[7];
+    
+    if (!enableLighting) return;
+    
+    // Convert screen coordinates to world ray direction
+    float normalizedX = (float)x / width - 0.5f;
+    float normalizedY = (float)y / height - 0.5f;
+    
+    // Calculate ray direction in world space
+    float fovRadians = PI / 2.0f; // 90 degrees in radians
+    float rayAngleX = playerAngle + normalizedX * fovRadians;
+    
+    // Calculate rough world position based on depth
+    float worldDistance = maxViewDistance * depth;
+    float worldX = playerX + cosf(rayAngleX) * worldDistance;
+    float worldY = playerY + sinf(rayAngleX) * worldDistance;
+    
+    // Calculate direction from world position to sun
+    float toSunX = cosf(sunAngle);
+    float toSunY = sinf(sunAngle);
+    
+    // Calculate light contribution by checking if this point is in shadow
+    float lightFactor = 0.0f;
+    
+    // Determine which ray direction is closest to this pixel's direction to sun
+    float bestAngle = 2.0f * PI;
+    int bestRayIdx = 0;
+    
+    // Calculate angle to sun from this world position
+    float angleToSun = atan2f(toSunY, toSunX);
+    if (angleToSun < 0) angleToSun += 2.0f * PI;
+    
+    // Find the closest ray direction
+    for (int i = 0; i < numRays; i++) {
+        float rayAngle = (2.0f * PI * i) / numRays;
+        float angleDiff = fabsf(rayAngle - angleToSun);
+        if (angleDiff > PI) angleDiff = 2.0f * PI - angleDiff;
+        
+        if (angleDiff < bestAngle) {
+            bestAngle = angleDiff;
+            bestRayIdx = i;
+        }
+    }
+    
+    // Check if point is in shadow using the closest ray
+    float rayHitDistance = __int_as_float(wallHitBuffer[bestRayIdx]);
+    
+    // Calculate dot product between surface normal and light direction
+    // (For simplicity, estimate normal as pointing away from player)
+    float normalX = worldX - playerX;
+    float normalY = worldY - playerY;
+    float normalLength = sqrtf(normalX*normalX + normalY*normalY);
+    if (normalLength > 0.001f) {
+        normalX /= normalLength;
+        normalY /= normalLength;
+    }
+    
+    float dotProduct = normalX * toSunX + normalY * toSunY;
+    float lightAngleFactor = max(0.0f, dotProduct); // Cosine falloff based on normal
+    
+    // Calculate distance from this point to player
+    float distToPlayer = worldDistance;
+    
+    // Distance attenuation (inverse square falloff)
+    float distanceAttenuation = 1.0f / (1.0f + distToPlayer * lightAttenuation);
+    
+    // Shadow check
+    bool inShadow = false;
+    if (enableShadowCasting && rayHitDistance > 0.0f) {
+        // Convert world position to normalized distance along ray
+        float distAlongRay = sqrtf((worldX - playerX)*(worldX - playerX) + (worldY - playerY)*(worldY - playerY)) / maxViewDistance;
+        
+        // If this point is beyond where the ray hit something, it's in shadow
+        if (distAlongRay > rayHitDistance) {
+            inShadow = true;
+            
+            // Apply soft shadow based on distance beyond hit point
+            float shadowFactor = min(1.0f, (distAlongRay - rayHitDistance) / shadowSoftness);
+            lightFactor = max(0.0f, (1.0f - shadowFactor * shadowIntensity)) * lightAngleFactor * distanceAttenuation;
+        } else {
+            // Not in shadow, full light
+            lightFactor = lightAngleFactor * distanceAttenuation;
+        }
+    } else {
+        // No shadow casting or no hit, full light
+        lightFactor = lightAngleFactor * distanceAttenuation;
+    }
+    
+    // Apply map lighting intensity to intensify the effect
+    lightFactor *= mapLightingIntensity;
+    
+    // Apply light factor to pixel color
+    Color pixelColor = frameBuffer[pixelIndex];
+    
+    // Base light level (minimum ambient light)
+    float ambientLevel = 0.3f;
+    float totalLight = ambientLevel + (1.0f - ambientLevel) * lightFactor * rayIntensity;
+    
+    // Create sunlight color influence
+    Color litColor;
+    // Blend with sun color based on light factor
+    float sunInfluence = lightFactor * 0.6f; // Control how much the sun color affects the scene
+    
+    // Add a subtle pulsing effect to the light (similar to the rays)
+    float pulseEffect = 0.0f;
+    if (inShadow) {
+        // No pulse in shadow
+        pulseEffect = 0.0f;
+    } else {
+        // Pulse based on distance and angle
+        pulseEffect = 0.15f * sinf(distToPlayer * 0.5f + angleToSun * 8.0f);
+    }
+    
+    // Apply the lighting with pulse effect
+    litColor.r = (uint8_t)min(255.0f, pixelColor.r * (1.0f - sunInfluence) + 
+                          sunColor.r * sunInfluence * (totalLight + pulseEffect));
+    litColor.g = (uint8_t)min(255.0f, pixelColor.g * (1.0f - sunInfluence) + 
+                          sunColor.g * sunInfluence * (totalLight + pulseEffect));
+    litColor.b = (uint8_t)min(255.0f, pixelColor.b * (1.0f - sunInfluence) + 
+                          sunColor.b * sunInfluence * (totalLight + pulseEffect));
+    litColor.a = pixelColor.a;
+    
+    // Write final pixel
+    frameBuffer[pixelIndex] = litColor;
+}
+
 // Kernel for rendering the sun with light rays
 __global__ void sunRenderKernel(Color* frameBuffer, float* zBuffer, int width, int height,
                              float screenX, float screenY, float radius, 
@@ -1235,100 +1397,115 @@ void RendererCuda::renderFrame(const BSPTree& bsp, const ViewPosition& view,
         // Clear buffers for new frame
         clearBuffers();
         
-        // Render all components directly on the GPU
-        
         // 1. First render the skybox as the background (includes the ceiling)
         renderSkyboxCuda(view, deltaTime, m_skybox);
         
-        // 2. Check if BSP data is still valid before rendering walls
-        if (m_bspUploaded && m_cudaData->d_bspTree) {
-            // 2. Then render BSP walls which will properly occlude parts of the skybox
-            renderBSPCuda(bsp, view, m_skybox.maxViewDistance);
-            
-            // 3. Render floor (ceiling is now handled by skybox)
-            renderFloorCuda(bsp, view);
-        } else {
-            std::cerr << "BSP data became invalid during rendering" << std::endl;
+        // 2. Then render BSP walls which will properly occlude parts of the skybox
+        renderBSPCuda(bsp, view, m_skybox.maxViewDistance);
+        
+        // 3. Render floor (ceiling is now handled by skybox)
+        renderFloorCuda(bsp, view);
+        
+        // 4. Render sprites
+        if (!sprites.empty()) {
+            renderSpritesCuda(bsp, view, sprites);
         }
         
-        // 4. Finally render sprites on top
-        renderSpritesCuda(bsp, view, sprites);
-        
-        // 5. Render platforms
-        try {
-            const std::vector<Platform>& platforms = bsp.getPlatforms();
-            if (!platforms.empty()) {
-                // Convert platforms to CUDA format
-                std::vector<CudaPlatform> cudaPlatforms;
-                for (const Platform& platform : platforms) {
-                    CudaPlatform cudaPlatform;
-                    
-                    // Copy vertices (up to 8)
-                    cudaPlatform.vertexCount = std::min(8, static_cast<int>(platform.vertices.size()));
-                    for (int i = 0; i < cudaPlatform.vertexCount; i++) {
-                        cudaPlatform.vertices[i][0] = platform.vertices[i].x;
-                        cudaPlatform.vertices[i][1] = platform.vertices[i].y;
-                    }
-                    
-                    // Copy other properties
-                    cudaPlatform.height = platform.height;
-                    cudaPlatform.thickness = platform.thickness;
-                    cudaPlatform.topTextureId = platform.topTextureId;
-                    cudaPlatform.bottomTextureId = platform.bottomTextureId;
-                    cudaPlatform.sideTextureId = platform.sideTextureId;
-                    cudaPlatform.lightLevel = platform.lightLevel;
-                    cudaPlatform.sectorId = platform.sectorId;
-                    
-                    cudaPlatforms.push_back(cudaPlatform);
-                }
+        // 5. Apply directional lighting from the sun with shadows
+        if (hasCustomParameter("enableHellSun") && getCustomParameter("enableHellSun") > 0.5f) {
+            // Cast shadow rays from the sun to determine shadows
+            int numRays = static_cast<int>(getCustomParameter("numLightRays"));
+            if (numRays > 0) {
+                // Get sun angle and calculate screen position
+                float sunAngle = m_skybox.sunAngle;
+                float sunHeight = m_skybox.sunHeight;
                 
-                // Allocate device memory for platforms
-                CudaPlatform* d_platforms = nullptr;
-                cudaError_t err = cudaMalloc(&d_platforms, cudaPlatforms.size() * sizeof(CudaPlatform));
-                if (err != cudaSuccess) {
-                    std::cerr << "Failed to allocate device memory for platforms: " << cudaGetErrorString(err) << std::endl;
-                    return;
-                }
+                // Calculate sun position on screen
+                float adjustedSunAngle = sunAngle - view.angle;
+                while (adjustedSunAngle < -PI) adjustedSunAngle += 2.0f * PI;
+                while (adjustedSunAngle > PI) adjustedSunAngle -= 2.0f * PI;
                 
-                err = cudaMemcpy(d_platforms, cudaPlatforms.data(), cudaPlatforms.size() * sizeof(CudaPlatform), cudaMemcpyHostToDevice);
-                if (err != cudaSuccess) {
-                    std::cerr << "Failed to copy platform data to device: " << cudaGetErrorString(err) << std::endl;
-                    cudaFree(d_platforms);
-                    return;
-                }
+                // Convert sun angle to screen x-coordinate
+                float fovRadians = view.fov * (PI / 180.0f);
+                float normalizedAngle = adjustedSunAngle / (fovRadians/2); // -1 to 1
+                float screenX = m_width * (0.5f + 0.5f * normalizedAngle);
                 
-                // Launch platform rendering kernel
+                // Convert sun height to screen y-coordinate
+                float horizonY = m_height / 2.0f;
+                float sunHeightOffset = sunHeight * m_height * 0.5f;
+                float screenY = horizonY - sunHeightOffset;
+                
+                // Prepare custom parameters and shadow hit buffer
+                float customParams[10] = {0}; // Increased to 10 for new parameters
+                customParams[0] = getCustomParameter("enableHellSun");
+                customParams[1] = static_cast<float>(numRays);
+                customParams[2] = getCustomParameter("rayLength");
+                customParams[3] = getCustomParameter("rayWidth");
+                customParams[4] = getCustomParameter("rayIntensity");
+                customParams[5] = getCustomParameter("enableShadowCasting");
+                customParams[6] = getCustomParameter("shadowIntensity");
+                customParams[7] = getCustomParameter("shadowSoftness");
+                customParams[8] = getCustomParameter("mapLightingIntensity");
+                customParams[9] = getCustomParameter("lightAttenuation");
+                
+                // Allocate memory for custom parameters and shadow hit buffer
+                float* d_customParams = nullptr;
+                int* d_wallHitBuffer = nullptr;
+                
+                // Allocate and copy custom parameters to device
+                cudaMalloc((void**)&d_customParams, 10 * sizeof(float)); // Increased to 10
+                cudaMemcpy(d_customParams, customParams, 10 * sizeof(float), cudaMemcpyHostToDevice);
+                
+                // Allocate memory for shadow hit buffer
+                cudaMalloc((void**)&d_wallHitBuffer, numRays * sizeof(int));
+                
+                // Launch the shadow ray casting kernel to determine shadow areas
+                int threadsPerBlock = 128;
+                int blocksPerGrid = (numRays + threadsPerBlock - 1) / threadsPerBlock;
+                
+                shadowRayCastKernel<<<blocksPerGrid, threadsPerBlock>>>(
+                    d_wallHitBuffer,
+                    view.position.x, view.position.y,
+                    sunAngle, sunHeight,
+                    m_deviceBSPTree,
+                    customParams[2] * 5.0f, // Convert ray length to world units
+                    numRays
+                );
+                
+                // Launch the directional lighting kernel
                 dim3 blockSize(16, 16);
-                dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x, (m_height + blockSize.y - 1) / blockSize.y);
-                renderPlatformsKernel<<<gridSize, blockSize>>>(
+                dim3 gridSize((m_width + blockSize.x - 1) / blockSize.x, 
+                             (m_height + blockSize.y - 1) / blockSize.y);
+                
+                applyDirectionalLightKernel<<<gridSize, blockSize>>>(
                     m_cudaData->d_frameBuffer,
                     m_cudaData->d_zBuffer,
                     m_width,
                     m_height,
-                    d_platforms,
-                    static_cast<int>(cudaPlatforms.size()),
-                    view,
-                    m_cudaData->d_textures
+                    sunAngle,
+                    sunHeight,
+                    screenX,
+                    screenY,
+                    view.position.x,
+                    view.position.y,
+                    view.angle,
+                    m_skybox.sunColor,
+                    customParams[4], // rayIntensity
+                    d_customParams,
+                    d_wallHitBuffer,
+                    numRays,
+                    m_skybox.maxViewDistance
                 );
                 
-                // Check for kernel launch errors
-                err = cudaGetLastError();
-                if (err != cudaSuccess) {
-                    std::cerr << "Platform rendering kernel launch failed: " << cudaGetErrorString(err) << std::endl;
-                }
-                
                 // Free device memory
-                cudaFree(d_platforms);
+                if (d_customParams) cudaFree(d_customParams);
+                if (d_wallHitBuffer) cudaFree(d_wallHitBuffer);
             }
-        } catch (const std::exception& e) {
-            std::cerr << "Error rendering platforms: " << e.what() << std::endl;
         }
         
-        // Ensure all GPU operations are complete
-        cudaError_t err = cudaDeviceSynchronize();
-        if (err != cudaSuccess) {
-            std::cerr << "CUDA sync error: " << cudaGetErrorString(err) << std::endl;
-        }
+        // Synchronize to ensure all kernel calls complete
+        cudaDeviceSynchronize();
+        
     } catch (const std::exception& e) {
         std::cerr << "Error in renderFrame: " << e.what() << std::endl;
     }
