@@ -106,7 +106,7 @@ Platform Platform::createStair(const Vec2& start, const Vec2& end, float baseHei
                              int topTex, int bottomTex, int sideTex, int light, int sector) {
     // Calculate the position and dimensions of this step
     float stepWidth = (end - start).length();
-    float stepDepth = 1.0f;  // Increased depth of each step for better collision detection
+    float stepDepth = 1.5f;  // Increased depth for better collision detection
     
     // Calculate the vertices for this step (more precise)
     std::vector<Vec2> vertices;
@@ -118,9 +118,9 @@ Platform Platform::createStair(const Vec2& start, const Vec2& end, float baseHei
     Vec2 stepDir = (end - start).normalized();
     Vec2 stepNormal(-stepDir.y, stepDir.x);
     
-    // Calculate step positions - make each step overlap slightly with the next
+    // Calculate step positions - make each step overlap significantly with neighbors
     float stepLength = stepWidth / count;
-    float overlap = 0.05f; // Slight overlap between steps
+    float overlap = 0.15f; // Increased overlap between steps
     
     // Start position for this step (ensure first step connects with ground level)
     float startPos;
@@ -128,7 +128,7 @@ Platform Platform::createStair(const Vec2& start, const Vec2& end, float baseHei
         // First step should start exactly at the specified start position
         startPos = 0;
     } else {
-        // Subsequent steps should overlap slightly with the previous step
+        // Subsequent steps should overlap significantly with the previous step
         startPos = (stepLength * index) - overlap;
     }
     
@@ -138,7 +138,7 @@ Platform Platform::createStair(const Vec2& start, const Vec2& end, float baseHei
         // Last step should end exactly at the specified end position
         endPos = stepWidth;
     } else {
-        // Intermediate steps should overlap slightly with the next step
+        // Intermediate steps should overlap significantly with the next step
         endPos = (stepLength * (index + 1)) + overlap;
     }
     
@@ -147,7 +147,7 @@ Platform Platform::createStair(const Vec2& start, const Vec2& end, float baseHei
     Vec2 stepEnd = start + stepDir * endPos;
     
     // Make stairs wider by extending them to the sides
-    float sideExtension = 0.5f; // How much to extend on each side
+    float sideExtension = 1.0f; // Increased side extension for better coverage
     
     // Add vertices for the step (counter-clockwise ordering)
     // Front edge (extended)
@@ -158,8 +158,11 @@ Platform Platform::createStair(const Vec2& start, const Vec2& end, float baseHei
     vertices.push_back(stepEnd + stepNormal * (stepDepth / 2 + sideExtension));
     vertices.push_back(stepStart + stepNormal * (stepDepth / 2 + sideExtension));
     
+    // Increase the thickness of the stair
+    float stairThickness = stepHeight * 1.2f; // Make it thicker than the height difference
+    
     // Create the platform with solid collision
-    Platform platform(vertices, height, stepHeight, topTex, bottomTex, sideTex, light, sector);
+    Platform platform(vertices, height, stairThickness, topTex, bottomTex, sideTex, light, sector);
     
     // Set stair-specific properties
     platform.type = PlatformType::STAIR;
@@ -174,6 +177,7 @@ Platform Platform::createStair(const Vec2& start, const Vec2& end, float baseHei
     // Debug output
     std::cout << "Created stair platform " << index + 1 << " of " << count 
               << " at height " << height 
+              << ", thickness: " << stairThickness
               << ", start: (" << stepStart.x << ", " << stepStart.y << ")"
               << ", end: (" << stepEnd.x << ", " << stepEnd.y << ")" << std::endl;
     

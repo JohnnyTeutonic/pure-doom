@@ -1674,8 +1674,8 @@ int main(int argc, char* argv[]) {
     Vec2 stairsStart(-1.5f, -2.3f);  // Start position (slightly in front of south wall)
     Vec2 stairsEnd(1.5f, -2.3f);     // End position (wider and slightly in front of wall)
     float stairsBaseHeight = 0.0f;   // Start at floor level
-    float stairsStepHeight = 0.4f;   // Height of each step
-    int stairsNumSteps = 5;          // Number of steps
+    float stairsStepHeight = 0.35f;  // Height of each step - reduced for smoother climbing
+    int stairsNumSteps = 6;          // Increased number of steps for better gradual elevation
     
     // Calculate the final height of the top step (for the elevated room)
     float topStepHeight = stairsBaseHeight + (stairsStepHeight * (stairsNumSteps - 1));
@@ -1703,24 +1703,29 @@ int main(int argc, char* argv[]) {
     // Define walls for the elevated room
     // The front wall (facing the stairs) connects to the main room
     // Note the sector reference to the main room (sector 0)
-    Wall entranceWall = Wall(Line(Vertex(-1.5f, -2.8f), Vertex(1.5f, -2.8f)), 6, 0, 7); // Using molten rock texture
+    Wall entranceWall = Wall(Line(Vertex(-1.6f, -2.6f), Vertex(1.6f, -2.6f)), 6, 0, 7); // Using molten rock texture
     entranceWall.isTransparent = true; // Can see through this wall
     entranceWall.isSolid = false;      // Can walk through it
     entranceWall.tag = "top_stairs_room_entrance";
     topStairsRoom.walls.push_back(entranceWall);
     
     // Add the remaining walls to form a rectangular room extending behind the stairs
-    topStairsRoom.walls.push_back(Wall(Line(Vertex(1.5f, -2.8f), Vertex(1.5f, -7.0f)), 6, -1, 7)); // Right wall
-    topStairsRoom.walls.push_back(Wall(Line(Vertex(1.5f, -7.0f), Vertex(-1.5f, -7.0f)), 6, -1, 6)); // Back wall
-    topStairsRoom.walls.push_back(Wall(Line(Vertex(-1.5f, -7.0f), Vertex(-1.5f, -2.8f)), 6, -1, 7)); // Left wall
+    topStairsRoom.walls.push_back(Wall(Line(Vertex(1.6f, -2.6f), Vertex(1.6f, -7.0f)), 6, -1, 7)); // Right wall
+    topStairsRoom.walls.push_back(Wall(Line(Vertex(1.6f, -7.0f), Vertex(-1.6f, -7.0f)), 6, -1, 6)); // Back wall
+    topStairsRoom.walls.push_back(Wall(Line(Vertex(-1.6f, -7.0f), Vertex(-1.6f, -2.6f)), 6, -1, 7)); // Left wall
     
     // Add the elevated room to the test map sectors
     testMapSectors.push_back(topStairsRoom);
     
-    // Instead of stairs, create multiple platforms covering the entire room at different heights
-    std::vector<Platform> roomPlatforms;
+    // Now also create actual stair platforms connecting to the elevated room
+    std::cout << "\n=== CREATING STAIR PLATFORMS ===\n";
     
-    // Create platforms at different heights
+    // IMPORTANT: Create the stair platforms AFTER building the BSP tree
+    // First build the BSP tree with the sectors
+    collisionBSP.build(testMapSectors);
+    
+    // Create room platforms
+    std::vector<Platform> roomPlatforms;
     for (int i = 0; i < 5; i++) {
         float platformHeight = 0.2f + (i * 0.4f); // Increasing heights
         Platform roomPlatform = createRoomPlatform(
@@ -1734,24 +1739,21 @@ int main(int argc, char* argv[]) {
         roomPlatforms.push_back(roomPlatform);
     }
     
-    // Now also create actual stair platforms connecting to the elevated room
-    std::cout << "\n=== CREATING STAIR PLATFORMS ===\n";
+    // Create the stairs with proper height adjustment
     std::vector<Platform> stairs = createDoomStairs(stairsStart, stairsEnd, stairsBaseHeight, 
                                                    stairsStepHeight, stairsNumSteps, 
                                                    10, 10, 10, 200, 0);
     std::cout << "Created " << stairs.size() << " stair platforms.\n";
-    
-    // First build the BSP tree with the sectors
-    collisionBSP.build(testMapSectors);
-    
-    // Add platforms to BSP tree AFTER building it
     
     // Add each platform to the BSP tree
     for (const Platform& platform : roomPlatforms) {
         collisionBSP.addPlatform(platform);
     }
     
-    // Add each stair platform to the BSP tree - do this last to ensure proper indexing
+    // Add center platform
+    collisionBSP.addPlatform(centerPlatform);
+    
+    // Add each stair platform to the BSP tree - do this LAST to ensure proper indexing
     std::cout << "\n=== ADDING STAIR PLATFORMS TO BSP TREE ===\n";
     for (const Platform& stair : stairs) {
         collisionBSP.addPlatform(stair);
@@ -2562,20 +2564,29 @@ int main(int argc, char* argv[]) {
             bool onStairPlatform = false;
             float currentStairHeight = 0.0f;
             
-            // Check if player is currently on a stair platform
+            // Check if player is currently on a stair platform - IMPORTANT for elevation changes
+            bool foundStair = false;
             for (int i = collisionBSP.getPlatforms().size() - 1; i >= 0; i--) {
                 const Platform& platform = collisionBSP.getPlatforms()[i];
                 if (platform.type == PlatformType::STAIR && platform.containsPoint(view.position)) {
-                    float distToTop = std::abs(view.height - PLAYER_DEFAULT_HEIGHT - platform.height);
-                    if (distToTop < 0.5f) { // If player is close to platform height
+                    // We're very specific about player's relative height to platform
+                    float playerHeightRelative = view.height - PLAYER_DEFAULT_HEIGHT;
+                    float heightDiff = std::abs(playerHeightRelative - platform.height);
+                    
+                    // If player is close to platform height, they're standing on it
+                    if (heightDiff < 0.2f || (playerHeightRelative <= platform.height && 
+                                             platform.height - playerHeightRelative < 0.5f)) {
                         currentPlatformIndex = i;
                         onStairPlatform = true;
                         currentStairHeight = platform.height;
+                        foundStair = true;
                         
-                        // If we're not already at the right height, adjust it
-                        if (std::abs(view.height - (PLAYER_DEFAULT_HEIGHT + platform.height)) > 0.05f) {
+                        // CRUCIAL: Adjust player height to match the stair exactly
+                        if (!isJumping && std::abs(view.height - (PLAYER_DEFAULT_HEIGHT + platform.height)) > 0.01f) {
                             view.height = PLAYER_DEFAULT_HEIGHT + platform.height;
-                            std::cout << "Adjusting player height to match stair: " << platform.height << std::endl;
+                            screenShakeAmount = 0.03f; // Small feedback for height adjustment
+                            
+                            std::cout << "Adjusting to exact stair height: " << platform.height << std::endl;
                         }
                         break;
                     }
@@ -2596,32 +2607,47 @@ int main(int argc, char* argv[]) {
                     onNextStairPlatform = true;
                     nextStairHeight = platform.height;
                     
-                    std::cout << "Found next stair platform at height: " << platform.height 
-                              << ", index: " << platform.stairIndex + 1 << " of " << platform.stairCount << std::endl;
+                    // Check if we're moving to a different stair (climbing up or down)
+                    if (onStairPlatform && currentPlatformIndex != nextPlatformIndex) {
+                        float heightDiff = nextStairHeight - currentStairHeight;
+                        std::cout << "Moving between stairs, height difference: " << heightDiff << std::endl;
+                        
+                        // If step is too high and we're not jumping, prevent movement
+                        if (heightDiff > 0.5f && !isJumping) {
+                            std::cout << "Step too high to climb directly!" << std::endl;
+                            onNextStairPlatform = false; // Cannot climb this step
+                            continue; // Check if there's another platform we can use
+                        }
+                    }
+                    
                     break;
                 }
             }
             
-            // If we're moving from one stair platform to another, adjust height
+            // If we're moving from one stair platform to another or onto a stair for the first time
             if (onNextStairPlatform) {
+                // Calculate the height change
+                float heightDiff = nextStairHeight - (onStairPlatform ? currentStairHeight : 0.0f);
+                
                 // If we're not jumping, set our height based on the stair
                 if (!isJumping) {
-                    float heightDiff = nextStairHeight - currentStairHeight;
-                    
-                    // Only adjust if moving to a different height
-                    if (std::abs(heightDiff) > 0.05f) {
+                    // Only adjust if the height difference is significant
+                    if (std::abs(heightDiff) > 0.01f) {
                         // Adjust the player's height based on the next platform
                         view.height = PLAYER_DEFAULT_HEIGHT + nextStairHeight;
                         
-                        // Add a small screen shake for feedback when climbing stairs
-                        screenShakeAmount = 0.1f;
+                        // Add shake effect - more shake for bigger steps
+                        screenShakeAmount = std::min(0.3f, std::abs(heightDiff) * 0.5f);
                         
-                        std::cout << "Moving to stair at height: " << nextStairHeight 
-                                  << ", height change: " << heightDiff << std::endl;
+                        // Sound effect for stepping up/down
+                        std::cout << "SOUND EFFECT: *" << (heightDiff > 0 ? "STEP UP" : "STEP DOWN") << "*" << std::endl;
+                        
+                        std::cout << "Changing elevation on stairs: " << nextStairHeight 
+                                  << ", height difference: " << heightDiff << std::endl;
                     }
                 }
                 
-                // Allow movement to the next platform
+                // Allow movement to the next platform position
                 view.position = nextPosition;
             } else {
                 // Standard collision detection for non-stair movement

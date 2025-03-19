@@ -1210,56 +1210,13 @@ void BSPTree::addPlatform(const Platform& platform) {
 bool BSPTree::isPointOnPlatform(const Vec2& point, float height, int& platformIndex) const {
     platformIndex = -1;
     
-    // First check for stair platforms specifically
-    // Iterate from newest to oldest platforms (stairs are usually added last)
+    // Loop through all platforms in reverse order (newer platforms first)
+    // This is crucial since stair platforms are added last
     for (int i = m_platforms.size() - 1; i >= 0; --i) {
         const Platform& platform = m_platforms[i];
         
-        // Skip platforms that aren't solid or visible
-        if (!platform.isSolid || !platform.isVisible) {
-            continue;
-        }
-        
-        // Special handling for stairs
-        if (platform.type == PlatformType::STAIR) {
-            // Check if the point is within the platform's 2D bounds
-            if (platform.containsPoint(point)) {
-                // Get platform height range
-                float platformTop = platform.height;
-                float platformBottom = platform.height - platform.thickness;
-                
-                // Use a very generous tolerance for stairs to make climbing easier
-                const float STAIR_HEIGHT_TOLERANCE = 0.5f;
-                
-                // If the player's height is close to the stair platform height,
-                // consider them to be on the stair
-                if (std::abs(height - platformTop) < STAIR_HEIGHT_TOLERANCE ||
-                    (height >= platformBottom && height <= platformTop + STAIR_HEIGHT_TOLERANCE)) {
-                    platformIndex = i;
-                    
-                    // Output debug information
-                    std::cout << "On stair " << platform.stairIndex + 1 
-                              << " of " << platform.stairCount
-                              << " at height " << platformTop 
-                              << ", player height: " << height << std::endl;
-                    
-                    return true;
-                }
-            }
-        }
-    }
-    
-    // If we didn't find a stair platform, check for regular platforms
-    for (int i = m_platforms.size() - 1; i >= 0; --i) {
-        const Platform& platform = m_platforms[i];
-        
-        // Skip platforms that aren't solid or visible
-        if (!platform.isSolid || !platform.isVisible) {
-            continue;
-        }
-        
-        // Skip stair platforms (already checked)
-        if (platform.type == PlatformType::STAIR) {
+        // Skip platforms that aren't visible
+        if (!platform.isVisible) {
             continue;
         }
         
@@ -1269,19 +1226,36 @@ bool BSPTree::isPointOnPlatform(const Vec2& point, float height, int& platformIn
             float platformTop = platform.height;
             float platformBottom = platform.height - platform.thickness;
             
-            // Use a small tolerance for regular platforms
-            const float HEIGHT_TOLERANCE = 0.1f;
+            // Use different tolerances based on platform type
+            float heightTolerance = 0.05f; // Default tolerance
             
-            // Check if the height is within the platform's height range
-            if (height >= platformBottom - HEIGHT_TOLERANCE && 
-                height <= platformTop + HEIGHT_TOLERANCE) {
-                platformIndex = i;
-                return true;
+            // IMPORTANT: Special handling for stair platforms - much more permissive
+            if (platform.type == PlatformType::STAIR) {
+                heightTolerance = 0.5f; // Very generous tolerance
+                
+                // For stairs: if player is above the stair or within the height range, consider it a hit
+                if (height >= platformBottom - heightTolerance && 
+                    (height <= platformTop + heightTolerance || 
+                     (height > platformTop && height - platformTop < 0.5f))) {
+                    platformIndex = i;
+                    
+                    std::cout << "Standing on stair platform " << platform.stairIndex + 1 
+                             << " at height " << platformTop << std::endl;
+                    return true;
+                }
+            }
+            // Regular platform handling
+            else {
+                // Check if height is within tolerance range of platform
+                if (height >= platformBottom - heightTolerance && 
+                    height <= platformTop + heightTolerance) {
+                    platformIndex = i;
+                    return true;
+                }
             }
         }
     }
     
-    // No platform found
     return false;
 }
 
