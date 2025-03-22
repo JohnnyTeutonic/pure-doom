@@ -10,6 +10,47 @@
 
 using namespace PureDoom;
 
+/*
+ * TestMap.cpp
+ * Creates a test map for the DOOM-like rendering engine
+ *
+ * CREATING NON-RECTANGULAR AND CURVED SPACES:
+ * ===========================================
+ * 
+ * 1. CREATING POLYGONAL ROOMS:
+ *    Instead of using just 4 walls for rectangular rooms, you can use any number 
+ *    of walls to create polygonal shapes. For example:
+ *    - Triangular rooms: 3 wall segments
+ *    - Hexagonal rooms: 6 wall segments
+ *    - Octagonal rooms: 8 wall segments (see 'mainRoom' in this file)
+ *
+ * 2. CREATING ANGLED WALLS:
+ *    Simply define Line() with vertices that aren't at 90-degree angles to each other.
+ *    Example: Wall(Line(Vertex(3.0f, 5.0f), Vertex(5.0f, 3.0f)), 0, -1, 3)
+ *    This creates a diagonal wall from (3,5) to (5,3).
+ *
+ * 3. CREATING CURVED WALLS:
+ *    Since DOOM-style engines can only use straight line segments, curves
+ *    are approximated using multiple short line segments. See 'curvedChamber'
+ *    where we use 8 segments to create a half-circle.
+ *    
+ *    The key steps to create a curved wall:
+ *    a) Calculate multiple vertices along your desired curve
+ *       using math functions (e.g., sin/cos for circles)
+ *    b) Connect adjacent vertices with straight Wall segments
+ *    c) The more segments you use, the smoother the curve will appear
+ *
+ * 4. NON-RECTANGULAR PLATFORMS:
+ *    Platforms can also have any polygonal shape by defining
+ *    vertices in counter-clockwise order. See the hexagonal 'centerPlatform'.
+ *    
+ * 5. PRACTICAL TIPS:
+ *    - Always define wall vertices in counter-clockwise order around a sector
+ *    - Adjacent sectors need matching portal walls to connect properly
+ *    - Complex room shapes may need more careful BSP tree building
+ *    - Try to keep room shapes convex for best rendering results
+ */
+
 // Simple texture creation for testing
 Texture createSimpleTexture(int width, int height, uint8_t r, uint8_t g, uint8_t b) {
     Texture texture(width, height);
@@ -1477,7 +1518,7 @@ int main(int argc, char* argv[]) {
     // Create a proper staircase in front of the player (DOOM-style)
     // In DOOM, stairs are created using sectors with different floor heights connected by portals
     
-    // Create a main room (sector 0)
+    // Create a main room (sector 0) with NON-RECTANGULAR shape (octagonal)
     Sector mainRoom;
     mainRoom.floorHeight = 0.0f;
     mainRoom.ceilingHeight = 4.0f; // Higher ceiling
@@ -1486,35 +1527,41 @@ int main(int argc, char* argv[]) {
     mainRoom.lightLevel = 128;
     mainRoom.tag = "main_room";
     
-    // Define the walls for the main room
-    mainRoom.walls.push_back(Wall(Line(Vertex(-5.0f, 5.0f), Vertex(5.0f, 5.0f)), 0, -1, 3));   // North wall
+    // Define the walls for the main room (octagonal shape)
+    // We create an octagon by using 8 wall segments instead of 4 for a rectangle
+    mainRoom.walls.push_back(Wall(Line(Vertex(-3.0f, 5.0f), Vertex(3.0f, 5.0f)), 0, -1, 3));      // North wall
+    mainRoom.walls.push_back(Wall(Line(Vertex(3.0f, 5.0f), Vertex(5.0f, 3.0f)), 0, -1, 3));       // NorthEast angled wall
     
     // East wall - portal to side room (sector 1)
-    Wall sideRoomPortal = Wall(Line(Vertex(5.0f, 5.0f), Vertex(5.0f, -5.0f)), 0, 1, 4); 
+    Wall sideRoomPortal = Wall(Line(Vertex(5.0f, 3.0f), Vertex(5.0f, -3.0f)), 0, 1, 4); 
     sideRoomPortal.isTransparent = true;
     sideRoomPortal.isSolid = false;
     sideRoomPortal.tag = "side_room_portal";
     mainRoom.walls.push_back(sideRoomPortal);
     
-    mainRoom.walls.push_back(Wall(Line(Vertex(5.0f, -5.0f), Vertex(1.5f, -2.8f)), 0, -1, 5));  // South wall right segment
+    mainRoom.walls.push_back(Wall(Line(Vertex(5.0f, -3.0f), Vertex(3.0f, -5.0f)), 0, -1, 5));     // SouthEast angled wall
+    mainRoom.walls.push_back(Wall(Line(Vertex(3.0f, -5.0f), Vertex(1.5f, -2.8f)), 0, -1, 5));     // South wall right segment
     
     // Add a portal wall segment to the elevated room 
-    // Note: The sector ID for the elevated room will be 6 (0-based indexing, it will be the 7th sector added)
-    Wall elevatedRoomPortal = Wall(Line(Vertex(1.5f, -2.8f), Vertex(-1.5f, -2.8f)), 0, 6, 7);  // South wall middle segment - portal to elevated room
+    Wall elevatedRoomPortal = Wall(Line(Vertex(1.5f, -2.8f), Vertex(-1.5f, -2.8f)), 0, 6, 7);     // South wall middle segment - portal to elevated room
     elevatedRoomPortal.isTransparent = true; // Can see through
     elevatedRoomPortal.isSolid = false;      // Can walk through
     elevatedRoomPortal.tag = "main_to_elevated";
     mainRoom.walls.push_back(elevatedRoomPortal);
     
-    // Complete the south wall with the left segment
-    mainRoom.walls.push_back(Wall(Line(Vertex(-1.5f, -2.8f), Vertex(-5.0f, -5.0f)), 0, -1, 5)); // South wall left segment
+    // Complete the south wall with the left segment and SouthWest angled wall
+    mainRoom.walls.push_back(Wall(Line(Vertex(-1.5f, -2.8f), Vertex(-3.0f, -5.0f)), 0, -1, 5));   // South wall left segment
+    mainRoom.walls.push_back(Wall(Line(Vertex(-3.0f, -5.0f), Vertex(-5.0f, -3.0f)), 0, -1, 5));   // SouthWest angled wall
     
     // West wall - portal to hallway (sector 4)
-    Wall hallwayPortal = Wall(Line(Vertex(-5.0f, -5.0f), Vertex(-5.0f, 5.0f)), 0, 4, 6);
+    Wall hallwayPortal = Wall(Line(Vertex(-5.0f, -3.0f), Vertex(-5.0f, 3.0f)), 0, 4, 6);
     hallwayPortal.isTransparent = true;
     hallwayPortal.isSolid = false;
     hallwayPortal.tag = "hallway_portal";
     mainRoom.walls.push_back(hallwayPortal);
+    
+    // Final NorthWest angled wall to complete the octagon
+    mainRoom.walls.push_back(Wall(Line(Vertex(-5.0f, 3.0f), Vertex(-3.0f, 5.0f)), 0, -1, 3));     // NorthWest angled wall
     
     // Add the main room to sectors
     testMapSectors.push_back(mainRoom);
@@ -1522,12 +1569,14 @@ int main(int argc, char* argv[]) {
     // Create a large platform in the center of the main room
     Platform centerPlatform;
     
-    // Define the platform shape (rectangular, counter-clockwise order)
+    // Define the platform shape (hexagonal, counter-clockwise order)
     std::vector<Vec2> platformVertices;
-    platformVertices.push_back(Vec2(-3.0f, -3.0f));  // Bottom-left
-    platformVertices.push_back(Vec2(3.0f, -3.0f));   // Bottom-right
-    platformVertices.push_back(Vec2(3.0f, 3.0f));    // Top-right
-    platformVertices.push_back(Vec2(-3.0f, 3.0f));   // Top-left
+    platformVertices.push_back(Vec2(-2.0f, -3.0f));  // Bottom-left
+    platformVertices.push_back(Vec2(2.0f, -3.0f));   // Bottom-right
+    platformVertices.push_back(Vec2(3.0f, 0.0f));    // Middle-right
+    platformVertices.push_back(Vec2(2.0f, 3.0f));    // Top-right
+    platformVertices.push_back(Vec2(-2.0f, 3.0f));   // Top-left
+    platformVertices.push_back(Vec2(-3.0f, 0.0f));   // Middle-left
     
     // Create the platform with a much greater height to ensure visibility
     centerPlatform = Platform(platformVertices, 1.5f, 0.2f, 3, 3, 3, 255, 0);
@@ -1680,6 +1729,86 @@ int main(int argc, char* argv[]) {
     
     // Add hellish sector to the test map
     testMapSectors.push_back(hellishSector);
+    
+    // Create a new curved chamber (using many short line segments to approximate a curve)
+    Sector curvedChamber;
+    curvedChamber.floorHeight = -0.3f;  // Slightly sunken floor
+    curvedChamber.ceilingHeight = 3.5f; // High ceiling
+    curvedChamber.floorTextureId = 8;
+    curvedChamber.ceilingTextureId = 9;
+    curvedChamber.lightLevel = 160;
+    curvedChamber.tag = "curved_chamber";
+    
+    // Create segments to approximate a circular room
+    // We'll define a half-circle with 8 segments for demonstration
+    const int numSegments = 8;
+    const float radius = 4.0f;
+    const float startAngle = 0.0f; // 0 radians = right (East)
+    const float endAngle = 3.14159f; // π radians = left (West)
+    const float angleStep = (endAngle - startAngle) / numSegments;
+    
+    std::vector<Vertex> curveVertices;
+    
+    // Generate vertices for the curved wall
+    for (int i = 0; i <= numSegments; i++) {
+        float angle = startAngle + i * angleStep;
+        float x = 8.0f + radius * cos(angle); // 8 units to the right of main room
+        float y = 0.0f + radius * sin(angle); // centered vertically with main room
+        curveVertices.push_back(Vertex(x, y));
+    }
+    
+    // Create walls by connecting the vertices
+    for (int i = 0; i < numSegments; i++) {
+        curvedChamber.walls.push_back(Wall(Line(curveVertices[i], curveVertices[i+1]), 7, -1, 7));
+    }
+    
+    // Add straight walls to connect back to the portal from side room
+    curvedChamber.walls.push_back(Wall(Line(curveVertices[numSegments], Vertex(8.0f, -3.0f)), 7, -1, 6));
+    curvedChamber.walls.push_back(Wall(Line(Vertex(8.0f, -3.0f), Vertex(8.0f, 3.0f)), 7, -1, 6));
+    curvedChamber.walls.push_back(Wall(Line(Vertex(8.0f, 3.0f), curveVertices[0]), 7, -1, 6));
+    
+    // Create a portal connecting the side room to the curved chamber
+    Wall curvedChamberPortal = Wall(Line(Vertex(8.0f, 0.0f), Vertex(5.0f, 0.0f)), 7, 1, 4);
+    curvedChamberPortal.isTransparent = true;
+    curvedChamberPortal.isSolid = false;
+    curvedChamberPortal.tag = "curved_chamber_portal";
+    curvedChamber.walls.push_back(curvedChamberPortal);
+    
+    // Add the curved chamber to the sectors
+    testMapSectors.push_back(curvedChamber);
+    
+    // Add a new sector with an irregular pentagonal shape
+    Sector pentagonRoom;
+    pentagonRoom.floorHeight = 0.2f;
+    pentagonRoom.ceilingHeight = 3.0f;
+    pentagonRoom.floorTextureId = 2;
+    pentagonRoom.ceilingTextureId = 8;
+    pentagonRoom.lightLevel = 140;
+    pentagonRoom.tag = "pentagon_room";
+    
+    // Define pentagon vertices (using angled walls to create an irregular pentagon)
+    pentagonRoom.walls.push_back(Wall(Line(Vertex(-8.0f, -2.0f), Vertex(-12.0f, -4.0f)), 8, -1, 5));
+    pentagonRoom.walls.push_back(Wall(Line(Vertex(-12.0f, -4.0f), Vertex(-13.0f, -8.0f)), 8, -1, 6));
+    pentagonRoom.walls.push_back(Wall(Line(Vertex(-13.0f, -8.0f), Vertex(-8.0f, -10.0f)), 8, -1, 7));
+    pentagonRoom.walls.push_back(Wall(Line(Vertex(-8.0f, -10.0f), Vertex(-5.0f, -5.0f)), 8, -1, 5));
+    
+    // Portal connecting to the west wall of the main room
+    Wall pentagonPortal = Wall(Line(Vertex(-5.0f, -5.0f), Vertex(-8.0f, -2.0f)), 8, 0, 4);
+    pentagonPortal.isTransparent = true;
+    pentagonPortal.isSolid = false;
+    pentagonPortal.tag = "pentagon_portal";
+    pentagonRoom.walls.push_back(pentagonPortal);
+    
+    // Add the pentagon room to sectors
+    testMapSectors.push_back(pentagonRoom);
+    
+    // Update the west wall in main room to include a portal to pentagon room
+    // Add a portion of the west wall as a portal to the pentagon room
+    Wall mainToPentagonPortal = Wall(Line(Vertex(-5.0f, -3.0f), Vertex(-5.0f, -1.0f)), 0, 8, 6);
+    mainToPentagonPortal.isTransparent = true;
+    mainToPentagonPortal.isSolid = false;
+    mainToPentagonPortal.tag = "main_to_pentagon";
+    mainRoom.walls.push_back(mainToPentagonPortal);
     
     // Build the BSP tree for collision detection
     BSPTree collisionBSP;
