@@ -1529,7 +1529,18 @@ int main(int argc, char* argv[]) {
     
     // Define the walls for the main room (octagonal shape)
     // We create an octagon by using 8 wall segments instead of 4 for a rectangle
-    mainRoom.walls.push_back(Wall(Line(Vertex(-3.0f, 5.0f), Vertex(3.0f, 5.0f)), 0, -1, 3));      // North wall
+    // Split the north wall into three segments: left, middle (portal), right
+    mainRoom.walls.push_back(Wall(Line(Vertex(-3.0f, 5.0f), Vertex(-1.0f, 5.0f)), 0, -1, 3));      // North wall - left segment
+
+    // Middle segment is a portal to the north room
+    Wall northRoomPortal = Wall(Line(Vertex(-1.0f, 5.0f), Vertex(1.0f, 5.0f)), 0, 9, 3); // Connect to north room (sector 9)
+    northRoomPortal.isTransparent = true;
+    northRoomPortal.isSolid = false;
+    northRoomPortal.tag = "north_room_portal";
+    mainRoom.walls.push_back(northRoomPortal);
+
+    mainRoom.walls.push_back(Wall(Line(Vertex(1.0f, 5.0f), Vertex(3.0f, 5.0f)), 0, -1, 3));      // North wall - right segment
+
     mainRoom.walls.push_back(Wall(Line(Vertex(3.0f, 5.0f), Vertex(5.0f, 3.0f)), 0, -1, 3));       // NorthEast angled wall
     
     // East wall - portal to side room (sector 1)
@@ -1634,14 +1645,31 @@ int main(int argc, char* argv[]) {
     // Rest of side room walls - much larger room
     sideRoom.walls.push_back(Wall(Line(Vertex(-1.0f, 6.0f), Vertex(-2.5f, 8.0f)), 2, -1, 6));
     sideRoom.walls.push_back(Wall(Line(Vertex(-2.5f, 8.0f), Vertex(2.5f, 8.0f)), 2, -1, 6));
-    sideRoom.walls.push_back(Wall(Line(Vertex(2.5f, 8.0f), Vertex(2.0f, 6.5f)), 2, -1, 6));
+    sideRoom.walls.push_back(Wall(Line(Vertex(2.5f, 8.0f), Vertex(5.0f, 6.0f)), 2, -1, 6));
     
-    // Modified wall - side room now connects to staircase instead of directly to elevated room
-    // Make the staircase entrance wider and more obvious
-    Wall staircaseEntrance = Wall(Line(Vertex(2.0f, 6.5f), Vertex(1.0f, 6.0f)), 2, 4, 4); // Connect to staircase (sector 4)
+    // East wall upper section
+    sideRoom.walls.push_back(Wall(Line(Vertex(5.0f, 6.0f), Vertex(5.0f, 3.0f)), 2, -1, 6));
+    
+    // East wall portal to curved chamber - using a vertical line segment
+    Wall sideRoomToCurvedPortal = Wall(Line(Vertex(5.0f, 3.0f), Vertex(5.0f, 0.0f)), 2, 7, 4);
+    sideRoomToCurvedPortal.isTransparent = true;
+    sideRoomToCurvedPortal.isSolid = false;
+    sideRoomToCurvedPortal.tag = "side_to_curved_portal";
+    sideRoom.walls.push_back(sideRoomToCurvedPortal);
+    
+    // East wall lower section
+    sideRoom.walls.push_back(Wall(Line(Vertex(5.0f, 0.0f), Vertex(5.0f, -3.0f)), 2, -1, 6));
+    sideRoom.walls.push_back(Wall(Line(Vertex(5.0f, -3.0f), Vertex(2.0f, -2.0f)), 2, -1, 6));
+    
+    // Southwest wall back to entrance
+    Wall staircaseEntrance = Wall(Line(Vertex(2.0f, -2.0f), Vertex(1.0f, 6.0f)), 2, 4, 4); // Connect to staircase (sector 4)
     staircaseEntrance.isTransparent = true;
     staircaseEntrance.isSolid = false;
     sideRoom.walls.push_back(staircaseEntrance);
+    
+    // Bottom part of east wall - fix coordinates to properly connect to the side room geometry
+    Wall sideRoomEastWallBottom = Wall(Line(Vertex(5.0f, 0.0f), Vertex(2.0f, -2.0f)), 2, -1, 6);
+    sideRoom.walls.push_back(sideRoomEastWallBottom);
     
     // Create a staircase sector (new sector between side room and elevated room)
     Sector staircase;
@@ -1762,13 +1790,24 @@ int main(int argc, char* argv[]) {
         curvedChamber.walls.push_back(Wall(Line(curveVertices[i], curveVertices[i+1]), 7, -1, 7));
     }
     
-    // Add straight walls to connect back to the portal from side room
+    // Add straight walls to connect the curved section to the portal area
+    // Southern straight wall
     curvedChamber.walls.push_back(Wall(Line(curveVertices[numSegments], Vertex(8.0f, -3.0f)), 7, -1, 6));
-    curvedChamber.walls.push_back(Wall(Line(Vertex(8.0f, -3.0f), Vertex(8.0f, 3.0f)), 7, -1, 6));
+    // Western straight wall - bottom part
+    curvedChamber.walls.push_back(Wall(Line(Vertex(8.0f, -3.0f), Vertex(8.0f, 0.0f)), 7, -1, 6));
+    // Western straight wall - top part (above portal)
+    curvedChamber.walls.push_back(Wall(Line(Vertex(8.0f, 3.0f), Vertex(8.0f, 0.0f)), 7, -1, 6));
+    // Northern straight wall
     curvedChamber.walls.push_back(Wall(Line(Vertex(8.0f, 3.0f), curveVertices[0]), 7, -1, 6));
     
+    // Create a connecting wall from western straight wall to side room portal
+    curvedChamber.walls.push_back(Wall(Line(Vertex(8.0f, 0.0f), Vertex(5.0f, 0.0f)), 7, -1, 6));
+    // Create a connecting wall from western straight wall to top of side room portal
+    curvedChamber.walls.push_back(Wall(Line(Vertex(8.0f, 3.0f), Vertex(5.0f, 3.0f)), 7, -1, 6));
+    
     // Create a portal connecting the side room to the curved chamber
-    Wall curvedChamberPortal = Wall(Line(Vertex(8.0f, 0.0f), Vertex(5.0f, 0.0f)), 7, 1, 4);
+    // Using a vertical line segment matching the side room portal
+    Wall curvedChamberPortal = Wall(Line(Vertex(5.0f, 0.0f), Vertex(5.0f, 3.0f)), 7, 2, 4);
     curvedChamberPortal.isTransparent = true;
     curvedChamberPortal.isSolid = false;
     curvedChamberPortal.tag = "curved_chamber_portal";
@@ -1802,24 +1841,33 @@ int main(int argc, char* argv[]) {
     // Add the pentagon room to sectors
     testMapSectors.push_back(pentagonRoom);
     
-    // Update the west wall in main room to include a portal to pentagon room
-    // Add a portion of the west wall as a portal to the pentagon room
-    Wall mainToPentagonPortal = Wall(Line(Vertex(-5.0f, -3.0f), Vertex(-5.0f, -1.0f)), 0, 8, 6);
-    mainToPentagonPortal.isTransparent = true;
-    mainToPentagonPortal.isSolid = false;
-    mainToPentagonPortal.tag = "main_to_pentagon";
-    mainRoom.walls.push_back(mainToPentagonPortal);
+    // Define the north room altar platform
+    Platform northRoomPlatform;
+    std::vector<Vec2> northPlatformVertices;
+    northPlatformVertices.push_back(Vec2(-2.0f, 7.0f));
+    northPlatformVertices.push_back(Vec2(2.0f, 7.0f));
+    northPlatformVertices.push_back(Vec2(2.0f, 9.0f));
+    northPlatformVertices.push_back(Vec2(-2.0f, 9.0f));
+    
+    northRoomPlatform = Platform(northPlatformVertices, 0.3f, 0.5f, 7, 7, 6, 200, 9);
+    northRoomPlatform.type = PlatformType::STATIC;
+    northRoomPlatform.isVisible = true;
+    northRoomPlatform.isSolid = true;
+    northRoomPlatform.tag = "north_room_altar";
     
     // Build the BSP tree for collision detection
     BSPTree collisionBSP;
     collisionBSP.build(testMapSectors);
+    
+    // Add the north room platform to the BSP tree
+    collisionBSP.addPlatform(northRoomPlatform);
     
     // Create and add the elevated platform to the BSP tree
     Platform elevatedPlatform = createElevatedPlatform();
     collisionBSP.addPlatform(elevatedPlatform);
     
     // Create and add DOOM-like stairs to the BSP tree
-    // Position the stairs properly connecting to the top stairs room
+    // Position the stairs properly connecting to the main room
     Vec2 stairsStart(-1.5f, -2.3f);  // Start position (slightly in front of south wall)
     Vec2 stairsEnd(1.5f, -2.3f);     // End position (wider and slightly in front of wall)
     float stairsBaseHeight = 0.0f;   // Start at floor level
@@ -1829,211 +1877,15 @@ int main(int argc, char* argv[]) {
     // Calculate the final height of the top step (for the elevated room)
     float topStepHeight = stairsBaseHeight + (stairsStepHeight * (stairsNumSteps - 1));
     
-    // Print stair positioning information
-    std::cout << "\n=== STAIR CONFIGURATION ===\n";
-    std::cout << "Stair start position: (" << stairsStart.x << ", " << stairsStart.y << ")\n";
-    std::cout << "Stair end position: (" << stairsEnd.x << ", " << stairsEnd.y << ")\n";
-    std::cout << "Base height: " << stairsBaseHeight << " units\n";
-    std::cout << "Step height: " << stairsStepHeight << " units\n";
-    std::cout << "Number of steps: " << stairsNumSteps << "\n";
-    std::cout << "Top step height: " << topStepHeight << " units\n";
-    
-    // Create a new sector for the elevated room at the top of the stairs
-    // This will be the 7th sector (index 6) since we have 6 sectors already:
-    // 0 - main room, 1 - side room, 2 - side corridor, 3 - lower platform, 4 - hallway, 5 - hellish pit
-    Sector topStairsRoom;
-    topStairsRoom.floorHeight = topStepHeight;      // Set floor height to match the top step
-    topStairsRoom.ceilingHeight = topStepHeight + 3.0f; // 3 units ceiling height
-    topStairsRoom.floorTextureId = 8;               // Charred bone floor texture
-    topStairsRoom.ceilingTextureId = 9;             // Pulsating flesh ceiling texture
-    topStairsRoom.lightLevel = 150;                 // Brighter lighting for contrast
-    topStairsRoom.tag = "top_stairs_room";
-    
-    // Define walls for the elevated room
-    // The front wall (facing the stairs) connects to the main room
-    // Note the sector reference to the main room (sector 0)
-    Wall entranceWall = Wall(Line(Vertex(-1.6f, -2.6f), Vertex(1.6f, -2.6f)), 6, 0, 7); // Using molten rock texture
-    entranceWall.isTransparent = true; // Can see through this wall
-    entranceWall.isSolid = false;      // Can walk through it
-    entranceWall.tag = "top_stairs_room_entrance";
-    topStairsRoom.walls.push_back(entranceWall);
-    
-    // Add the remaining walls to form a rectangular room extending behind the stairs
-    topStairsRoom.walls.push_back(Wall(Line(Vertex(1.6f, -2.6f), Vertex(1.6f, -7.0f)), 6, -1, 7)); // Right wall
-    topStairsRoom.walls.push_back(Wall(Line(Vertex(1.6f, -7.0f), Vertex(-1.6f, -7.0f)), 6, -1, 6)); // Back wall
-    topStairsRoom.walls.push_back(Wall(Line(Vertex(-1.6f, -7.0f), Vertex(-1.6f, -2.6f)), 6, -1, 7)); // Left wall
-    
-    // Add the elevated room to the test map sectors
-    testMapSectors.push_back(topStairsRoom);
-    
-    // Now also create actual stair platforms connecting to the elevated room
-    std::cout << "\n=== CREATING STAIR PLATFORMS ===\n";
-    
-    // IMPORTANT: Create the stair platforms AFTER building the BSP tree
-    // First build the BSP tree with the sectors
-    collisionBSP.build(testMapSectors);
-    
-    // Remove room-covering platforms - keeping only the straight staircase
-    
     // Create the straight staircase with proper height adjustment
-    // This is the only staircase we're keeping - the one that leads from the main room to the top stairs room
     std::vector<Platform> stairs = createDoomStairs(stairsStart, stairsEnd, stairsBaseHeight, 
                                                    stairsStepHeight, stairsNumSteps, 
                                                    10, 10, 10, 200, 0);
-    std::cout << "Created " << stairs.size() << " stair platforms for the straight staircase.\n";
     
-    // Remove center platform to eliminate the cyan outline in the minimap
-    // collisionBSP.addPlatform(centerPlatform);
-    
-    // Add each stair platform to the BSP tree - do this LAST to ensure proper indexing
-    // ONLY adding the straight staircase platforms
-    std::cout << "\n=== ADDING STRAIGHT STAIRCASE PLATFORMS TO BSP TREE ===\n";
+    // Add each stair platform to the BSP tree
     for (const Platform& stair : stairs) {
         collisionBSP.addPlatform(stair);
-        // Verify the stair platform was added correctly
-        size_t platformIndex = collisionBSP.getPlatforms().size() - 1;
-        const Platform& addedPlatform = collisionBSP.getPlatforms()[platformIndex];
-        std::cout << "Added stair platform " << addedPlatform.stairIndex + 1 
-                  << " at height " << addedPlatform.height 
-                  << " (index " << platformIndex << ")" << std::endl;
     }
-    
-    // Add decorative items to the elevated room
-    Platform elevatedAltar;
-    std::vector<Vec2> topStairsAltarVertices;
-    topStairsAltarVertices.push_back(Vec2(-0.5f, -4.5f));
-    topStairsAltarVertices.push_back(Vec2(0.5f, -4.5f));
-    topStairsAltarVertices.push_back(Vec2(0.5f, -5.5f));
-    topStairsAltarVertices.push_back(Vec2(-0.5f, -5.5f));
-    
-    elevatedAltar = Platform(topStairsAltarVertices, topStepHeight + 0.3f, 0.5f, 7, 7, 7, 255, 6);
-    elevatedAltar.type = PlatformType::STATIC;
-    elevatedAltar.isVisible = true;
-    elevatedAltar.isSolid = true;
-    elevatedAltar.tag = "top_stairs_room_altar";
-    collisionBSP.addPlatform(elevatedAltar);
-    
-    // Create blood pools in the corners of the elevated room
-    Platform elevatedBloodPool1;
-    std::vector<Vec2> elevatedBloodPool1Vertices;
-    elevatedBloodPool1Vertices.push_back(Vec2(-1.0f, -3.3f));
-    elevatedBloodPool1Vertices.push_back(Vec2(-0.3f, -3.3f));
-    elevatedBloodPool1Vertices.push_back(Vec2(-0.3f, -4.0f));
-    elevatedBloodPool1Vertices.push_back(Vec2(-1.0f, -4.0f));
-    
-    elevatedBloodPool1 = Platform(elevatedBloodPool1Vertices, topStepHeight + 0.02f, 0.05f, 6, 6, 6, 150, 6);
-    elevatedBloodPool1.type = PlatformType::STATIC;
-    elevatedBloodPool1.isVisible = true;
-    elevatedBloodPool1.isSolid = false; // Can walk through blood
-    elevatedBloodPool1.tag = "top_stairs_room_blood_pool_1";
-    collisionBSP.addPlatform(elevatedBloodPool1);
-    
-    Platform elevatedBloodPool2;
-    std::vector<Vec2> elevatedBloodPool2Vertices;
-    elevatedBloodPool2Vertices.push_back(Vec2(0.3f, -3.3f));
-    elevatedBloodPool2Vertices.push_back(Vec2(1.0f, -3.3f));
-    elevatedBloodPool2Vertices.push_back(Vec2(1.0f, -4.0f));
-    elevatedBloodPool2Vertices.push_back(Vec2(0.3f, -4.0f));
-    
-    elevatedBloodPool2 = Platform(elevatedBloodPool2Vertices, topStepHeight + 0.02f, 0.05f, 6, 6, 6, 150, 6);
-    elevatedBloodPool2.type = PlatformType::STATIC;
-    elevatedBloodPool2.isVisible = true;
-    elevatedBloodPool2.isSolid = false; // Can walk through blood
-    elevatedBloodPool2.tag = "top_stairs_room_blood_pool_2";
-    collisionBSP.addPlatform(elevatedBloodPool2);
-    
-    // Remove center platform to eliminate the cyan outline in the minimap
-    // collisionBSP.addPlatform(centerPlatform);
-    
-    // Create a pentagram platform in the center of the hellish sector
-    Platform pentagramPlatform;
-    
-    // Define the platform shape (pentagram, counter-clockwise order)
-    std::vector<Vec2> pentagramVertices;
-    pentagramVertices.push_back(Vec2(4.0f, -7.0f));   // Top
-    pentagramVertices.push_back(Vec2(5.0f, -8.5f));   // Right upper
-    pentagramVertices.push_back(Vec2(4.5f, -10.0f));  // Right lower
-    pentagramVertices.push_back(Vec2(3.5f, -10.0f));  // Left lower
-    pentagramVertices.push_back(Vec2(3.0f, -8.5f));   // Left upper
-    
-    // Create the pentagram platform with a red glow
-    pentagramPlatform = Platform(pentagramVertices, -0.3f, 0.1f, 5, 5, 5, 200, 0);
-    pentagramPlatform.type = PlatformType::STATIC;
-    pentagramPlatform.isVisible = true;
-    pentagramPlatform.isSolid = true;
-    pentagramPlatform.tag = "pentagram_platform";
-    
-    // Add the pentagram platform to the BSP tree
-    collisionBSP.addPlatform(pentagramPlatform);
-    
-    // Add blood pools as additional platforms in the hellish sector
-    Platform bloodPool1;
-    std::vector<Vec2> bloodPool1Vertices;
-    bloodPool1Vertices.push_back(Vec2(2.5f, -7.0f));
-    bloodPool1Vertices.push_back(Vec2(3.5f, -7.5f));
-    bloodPool1Vertices.push_back(Vec2(3.0f, -8.5f));
-    bloodPool1Vertices.push_back(Vec2(2.0f, -8.0f));
-    
-    bloodPool1 = Platform(bloodPool1Vertices, -0.48f, 0.05f, 6, 6, 6, 150, 0);
-    bloodPool1.type = PlatformType::STATIC;
-    bloodPool1.isVisible = true;
-    bloodPool1.isSolid = false; // Can walk through blood
-    bloodPool1.tag = "blood_pool_1";
-    collisionBSP.addPlatform(bloodPool1);
-    
-    Platform bloodPool2;
-    std::vector<Vec2> bloodPool2Vertices;
-    bloodPool2Vertices.push_back(Vec2(5.0f, -7.0f));
-    bloodPool2Vertices.push_back(Vec2(5.5f, -8.0f));
-    bloodPool2Vertices.push_back(Vec2(4.5f, -8.5f));
-    bloodPool2Vertices.push_back(Vec2(4.0f, -7.5f));
-    
-    bloodPool2 = Platform(bloodPool2Vertices, -0.48f, 0.05f, 6, 6, 6, 150, 0);
-    bloodPool2.type = PlatformType::STATIC;
-    bloodPool2.isVisible = true;
-    bloodPool2.isSolid = false; // Can walk through blood
-    bloodPool2.tag = "blood_pool_2";
-    collisionBSP.addPlatform(bloodPool2);
-    
-    // Add a demonic altar in the center of the pentagram
-    Platform altar;
-    std::vector<Vec2> altarVertices;
-    altarVertices.push_back(Vec2(3.8f, -8.3f));
-    altarVertices.push_back(Vec2(4.2f, -8.3f));
-    altarVertices.push_back(Vec2(4.2f, -8.7f));
-    altarVertices.push_back(Vec2(3.8f, -8.7f));
-    
-    altar = Platform(altarVertices, -0.2f, 0.3f, 7, 7, 7, 255, 0);
-    altar.type = PlatformType::STATIC;
-    altar.isVisible = true;
-    altar.isSolid = true;
-    altar.tag = "demonic_altar";
-    collisionBSP.addPlatform(altar);
-    
-    // Print a helpful message about the platforms
-    std::cout << "\n=== PLATFORM GUIDE ===\n";
-    std::cout << "A large center platform has been added to the main room.\n";
-    std::cout << "This platform is 6x6 units in size and rises 0.5 units above the floor.\n";
-    std::cout << "It's positioned in the center of the room with plenty of space around it.\n";
-    
-    std::cout << "\nTo explore the straight staircase in the main room:\n";
-    std::cout << "1. From the starting position, move south to find the straight staircase\n";
-    std::cout << "2. The staircase consists of " << stairsNumSteps << " steps\n";
-    std::cout << "3. You can climb the stairs to reach the elevated room\n";
-    std::cout << "4. Each step increases your elevation by " << stairsStepHeight << " units\n";
-    
-    // Print a helpful message about the stair illusion
-    std::cout << "\n=== NAVIGATION GUIDE ===\n";
-    std::cout << "Two ways to reach the elevated room:\n";
-    std::cout << "1. MAIN PATH: Use the straight staircase in the south part of the main room\n";
-    std::cout << "   - This staircase leads directly to the top stairs room\n";
-    std::cout << "   - It has " << stairsNumSteps << " steps with gradient elevation\n";
-    std::cout << "\n2. ALTERNATE PATH: Go through the rooms to the north\n";
-    std::cout << "   - Go through the wide corridor to the north\n";
-    std::cout << "   - From the corridor, enter the large side room to the north\n";
-    std::cout << "   - In the side room, look for the portal to the staircase sector in the eastern part of the room\n";
-    std::cout << "   - From the staircase sector, enter the portal to the elevated room\n";
-    std::cout << "   (Note: The alternate path is just flat corridors with no actual stair platforms)\n";
     
     // Create sprites for the test map
     std::vector<Sprite> testSprites;
